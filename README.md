@@ -75,7 +75,7 @@ npm install
 npm run check      # lint, format, types, dependency direction, tests with coverage thresholds
 ```
 
-Tests use `node:test`.
+Tests use `node:test`; the type check covers `bin`, `src` and `scripts`, and tests are exercised rather than typed.
 Coverage thresholds are enforced in `package.json`, not reported and forgotten.
 `scripts/check-deps.js` states the dependency direction of `src/` as an ordered list of layers and fails on an upward import or a cycle; `test/deps.test.js` proves it catches both.
 `test/browser.test.js` drives the slice in a real headless Chromium-family browser over the DevTools protocol using Node's built-in `WebSocket`, by mouse and by keyboard, at 800x600.

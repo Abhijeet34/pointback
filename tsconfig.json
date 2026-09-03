@@ -11,6 +11,6 @@
     "strict": false,
     "skipLibCheck": true
   },
-  "include": ["bin", "src", "scripts", "test"],
+  "include": ["bin", "src", "scripts"],
   "exclude": ["src/browser", "node_modules"]
 }
