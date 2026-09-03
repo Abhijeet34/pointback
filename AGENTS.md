@@ -8,7 +8,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Dependency direction for `src/` is the layer list in `scripts/check-deps.js`; add a new module to a layer there or the check fails.
 - The product name is a parameter: `package.json` `name`, derived through `src/identity.js`; never write it as a literal under `src/`.
 - Browser-side code (`src/browser/`) is served as static files, is excluded from coverage, and is tested only by the real-browser suite in `test/browser.test.js`.
-- Two parts of the suite need an unsandboxed call on this fleet, so run `npm run check` from a terminal: the browser suite launches a headless browser, which needs to bind a process-singleton unix socket that a sandbox denying `AF_UNIX` bind refuses, and `fs.watch` fails there with `EMFILE: too many open files, watch` on the first event, which takes `watch`, `events` and `server` with it.
+- Two parts of the suite break under a restrictive sandbox, so run `npm run check` from an ordinary shell: the browser suite launches a headless browser that binds a process-singleton unix socket, which a sandbox denying `AF_UNIX` bind refuses, and `fs.watch` fails there with `EMFILE: too many open files, watch` on the first event, which takes `watch`, `events` and `server` with it.
 - A Chromium tab in the background starves queued tasks, including the `close` event of a `<dialog>`; a test that opens a second tab and then drives the first must bring it to the front (`page.front()` in `test/helpers/cdp.js`) or it will wait on an event that arrives seconds later.
 - Tests that touch the daemon use `test/helpers/env.js` for a private state directory and an ephemeral port; never point a test at the real `~/.pointback`.
 - The artifact iframe is sandboxed to an opaque origin, so Chromium runs it out of process and leaves it out of the page's frame tree; `Page.frame()` in `test/helpers/cdp.js` auto-attaches a session that can read its DOM, and input still goes to the page in page coordinates.
@@ -20,10 +20,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Delivery
 
-- `docs/GIT-WORKFLOW.md` is the whole of it: branch protection, required checks, versioning, release, rollback, and the settings to apply the day the repository exists.
+- `docs/GIT-WORKFLOW.md` is the whole of it: branch protection, required checks, versioning, release, rollback, and how the settings that are not files are applied and verified.
 - The settings that are not files live under `.github/rulesets/` and `.github/settings/`, and `scripts/apply-repo-settings.sh OWNER/REPO` is the only thing that applies them; never hand-type an API call it already carries.
 - The one required status check is `checks` in `.github/workflows/ci.yml`; anything worth blocking a merge becomes a job there, never a second required context.
-- `.gitleaks.toml` and `.githooks/pre-push` are `automation`'s canonical copies, installed by its `.ci/gitleaks/sync.sh` and digest-pinned in CI. Never hand-edit either; re-run `sync.sh`.
+- `.gitleaks.toml` and `.githooks/pre-push` are copies of one canonical secret-scanning gate maintained outside this repository, in a private upstream shared across its siblings. Never hand-edit either: `ci.yml` pins the SHA-256 of both, so a drifted copy fails the required check, and the fix is to re-sync from upstream rather than to edit the file here.
 - `test/pipeline.test.js` pins the load-bearing lines of the workflows and rulesets, so a change that quietly unprotects something fails the gate.
 
 ## CI runner platforms
