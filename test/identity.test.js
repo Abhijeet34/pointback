@@ -15,8 +15,15 @@ test("everything named after the product derives from package.json", () => {
   assert.deepEqual(pkg.bin, { [name]: `bin/${name}.js` });
 });
 
-test("the package cannot be published until the name is settled", () => {
-  assert.equal(pkg.private, true);
+// The name was settled on 2026-09-03 and the repository is public, so the manifest
+// no longer refuses a publish by itself. The switch that keeps publishing off is the
+// NPM_PUBLISH_ENABLED repository variable, pinned by test/pipeline.test.js; what is
+// left to guard here is that the metadata a publish would carry stays correct.
+test("the manifest carries an SPDX licence with the licence text beside it", () => {
+  assert.equal(pkg.license, "Apache-2.0");
+  assert.equal(pkg.private, undefined);
+  const license = readFileSync(new URL("LICENSE", root), "utf8");
+  assert.match(license, /^ *Apache License\n *Version 2\.0, January 2004/m);
 });
 
 test("env reads only the prefixed variable and treats empty as unset", () => {
@@ -50,11 +57,14 @@ test("a packed tarball ships only the allowlisted files", () => {
   for (const file of files) {
     assert.match(
       file,
-      /^(bin\/|src\/|README\.md$|THIRD-PARTY-NOTICES\.md$|package\.json$)/,
+      /^(bin\/|src\/|LICENSE$|README\.md$|THIRD-PARTY-NOTICES\.md$|package\.json$)/,
       `${file} is outside the allowlist`,
     );
   }
   assert.ok(files.includes(`bin/${name}.js`));
   assert.ok(files.includes("src/browser/sdk.js"));
+  // A published package without its licence file is a defect, and npm's own
+  // implicit inclusion is not something to rely on: the allowlist names it.
+  assert.ok(files.includes("LICENSE"));
   assert.ok(!files.some((f) => f.startsWith("test/")));
 });
