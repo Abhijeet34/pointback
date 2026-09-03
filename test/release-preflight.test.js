@@ -40,6 +40,10 @@ test("publishing is refused while the package is private, unlicensed or unallowl
   assert.ok(problems.some((p) => p.includes("no files allowlist")));
 });
 
+test("the real manifest now clears the publish checks it used to fail", () => {
+  assert.deepEqual(preflight({ ...good, publishing: true }), []);
+});
+
 test("those three say nothing until publishing is actually enabled", () => {
   assert.deepEqual(preflight({ ...good, pkg: { version: pkg.version, private: true } }), []);
 });

@@ -181,9 +181,10 @@ The SBOM comes from GitHub's dependency-graph export (`gh api repos/OWNER/REPO/d
 ## Publishing to npm
 
 Off.
-`package.json` carries `"private": true` and `"license": "UNLICENSED"`, and the `publish` job runs only when the repository variable `NPM_PUBLISH_ENABLED` is exactly `true`.
+The `publish` job runs only when the repository variable `NPM_PUBLISH_ENABLED` is exactly `true`, and that variable is now the whole switch.
 With the variable unset the release ends at the tag, the GitHub release and its two assets, and the job is visibly skipped rather than quietly absent.
-`scripts/release-preflight.js --publishing` refuses a publish while `private` is true, while the license is `UNLICENSED`, or with no `files` allowlist, so turning the variable on without settling those three fails loudly instead of shipping the wrong thing.
+`package.json` used to hold a second refusal in `"private": true` and `"license": "UNLICENSED"`; both were dropped once the name was settled and the licence became Apache-2.0, so the variable stands alone.
+`scripts/release-preflight.js --publishing` still refuses a publish with `private` true, with the licence absent or `UNLICENSED`, or with no `files` allowlist, which is what catches a regression to any of those rather than a first setup.
 
 The mechanism, when it is turned on, is **npm trusted publishing over OIDC**.
 No long-lived token is stored anywhere: the `publish` job asks GitHub for an OIDC token and npm trusts the claim, which names the owner, the repository and the workflow filename.

@@ -1,16 +1,16 @@
 {
   "name": "pointback",
   "version": "0.0.0",
-  "private": true,
   "description": "Point at a rendered HTML page; the pointing comes back to your agent as an instruction.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "bin": {
     "pointback": "bin/pointback.js"
   },
   "files": [
     "bin",
     "src",
+    "LICENSE",
     "README.md",
     "THIRD-PARTY-NOTICES.md"
   ],
