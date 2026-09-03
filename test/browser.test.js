@@ -167,11 +167,20 @@ test(
     await page.key("End", { keyCode: 35 });
     await new Promise((r) => setTimeout(r, 300));
 
-    const savedAt = Date.now();
-    writeFileSync(file, html.replace("Bottom of the plan", "Bottom of the revised plan"));
-    await page.waitFor("document.body.dataset.revision === '1'");
-    const reloadMs = Date.now() - savedAt;
-    assert.ok(reloadMs < 3000, `reload took ${reloadMs} ms`);
+    // Five saves in a row, timed from the write to the page being parsed, placed and annotatable.
+    const latencies = [];
+    for (let revision = 1; revision <= 5; revision += 1) {
+      const savedAt = Date.now();
+      // Each save differs in size as well as content, so no two look alike to the watcher.
+      writeFileSync(
+        file,
+        html.replace("Bottom of the plan", "Bottom of the revised plan") + " ".repeat(revision),
+      );
+      await page.waitFor(`document.body.dataset.revision === '${revision}'`);
+      latencies.push(Date.now() - savedAt);
+    }
+    const reloadMs = latencies.toSorted((a, b) => a - b)[2];
+    assert.ok(Math.max(...latencies) < 3000, `reloads took ${latencies.join(", ")} ms`);
 
     await page.eval("document.getElementById('annotate').click()");
     await page.click(rect.left + 40, rect.top + rect.height - 34);
@@ -219,6 +228,8 @@ test(
     );
     assert.equal(await page.eval("document.getElementById('annotate').disabled"), true);
     assert.equal(await page.eval("document.querySelectorAll('.mark:not(.sent)').length"), 0);
-    console.log(`browser lifecycle: file save to reloaded page ${reloadMs} ms`);
+    console.log(
+      `browser lifecycle: file save to reloaded page, five saves ${latencies.join("/")} ms, median ${reloadMs} ms`,
+    );
   },
 );
