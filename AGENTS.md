@@ -21,6 +21,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Delivery
 
 - `docs/GIT-WORKFLOW.md` is the whole of it: branch protection, required checks, versioning, release, rollback, and the settings to apply the day the repository exists.
+- The settings that are not files live under `.github/rulesets/` and `.github/settings/`, and `scripts/apply-repo-settings.sh OWNER/REPO` is the only thing that applies them; never hand-type an API call it already carries.
 - The one required status check is `checks` in `.github/workflows/ci.yml`; anything worth blocking a merge becomes a job there, never a second required context.
 - `.gitleaks.toml` and `.githooks/pre-push` are `automation`'s canonical copies, installed by its `.ci/gitleaks/sync.sh` and digest-pinned in CI. Never hand-edit either; re-run `sync.sh`.
 - `test/pipeline.test.js` pins the load-bearing lines of the workflows and rulesets, so a change that quietly unprotects something fails the gate.
