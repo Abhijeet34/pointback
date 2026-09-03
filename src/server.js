@@ -218,7 +218,12 @@ function eventStream(req, res, ctx, key) {
   if (ctx.streams.size >= limits.eventStreams) throw new HttpError(429, "too many event streams");
   res.writeHead(200, { ...STATIC_HEADERS, "content-type": "application/x-ndjson; charset=utf-8" });
   res.flushHeaders();
-  const detach = ctx.streams.open(key, (event) => res.write(JSON.stringify(event) + "\n"));
+  // A tab that vanishes between an event and its write is a close, not a crash: without this
+  // listener the stream error would go unhandled and take the whole daemon with it.
+  res.on("error", () => {});
+  const detach = ctx.streams.open(key, (event) => {
+    if (!res.destroyed) res.write(JSON.stringify(event) + "\n");
+  });
   req.on("close", detach);
 }
 
