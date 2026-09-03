@@ -43,13 +43,13 @@ It also handles the case that a naive setup gets wrong: a job that skips itself 
 
 The other rules and why each is there:
 
-| Rule                                                                                        | What it stops                                                                                |
-| ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `required_status_checks` on `checks`, strict                                                | Merging a red branch, or a branch that has not been rebuilt against the current `main`       |
-| `pull_request`, `allowed_merge_methods: ["squash"]`                                         | A merge or rebase merge, which would break version derivation                                |
-| `required_signatures`                                                                       | An unsigned commit, including one made through the web UI or the API                         |
-| `deletion`, `non_fast_forward`                                                              | Deleting `main`, and force-pushing over published history                                    |
-| Tag ruleset: `update`, `deletion` on `refs/tags/v*`, no bypass actors                       | Anyone, including automation, moving or deleting a release tag once it exists                |
+| Rule                                                                  | What it stops                                                                          |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `required_status_checks` on `checks`, strict                          | Merging a red branch, or a branch that has not been rebuilt against the current `main` |
+| `pull_request`, `allowed_merge_methods: ["squash"]`                   | A merge or rebase merge, which would break version derivation                          |
+| `required_signatures`                                                 | An unsigned commit, including one made through the web UI or the API                   |
+| `deletion`, `non_fast_forward`                                        | Deleting `main`, and force-pushing over published history                              |
+| Tag ruleset: `update`, `deletion` on `refs/tags/v*`, no bypass actors | Anyone, including automation, moving or deleting a release tag once it exists          |
 
 **The tag ruleset has no `creation` rule, and that is measured rather than chosen.**
 A `bypass_actors` entry for the GitHub Actions app (`Integration`, `actor_id` 15368, the id `GET /apps/github-actions` returns) is refused on this repository:
