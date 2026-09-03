@@ -156,7 +156,8 @@ jobs:
           # says nothing, so a byte-perfect hook committed 100644 reads exactly
           # like a hook that found nothing. The mode is tracked, so CI sees it.
           # The other inertness, core.hooksPath unset in a clone, is repository
-          # config no checkout carries; only sync.sh --check reaches it.
+          # config no checkout carries; only the upstream sync's own check
+          # mode reaches it.
           if [ -r .githooks/pre-push ] && [ ! -x .githooks/pre-push ]; then
             echo "::error::.githooks/pre-push is not executable, so git will never run it. chmod +x and commit the mode." >&2
             rc=1
