@@ -8,7 +8,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Dependency direction for `src/` is the layer list in `scripts/check-deps.js`; add a new module to a layer there or the check fails.
 - The product name is a parameter: `package.json` `name`, derived through `src/identity.js`; never write it as a literal under `src/`.
 - Browser-side code (`src/browser/`) is served as static files, is excluded from coverage, and is tested only by the real-browser suite in `test/browser.test.js`.
-- The browser suite launches a headless browser, which needs to bind a process-singleton unix socket; a sandbox that denies `AF_UNIX` bind (the Claude Code Bash sandbox on this fleet) fails it, so run `npm run check` from a terminal or an unsandboxed call.
+- Two parts of the suite need an unsandboxed call on this fleet, so run `npm run check` from a terminal: the browser suite launches a headless browser, which needs to bind a process-singleton unix socket that a sandbox denying `AF_UNIX` bind refuses, and `fs.watch` fails there with `EMFILE: too many open files, watch` on the first event, which takes `watch`, `events` and `server` with it.
+- A Chromium tab in the background starves queued tasks, including the `close` event of a `<dialog>`; a test that opens a second tab and then drives the first must bring it to the front (`page.front()` in `test/helpers/cdp.js`) or it will wait on an event that arrives seconds later.
 - Tests that touch the daemon use `test/helpers/env.js` for a private state directory and an ephemeral port; never point a test at the real `~/.pointback`.
 
 ## Delivery
