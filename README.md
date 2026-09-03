@@ -83,3 +83,4 @@ It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROW
 
 The product name lives in `package.json` and is derived everywhere else through `src/identity.js`; `test/identity.test.js` fails if it appears anywhere else under `src/`.
 The package is marked private on purpose: the npm name is not settled.
+`docs/GIT-WORKFLOW.md` covers how a change reaches `main`, how a release is cut, and what npm does and does not permit when one has to be withdrawn.
