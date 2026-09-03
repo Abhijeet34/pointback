@@ -121,6 +121,10 @@ window.addEventListener("message", (event) => {
     return;
   }
   if (data?.nonce !== nonce) return;
+  if (data.type === "annotate-ok") {
+    document.body.dataset.annotate = data.on ? "1" : "0";
+    return;
+  }
   if (data.type === "queue") {
     pending.push({ prompt: data.prompt.prompt, target: data.prompt });
     savePending();

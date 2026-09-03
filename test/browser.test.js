@@ -38,6 +38,10 @@ test(
       await page.eval("document.getElementById('annotate').getAttribute('aria-checked')"),
       "true",
     );
+    // Annotate mode is set by a message into the artifact's own event loop, so a
+    // click dispatched before it lands is simply ignored. Measured on a loaded
+    // machine: one full-suite run in three failed here before this wait existed.
+    await page.waitFor("document.body.dataset.annotate === '1'");
     const rect = JSON.parse(
       await page.eval(
         "JSON.stringify(document.getElementById('artifact').getBoundingClientRect())",

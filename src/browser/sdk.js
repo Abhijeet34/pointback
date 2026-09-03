@@ -57,6 +57,10 @@
       setAnnotate(data.annotate);
     } else if (data?.nonce === nonce && data.type === "annotate") {
       setAnnotate(data.on);
+      // The chrome cannot otherwise know when this arrived: it posts into a
+      // separate event loop, so anything that acts on the new state - a click,
+      // a test - would be racing delivery.
+      send({ type: "annotate-ok", on: data.on });
     }
   });
 
