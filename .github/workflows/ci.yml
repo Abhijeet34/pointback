@@ -70,6 +70,8 @@ jobs:
           # Asked of the binary before the suite needs it, so a runner image that
           # dropped Chrome says so here in one second instead of inside a test.
           "$BROWSER_PATH" --version
+          # The ${...} below belongs to the JavaScript template literal, not to the shell.
+          # shellcheck disable=SC2016
           node --input-type=module -e '
             import { envPrefix } from "./src/identity.js";
             console.log(`${envPrefix}BROWSER=${process.env.BROWSER_PATH}`);

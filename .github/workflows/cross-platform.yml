@@ -81,6 +81,8 @@ jobs:
             echo "::error::no browser at $BROWSER_PATH on ${{ matrix.os }}" >&2
             exit 1
           }
+          # The ${...} below belongs to the JavaScript template literal, not to the shell.
+          # shellcheck disable=SC2016
           node --input-type=module -e '
             import { envPrefix } from "./src/identity.js";
             console.log(`${envPrefix}BROWSER=${process.env.BROWSER_PATH}`);
