@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Review</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/chrome.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <span class="bar-name" id="appName"></span>
+      <span class="bar-file" id="fileName"></span>
+      <button class="switch" id="annotate" type="button" role="switch" aria-checked="false">
+        <span class="switch-track" aria-hidden="true"></span>
+        Annotate
+      </button>
+    </header>
+    <main class="mount">
+      <iframe
+        id="artifact"
+        title="The page under review"
+        sandbox="allow-scripts allow-forms allow-popups"
+        referrerpolicy="no-referrer"
+      ></iframe>
+    </main>
+    <aside class="margin" aria-label="Notes">
+      <p class="margin-status" id="status" role="status"></p>
+      <ol class="marks" id="marks" aria-label="Notes"></ol>
+      <form class="send" id="sendForm">
+        <button class="send-button" id="send" type="submit" disabled>Send to agent</button>
+      </form>
+    </aside>
+  </body>
+  <script type="module" src="/chrome.js"></script>
+</html>

@@ -1,0 +1,40 @@
+{
+  "name": "pointback",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Point at a rendered HTML page; the pointing comes back to your agent as an instruction.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "bin": {
+    "pointback": "bin/pointback.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "THIRD-PARTY-NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm run deps && npm test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc -p tsconfig.json && tsc -p src/browser/tsconfig.json",
+    "deps": "node scripts/check-deps.js",
+    "test": "node --test --experimental-test-coverage --test-coverage-include='src/**' --test-coverage-include='bin/**' --test-coverage-exclude='src/browser/**' --test-coverage-lines=85 --test-coverage-branches=80 --test-coverage-functions=85 'test/*.test.js'"
+  },
+  "dependencies": {
+    "parse5": "8.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.4.0",
+    "eslint": "^10.9.1",
+    "globals": "^17.11.0",
+    "prettier": "^3.9.6",
+    "typescript": "^7.0.2"
+  }
+}
