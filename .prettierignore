@@ -3,7 +3,7 @@ coverage
 package-lock.json
 .claude
 
-# Canonical copies from automation, installed by its .ci/gitleaks/sync.sh.
-# A formatter that reflows either one breaks the digest CI pins.
+# Copies of a canonical secret-scanning gate maintained upstream, not files
+# maintained here. A formatter that reflows either one breaks the digest CI pins.
 .githooks
 .gitleaks.toml
