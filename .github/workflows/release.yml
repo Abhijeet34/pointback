@@ -1,0 +1,167 @@
+name: release
+
+# One workflow, one trigger, one signal. A `on: push: tags` workflow was
+# rejected: a hand-pushed tag would fire it, and release-please's
+# `release_created` output is the only event that means "this tag was created
+# for this tree, just now".
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# No `concurrency` block: cancelling a publish mid-flight causes real damage
+# (AGENTS.md, "CI runner platforms").
+
+permissions:
+  contents: read
+
+jobs:
+  # Opens or updates the release pull request; on the merge of that pull request
+  # it tags and creates the GitHub release. Nothing below runs otherwise.
+  release-please:
+    name: release-please
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+      sha: ${{ steps.rp.outputs.sha }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # The release commit is main's head, which is what this workflow's own
+  # checkout ref resolves to, so the tree these runners test is the tree the tag
+  # names - and the preflight below proves that rather than assuming it.
+  cross-platform:
+    name: cross-platform
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    uses: ./.github/workflows/cross-platform.yml
+
+  artifacts:
+    name: artifacts
+    needs: [release-please, cross-platform]
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      # actions/attest-build-provenance signs through GitHub's OIDC identity.
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release-please.outputs.tag }}
+      RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+          # The preflight resolves the tag object, which a ref-only fetch of the
+          # commit would not bring.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # Refuses a release that would attach to a tag this run did not create.
+      # scripts/release-preflight.js carries the reason; test/release-preflight.test.js
+      # demonstrates it refusing.
+      - name: Release preflight
+        run: node scripts/release-preflight.js --tag "$TAG" --commit "$RELEASE_SHA"
+
+      - name: Pack the tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          # The filename carries the package name and version; reading it back
+          # rather than composing it keeps the product name out of this file.
+          filename=$(npm pack --json --ignore-scripts | node -e '
+            let s = "";
+            process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s)[0].filename));
+          ')
+          echo "tarball=$filename" >> "$GITHUB_OUTPUT"
+
+      # GitHub's dependency-graph export, not `npm sbom`: it describes the
+      # manifests from the same data the dependency review reads, needs no
+      # dependency installed, and cannot disagree with the alerts on the repo.
+      - name: Export the SBOM
+        run: gh api "repos/${GITHUB_REPOSITORY}/dependency-graph/sbom" > sbom.spdx.json
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball }}
+
+      - name: Attach both to the release
+        run: gh release upload "$TAG" "${{ steps.pack.outputs.tarball }}" sbom.spdx.json --clobber
+
+  # Off until someone deliberately turns it on. The switch is a repository
+  # variable, not a secret and not a default: with NPM_PUBLISH_ENABLED unset a
+  # release ends at the tag, the GitHub release and its two assets, and this job
+  # is visibly skipped rather than silently absent.
+  #
+  # It holds no repository write token. The OIDC identity that mints the npm
+  # credential lives here alone, and everything it publishes was produced and
+  # signed by the job above.
+  publish:
+    name: publish
+    needs: [release-please, artifacts]
+    if: needs.release-please.outputs.created == 'true' && vars.NPM_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release-please.outputs.tag }}
+      RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          registry-url: https://registry.npmjs.org
+
+      # npm's trusted-publishing docs: "Trusted publishing requires npm CLI
+      # version 11.5.1 or later". An older npm fails with ENEEDAUTH, which reads
+      # like a misconfigured trusted publisher rather than an old client.
+      - name: Check npm can do trusted publishing
+        run: |
+          set -euo pipefail
+          npm --version
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number);
+            const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)));
+            if (!ok) throw new Error("npm 11.5.1+ is required for trusted publishing");
+          ' "$(npm --version)"
+
+      # The same three checks as the artifacts job, plus the ones that only
+      # matter when a tarball is actually about to leave the machine.
+      - name: Release preflight
+        run: node scripts/release-preflight.js --tag "$TAG" --commit "$RELEASE_SHA" --publishing
+
+      # Downloading the release asset rather than rebuilding: what npm receives
+      # is then byte-for-byte the artifact that was attested and attached above.
+      - name: Fetch the attested tarball
+        run: gh release download "$TAG" --pattern '*.tgz'
+
+      # No --provenance flag. npm docs: with trusted publishing "npm
+      # automatically generates and publishes provenance attestations ... you
+      # don't need to add the --provenance flag", and the flag turns a
+      # provenance-ineligible publish into a failed release instead of an
+      # unattested one.
+      - name: Publish
+        run: npm publish ./*.tgz --access public

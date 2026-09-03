@@ -1,0 +1,42 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs in every workflow, which is only safe
+  # because something moves the pins. This is that something; the version behind
+  # a SHA is named in the pull request title.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: scope
+    groups:
+      # One pull request through one CI run, rather than five. These actions are
+      # all first-party and move together.
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: scope
+    groups:
+      # The runtime dependency is separated from the toolchain because the two
+      # carry different risk: one ships in the tarball, the other never leaves CI.
+      runtime:
+        dependency-type: production
+        patterns: ["*"]
+      toolchain:
+        dependency-type: development
+        patterns: ["*"]
