@@ -43,6 +43,14 @@ gh-axi api -X PUT "repos/$REPO/actions/permissions/workflow" \
 gh-axi api -X PUT "repos/$REPO/actions/permissions" \
   --input .github/settings/actions-permissions.json
 
+# Unchanged from GitHub's default, and applied anyway so it is diffable: this is
+# the policy that parks the release pull request's CI at `action_required`.
+# docs/GIT-WORKFLOW.md, "Releasing", carries what that costs and why no value
+# here is known to lift it.
+gh-axi api -X PUT "repos/$REPO/actions/permissions/fork-pr-contributor-approval" \
+  --input .github/settings/actions-fork-pr-contributor-approval.json
+
 echo "applied. verify:"
 echo "  gh-axi api \"repos/$REPO/rulesets\""
 echo "  gh-axi api \"repos/$REPO/actions/permissions/workflow\""
+echo "  gh-axi api \"repos/$REPO/actions/permissions/fork-pr-contributor-approval\""

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
 import { name } from "../src/identity.js";
 
@@ -106,17 +106,29 @@ test("the tag namespace is bare v<version>, and the manifest agrees with package
   assert.equal(JSON.parse(read(".release-please-manifest.json"))["."], pkg.version);
 });
 
-test("the first release is 0.1.0, not 1.0.0", () => {
-  // The two bump flags govern a bump from an existing version; the first
-  // release is not a bump, and release-please answers it with a hardcoded
-  // 1.0.0 unless `initial-version` says otherwise. docs/GIT-WORKFLOW.md,
-  // "Versioning", carries the mechanism and the source it was read from.
-  assert.equal(JSON.parse(read("release-please-config.json"))["initial-version"], "0.1.0");
-  // Load-bearing sentinel, not a placeholder: release-please backfills a
-  // synthetic previous release from any manifest entry that is not "0.0.0",
-  // which would make the first release 0.1.1 and skip 0.1.0 entirely.
-  assert.equal(JSON.parse(read(".release-please-manifest.json"))["."], "0.0.0");
-});
+// release-please writes CHANGELOG.md, the manifest and package.json in one
+// commit, so the changelog existing is this tree saying the first release has
+// been cut. Both assertions below only describe the window before that, and
+// asserting them past it is what made every release pull request red: its own
+// diff moves the manifest off "0.0.0", which is the thing that must not happen
+// beforehand and the only thing that can happen afterwards.
+const firstReleaseCut = existsSync(new URL("CHANGELOG.md", root));
+
+test(
+  "the first release is 0.1.0, not 1.0.0",
+  { skip: firstReleaseCut && "the first release is cut; release-please owns the manifest now" },
+  () => {
+    // The two bump flags govern a bump from an existing version; the first
+    // release is not a bump, and release-please answers it with a hardcoded
+    // 1.0.0 unless `initial-version` says otherwise. docs/GIT-WORKFLOW.md,
+    // "Versioning", carries the mechanism and the source it was read from.
+    assert.equal(JSON.parse(read("release-please-config.json"))["initial-version"], "0.1.0");
+    // Load-bearing sentinel, not a placeholder: release-please backfills a
+    // synthetic previous release from any manifest entry that is not "0.0.0",
+    // which would make the first release 0.1.1 and skip 0.1.0 entirely.
+    assert.equal(JSON.parse(read(".release-please-manifest.json"))["."], "0.0.0");
+  },
+);
 
 test("every repository setting that is not a file has a committed export", () => {
   // Files do not apply themselves; this is the one script that applies them.
@@ -127,6 +139,7 @@ test("every repository setting that is not a file has a committed export", () =>
     ".github/settings/repository.json",
     ".github/settings/actions-permissions.json",
     ".github/settings/actions-workflow-permissions.json",
+    ".github/settings/actions-fork-pr-contributor-approval.json",
   ]) {
     JSON.parse(read(file)); // it must at least be the JSON the API is handed
     assert.ok(script.includes(file), `apply-repo-settings.sh never applies ${file}`);
@@ -144,6 +157,18 @@ test("the setting that lets release-please open its pull request is a committed 
   const settings = JSON.parse(read(".github/settings/actions-workflow-permissions.json"));
   assert.equal(settings.can_approve_pull_request_reviews, true);
   assert.equal(settings.default_workflow_permissions, "read");
+});
+
+test("the setting that parks the release pull request's CI is a committed file", () => {
+  // Measured on run 33816315115: a `pull_request` run on release-please's own
+  // branch completes as `action_required` with no check runs at all, because
+  // GitHub classifies a github-actions[bot] pull request as an external
+  // contribution even from a branch in this repository. No value of this policy
+  // is known to exempt it, so the export is here to be diffable rather than to
+  // be changed - docs/GIT-WORKFLOW.md, "Releasing", carries the approval step
+  // that a release therefore needs.
+  const approval = JSON.parse(read(".github/settings/actions-fork-pr-contributor-approval.json"));
+  assert.equal(approval.approval_policy, "first_time_contributors");
 });
 
 test("publishing is off unless a repository variable says otherwise", () => {
