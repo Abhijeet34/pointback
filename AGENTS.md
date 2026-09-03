@@ -11,6 +11,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Two parts of the suite need an unsandboxed call on this fleet, so run `npm run check` from a terminal: the browser suite launches a headless browser, which needs to bind a process-singleton unix socket that a sandbox denying `AF_UNIX` bind refuses, and `fs.watch` fails there with `EMFILE: too many open files, watch` on the first event, which takes `watch`, `events` and `server` with it.
 - A Chromium tab in the background starves queued tasks, including the `close` event of a `<dialog>`; a test that opens a second tab and then drives the first must bring it to the front (`page.front()` in `test/helpers/cdp.js`) or it will wait on an event that arrives seconds later.
 - Tests that touch the daemon use `test/helpers/env.js` for a private state directory and an ephemeral port; never point a test at the real `~/.pointback`.
+- The artifact iframe is sandboxed to an opaque origin, so Chromium runs it out of process and leaves it out of the page's frame tree; `Page.frame()` in `test/helpers/cdp.js` auto-attaches a session that can read its DOM, and input still goes to the page in page coordinates.
+- The page outline the SDK sends with every batch is capped in characters at both ends (`MAX_OUTLINE_CHARS` in `src/browser/sdk.js`, `structureChars` in `src/limits.js`) because it lands in an agent's context window on every delivery; `README.md` carries the measured before and after.
 
 ## Delivery
 

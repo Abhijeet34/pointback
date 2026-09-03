@@ -111,15 +111,15 @@ export class SessionStore {
     return { state: "waiting" };
   }
 
-  queue(key, prompts) {
+  queue(key, prompts, structure) {
     const session = this.get(key);
-    const accepted = this.#accept(session, prompts);
+    const accepted = this.#accept(session, prompts, structure);
     this.#persist();
     this.#events.emit(key, { type: "feedback" });
     return { status: "queued", pending_prompts: session.pending.length, accepted };
   }
 
-  #accept(session, prompts) {
+  #accept(session, prompts, structure) {
     if (!Array.isArray(prompts) || prompts.length === 0)
       throw new HttpError(400, "prompts[] required");
     if (prompts.length > limits.promptsPerRequest)
@@ -132,16 +132,11 @@ export class SessionStore {
       const prompt = validatePrompt(raw);
       return { uid: session.nextUid++, at, ...prompt };
     });
+    // The outline describes the page these notes were written against, so it is replaced
+    // with every batch rather than accumulated: an older one would describe a page that moved.
+    if (structure !== undefined) session.structure = validateStructure(structure);
     session.pending.push(...accepted);
-    for (const prompt of accepted) {
-      session.chat.push({
-        role: "user",
-        uid: prompt.uid,
-        at,
-        prompt: prompt.prompt,
-        target: targetOf(prompt),
-      });
-    }
+    for (const prompt of accepted) session.chat.push({ role: "user", ...prompt });
     if (session.chat.length > limits.chatEntriesPerSession) {
       session.chat.splice(0, session.chat.length - limits.chatEntriesPerSession);
     }
@@ -161,9 +156,9 @@ export class SessionStore {
    * Ends the review, queueing any last prompts in the same step so a send-and-end can never
    * strand them. `by` is who closed the loop: a user end refuses a plain reopen, an agent end does not.
    */
-  end(key, by, prompts = []) {
+  end(key, by, prompts = [], structure) {
     const session = this.get(key);
-    const queued = prompts.length === 0 ? 0 : this.#accept(session, prompts);
+    const queued = prompts.length === 0 ? 0 : this.#accept(session, prompts, structure);
     session.endedAt = new Date().toISOString();
     session.endedBy = by;
     this.#clearWorking(key);
@@ -197,7 +192,13 @@ export class SessionStore {
     const prompts = this.take(key);
     const ended = session.endedAt ? { ended_by: session.endedBy } : null;
     if (prompts.length > 0) {
-      return { status: "feedback", prompts, ...(ended && { session_ended: true, ...ended }) };
+      const structure = session.structure ?? "";
+      return {
+        status: "feedback",
+        prompts,
+        structure,
+        ...(ended && { session_ended: true, ...ended }),
+      };
     }
     return ended && { status: "ended", ...ended };
   }
@@ -277,24 +278,64 @@ export class SessionStore {
   }
 }
 
+/** A bounded string field, named by its owner so the 400 says which one was wrong. */
+function str(object, owner, field, max) {
+  const value = object[field];
+  if (typeof value !== "string") throw new HttpError(400, `${owner}.${field} must be a string`);
+  if (value.length > max) throw new HttpError(400, `${owner}.${field} over ${max} characters`);
+  return value;
+}
+
 function validatePrompt(raw) {
   if (raw === null || typeof raw !== "object") throw new HttpError(400, "prompt must be an object");
-  const text = (field, max) => {
-    const value = raw[field];
-    if (typeof value !== "string") throw new HttpError(400, `prompt.${field} must be a string`);
-    if (value.length > max) throw new HttpError(400, `prompt.${field} over ${max} characters`);
-    return value;
-  };
   const prompt = {
-    prompt: text("prompt", limits.promptTextChars),
-    selector: text("selector", 2000),
-    tag: text("tag", 64),
-    text: text("text", 2000),
+    prompt: str(raw, "prompt", "prompt", limits.promptTextChars),
+    selector: str(raw, "prompt", "selector", 2000),
+    tag: str(raw, "prompt", "tag", 64),
+    text: str(raw, "prompt", "text", 2000),
   };
   if (prompt.prompt.trim() === "") throw new HttpError(400, "prompt.prompt is empty");
+  if (raw.target !== undefined) prompt.target = validateTarget(raw.target);
   return prompt;
 }
 
-function targetOf(prompt) {
-  return { selector: prompt.selector, tag: prompt.tag, text: prompt.text };
+/**
+ * The target is how the agent finds the note again in a page it may have re-rendered,
+ * so each shape is rebuilt field by field here: an unknown one is refused rather than
+ * forwarded, and nothing the page invented rides along beside the fields named below.
+ */
+function validateTarget(raw) {
+  if (raw === null || typeof raw !== "object") throw new HttpError(400, "target must be an object");
+  if (raw.type === "text-range") {
+    const offset = (field) => {
+      const value = raw[field];
+      if (!Number.isInteger(value) || value < 0)
+        throw new HttpError(400, `target.${field} must be a non-negative integer`);
+      return value;
+    };
+    const start = offset("start");
+    const end = offset("end");
+    if (end <= start) throw new HttpError(400, "target.end must be after target.start");
+    return {
+      type: "text-range",
+      start,
+      end,
+      before: str(raw, "target", "before", 64),
+      after: str(raw, "target", "after", 64),
+    };
+  }
+  if (raw.type === "table-cell") {
+    const cell = { type: "table-cell" };
+    if (raw.row !== undefined) cell.row = str(raw, "target", "row", 200);
+    if (raw.column !== undefined) cell.column = str(raw, "target", "column", 200);
+    return cell;
+  }
+  throw new HttpError(400, "unknown target.type");
+}
+
+function validateStructure(raw) {
+  if (typeof raw !== "string") throw new HttpError(400, "structure must be a string");
+  if (raw.length > limits.structureChars)
+    throw new HttpError(400, `structure over ${limits.structureChars} characters`);
+  return raw;
 }

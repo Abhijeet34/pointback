@@ -10,19 +10,60 @@
       <h1 id="title">Rollout plan for the queue worker</h1>
       <p id="p1">Move the queue worker from cron to a long-running process in three steps.</p>
       <table>
-        <tr>
-          <th>Step</th>
-          <th>Owner</th>
-        </tr>
-        <tr>
-          <td>Shadow traffic</td>
-          <td>Priya</td>
-        </tr>
-        <tr>
-          <td>Cutover</td>
-          <td>Sam</td>
-        </tr>
+        <thead>
+          <tr>
+            <th>Step</th>
+            <th>Owner</th>
+            <th>Weeks</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Shadow traffic</td>
+            <td>Priya</td>
+            <td>2</td>
+          </tr>
+          <tr>
+            <td>Cutover</td>
+            <td>Sam</td>
+            <td>1</td>
+          </tr>
+          <tr>
+            <td>Decommission cron</td>
+            <td>Priya</td>
+            <td>1</td>
+          </tr>
+        </tbody>
       </table>
+      <section id="risks">
+        <h2>Risks</h2>
+        <p>Duplicate delivery is the one that costs money.</p>
+        <ul>
+          <li>Duplicate delivery on a retry after the visibility timeout</li>
+          <li>Queue depth during the shadow week</li>
+          <li>A cron entry nobody removed</li>
+        </ul>
+      </section>
+      <section id="rollback">
+        <h2>Rollback</h2>
+        <h3>Trigger</h3>
+        <p>Two consecutive minutes over <span id="slo">400 ms</span> at the 99th percentile.</p>
+        <h3>Command</h3>
+        <pre>deploy rollback queue-worker --to cron</pre>
+        <blockquote>The cron entry stays in place until the decommission step.</blockquote>
+      </section>
+      <figure>
+        <svg viewBox="0 0 120 40" width="120" height="40" role="img" aria-label="Queue depth">
+          <rect width="120" height="40" fill="#dfe6ef"></rect>
+        </svg>
+        <figcaption>Queue depth held under 500 for the whole shadow week.</figcaption>
+      </figure>
+      <div hidden>
+        <h2>Draft notes</h2>
+        <ul>
+          <li>Never shown to the reviewer, so never sent to the agent</li>
+        </ul>
+      </div>
       <button id="native">A native button stays a button</button>
     </main>
   </body>

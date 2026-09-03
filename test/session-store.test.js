@@ -126,11 +126,87 @@ test("uids are monotonic per session and extra fields are dropped", () => {
     ],
   );
   assert.equal("evil" in taken[0], false);
-  assert.deepEqual(store.bootstrap(key).chat[0].target, {
+  assert.deepEqual(store.bootstrap(key).chat[0], {
+    role: "user",
+    uid: 1,
+    at: taken[0].at,
+    prompt: "one",
     selector: "#t",
     tag: "h1",
     text: "Title",
   });
+});
+
+test("a target is rebuilt field by field, and an anchor that cannot be trusted is refused", () => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  const range = { type: "text-range", start: 3, end: 40, before: "", after: " cron" };
+  store.queue(key, [
+    { ...prompt("passage"), tag: "text", target: { ...range, path: [0], evil: "x" } },
+    { ...prompt("cell"), tag: "td", target: { type: "table-cell", column: "Owner", span: 2 } },
+  ]);
+  const taken = store.take(key);
+  assert.deepEqual(taken[0].target, range);
+  assert.deepEqual(taken[1].target, { type: "table-cell", column: "Owner" });
+
+  const bad = [
+    [7, "target must be an object"],
+    [{ type: "mermaid-node", id: "n1" }, "unknown target.type"],
+    [{ ...range, start: "3" }, "target.start must be a non-negative integer"],
+    [{ ...range, start: -1 }, "target.start must be a non-negative integer"],
+    [{ ...range, start: 40, end: 40 }, "target.end must be after target.start"],
+    [{ ...range, before: "x".repeat(65) }, "target.before over 64 characters"],
+    [{ ...range, after: 0 }, "target.after must be a string"],
+    [{ type: "table-cell", row: "x".repeat(201) }, "target.row over 200 characters"],
+  ];
+  for (const [target, message] of bad) {
+    assert.throws(
+      () => store.queue(key, [{ ...prompt(), target }]),
+      (e) => e.status === 400 && e.message === message,
+      message,
+    );
+  }
+  assert.deepEqual(store.take(key), []);
+});
+
+test("the page outline is bounded, replaced with each batch, and delivered with the prompts", async () => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  store.queue(key, [prompt()], "main\n  #title");
+  assert.deepEqual(await store.waitForFeedback(key, 20), {
+    status: "feedback",
+    prompts: [{ uid: 1, at: store.get(key).chat[0].at, ...prompt() }],
+    structure: "main\n  #title",
+  });
+
+  store.queue(key, [prompt()], "main\n  #other");
+  assert.equal((await store.waitForFeedback(key, 20)).structure, "main\n  #other");
+  store.queue(key, [prompt()]);
+  assert.equal(
+    (await store.waitForFeedback(key, 20)).structure,
+    "main\n  #other",
+    "a batch that outlines nothing keeps the last outline rather than clearing it",
+  );
+
+  // Send-and-end carries a last batch, so it carries the outline that batch was written against.
+  store.end(key, "user", [prompt()], "main\n  #last");
+  const final = await store.waitForFeedback(key, 20);
+  assert.equal(final.structure, "main\n  #last");
+  assert.equal(final.session_ended, true);
+  store.reopen(key);
+
+  for (const [structure, message] of [
+    [7, "structure must be a string"],
+    ["x".repeat(limits.structureChars + 1), `structure over ${limits.structureChars} characters`],
+  ]) {
+    assert.throws(
+      () => store.queue(key, [prompt()], structure),
+      (e) => e.status === 400 && e.message === message,
+      message,
+    );
+  }
 });
 
 test("pending prompts, chat entries and sessions are capped", () => {

@@ -147,7 +147,10 @@ test("prompts queue, show in the chat, and reach one poller with anchors intact"
   await new Promise((r) => setTimeout(r, 50));
   const queued = await post(
     `/api/${key}/prompts`,
-    { prompts: [{ prompt: "Shorter", selector: "#title", tag: "h1", text: "Rollout plan" }] },
+    {
+      prompts: [{ prompt: "Shorter", selector: "#title", tag: "h1", text: "Rollout plan" }],
+      structure: 'main\n  #title "Rollout plan"',
+    },
     { origin: base },
   );
   assert.equal(queued.status, "queued");
@@ -163,6 +166,7 @@ test("prompts queue, show in the chat, and reach one poller with anchors intact"
     })),
     [{ uid: 1, prompt: "Shorter", selector: "#title", tag: "h1", text: "Rollout plan" }],
   );
+  assert.equal(result.structure, 'main\n  #title "Rollout plan"');
   const chat = (await get(`/api/${key}/session`)).chat;
   assert.equal(chat.length, 1);
   assert.equal(chat[0].prompt, "Shorter");

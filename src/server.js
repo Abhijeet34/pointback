@@ -189,13 +189,13 @@ async function api(req, res, url, ctx) {
   if (req.method === "GET" && action === "events") return eventStream(req, res, ctx, key);
   if (req.method === "POST" && action === "prompts") {
     const body = await readJsonBody(req);
-    return sendJson(res, 200, ctx.store.queue(key, body.prompts));
+    return sendJson(res, 200, ctx.store.queue(key, body.prompts, body.structure));
   }
   if (req.method === "POST" && action === "end") {
     const body = await readJsonBody(req);
     if (body.by !== "user" && body.by !== "agent")
       throw new HttpError(400, "by must be user or agent");
-    return sendJson(res, 200, ctx.store.end(key, body.by, body.prompts ?? []));
+    return sendJson(res, 200, ctx.store.end(key, body.by, body.prompts ?? [], body.structure));
   }
   throw new HttpError(405, "method not allowed");
 }

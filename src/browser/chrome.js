@@ -361,10 +361,7 @@ endDialog.addEventListener("close", async () => {
   const sending = choice === "end" ? pending : [];
   problem = null;
   try {
-    await api("POST", `/api/${key}/end`, {
-      by: "user",
-      prompts: sending.map((entry) => ({ ...entry.target, prompt: entry.prompt })),
-    });
+    await api("POST", `/api/${key}/end`, { by: "user", prompts: sending, structure });
     pending = [];
     savePending();
     chat = (await api("GET", `/api/${key}/session`)).chat;

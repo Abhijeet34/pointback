@@ -195,9 +195,86 @@ class Page {
     }
   }
 
-  /** @param {string} key @param {{ code?: string, keyCode?: number, text?: string }} [options] */
-  async key(key, { code = key, keyCode, text } = {}) {
-    const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode };
+  /**
+   * The artifact runs in a sandboxed, opaque-origin iframe, which Chromium puts in its own
+   * process: it never appears in this page's frame tree, so a test reads its DOM through
+   * an auto-attached session of its own. Input still goes to the page, in page coordinates.
+   */
+  async frame() {
+    const attached = new Promise((resolve) => {
+      const listener = (message) => {
+        if (message.method !== "Target.attachedToTarget") return;
+        if (message.params.targetInfo.type !== "iframe") return;
+        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+        resolve(message.params.sessionId);
+      };
+      this.browser.listeners.push(listener);
+    });
+    await this.send("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+    });
+    return new Page(this.browser, await attached);
+  }
+
+  /**
+   * Input is routed by the browser's hit-test data, and for an out-of-process frame that
+   * data lands some time after the frame has painted; until it does, a press aimed at the
+   * frame is delivered to the page instead and selects nothing. Move the pointer until the
+   * frame says it saw it, and every later event routes there too.
+   */
+  async pointerInto(frame, point, { timeoutMs = 5000 } = {}) {
+    await frame.eval(`(() => {
+      globalThis.sawPointer = false;
+      if (!globalThis.watchingPointer) {
+        globalThis.watchingPointer = true;
+        document.addEventListener("mousemove", () => { globalThis.sawPointer = true; });
+      }
+      return 1;
+    })()`);
+    const deadline = Date.now() + timeoutMs;
+    do {
+      await this.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: point.x,
+        y: point.y,
+        button: "none",
+        buttons: 0,
+      });
+      if (await frame.eval("globalThis.sawPointer")) return;
+      await sleep(25);
+    } while (Date.now() < deadline);
+    throw new Error(`the pointer never reached the frame at ${point.x},${point.y}`);
+  }
+
+  /** A press, a path and a release: what makes the browser build a real text selection. */
+  async drag(from, to, steps = 8) {
+    const move = (type, x, y, buttons) =>
+      this.send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 });
+    // A real pointer is somewhere before it presses, and Chromium hit-tests the press
+    // against where it last saw the cursor; without this the press can land on nothing.
+    await move("mouseMoved", from.x, from.y, 0);
+    await move("mousePressed", from.x, from.y, 1);
+    for (let step = 1; step <= steps; step += 1) {
+      const at = (a, b) => a + ((b - a) * step) / steps;
+      await move("mouseMoved", at(from.x, to.x), at(from.y, to.y), 1);
+    }
+    await move("mouseReleased", to.x, to.y, 0);
+  }
+
+  /**
+   * @param {string} key
+   * @param {{ code?: string, keyCode?: number, text?: string, modifiers?: number }} [options]
+   */
+  async key(key, { code = key, keyCode, text, modifiers = 0 } = {}) {
+    const base = {
+      key,
+      code,
+      modifiers,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+    };
     await this.send("Input.dispatchKeyEvent", {
       type: text ? "keyDown" : "rawKeyDown",
       text,
@@ -212,6 +289,12 @@ class Page {
 
   enter() {
     return this.key("Enter", { keyCode: 13, text: "\r" });
+  }
+
+  /** Shift is modifier bit 8; the SDK reads shiftKey to grow the selection a word at a time. */
+  shiftArrow(direction) {
+    const right = direction === "right";
+    return this.key(right ? "ArrowRight" : "ArrowLeft", { keyCode: right ? 39 : 37, modifiers: 8 });
   }
 
   type(text) {

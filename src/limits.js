@@ -6,6 +6,7 @@ export const limits = Object.freeze({
   pendingPromptsPerSession: 200,
   chatEntriesPerSession: 1000,
   promptTextChars: 20_000,
+  structureChars: 4096,
   sessions: 64,
   concurrentPolls: 32,
   eventStreams: 64,
