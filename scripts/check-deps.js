@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 export const LAYERS = [
   ["identity.js", "limits.js"],
   ["state-dir.js", "http-guard.js", "artifact-path.js", "inject.js", "watch.js"],
-  ["session-store.js"],
+  ["session-store.js", "events.js"],
   ["server.js", "client.js"],
   ["cli.js"],
 ];

@@ -14,6 +14,7 @@ import {
   readJsonBody,
   sendJson,
 } from "./http-guard.js";
+import { EventStreams } from "./events.js";
 import { name, version } from "./identity.js";
 import { injectSdk } from "./inject.js";
 import { limits } from "./limits.js";
@@ -57,10 +58,12 @@ const contentTypes = {
 export function serve({ stateDir, port = 0, idleMs = limits.idleShutdownMs, onIdle = () => {} }) {
   const token = randomBytes(24).toString("hex");
   const store = new SessionStore(join(stateDir, "state.json"));
+  const streams = new EventStreams(store);
   let idleTimer;
+  // An open review tab is a user, even a silent one, so the daemon idles only when none is left.
   const touch = () => {
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => close().then(onIdle), idleMs);
+    idleTimer = setTimeout(() => (streams.size > 0 ? touch() : close().then(onIdle)), idleMs);
     idleTimer.unref();
   };
 
@@ -68,7 +71,7 @@ export function serve({ stateDir, port = 0, idleMs = limits.idleShutdownMs, onId
   const server = createServer(async (req, res) => {
     touch();
     try {
-      await route(req, res, { store, token, port: boundPort() });
+      await route(req, res, { store, streams, token, port: boundPort() });
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
       if (!(error instanceof HttpError)) console.error(error);
@@ -83,6 +86,7 @@ export function serve({ stateDir, port = 0, idleMs = limits.idleShutdownMs, onId
   const close = () =>
     new Promise((resolve) => {
       clearTimeout(idleTimer);
+      streams.closeAll();
       server.close(() => resolve(undefined));
       server.closeAllConnections();
     });
@@ -156,10 +160,12 @@ async function api(req, res, url, ctx) {
       if (error?.code === "ENOENT") throw new HttpError(404, `no such file: ${body.file}`);
       throw error;
     }
+    const status = reopenStatus(ctx.store, session, body.reopen === true);
     return sendJson(res, 200, {
       key: session.key,
       file: session.file,
       url: `http://127.0.0.1:${ctx.port}/session/${session.key}`,
+      status,
     });
   }
 
@@ -170,21 +176,50 @@ async function api(req, res, url, ctx) {
     const timeoutMs = pollTimeout(url.searchParams.get("timeoutMs"));
     const controller = new AbortController();
     req.on("close", () => controller.abort());
-    const prompts = await ctx.store.waitForFeedback(key, timeoutMs, controller.signal);
-    if (controller.signal.aborted && prompts === null) return;
-    return sendJson(res, 200, prompts ? { status: "feedback", prompts } : { status: "waiting" });
+    const answer = await ctx.store.waitForFeedback(key, timeoutMs, controller.signal);
+    if (answer === null) return;
+    return sendJson(res, 200, answer);
   }
 
-  const keyed = pathname.match(/^\/api\/([^/]+)\/(session|prompts)$/);
+  const keyed = pathname.match(/^\/api\/([^/]+)\/(session|prompts|events|end)$/);
   if (!keyed) throw new HttpError(404, "not found");
   const [, key, action] = keyed;
   if (req.method === "GET" && action === "session")
     return sendJson(res, 200, ctx.store.bootstrap(key));
+  if (req.method === "GET" && action === "events") return eventStream(req, res, ctx, key);
   if (req.method === "POST" && action === "prompts") {
     const body = await readJsonBody(req);
     return sendJson(res, 200, ctx.store.queue(key, body.prompts));
   }
+  if (req.method === "POST" && action === "end") {
+    const body = await readJsonBody(req);
+    if (body.by !== "user" && body.by !== "agent")
+      throw new HttpError(400, "by must be user or agent");
+    return sendJson(res, 200, ctx.store.end(key, body.by, body.prompts ?? []));
+  }
   throw new HttpError(405, "method not allowed");
+}
+
+/**
+ * A review the reviewer ended is not revived by the agent opening the file again; that
+ * takes an explicit reopen. A review the agent ended is its own to resume.
+ */
+function reopenStatus(store, session, asked) {
+  if (!session.endedAt) return "opened";
+  if (!asked && session.endedBy === "user") return "user-ended";
+  store.reopen(session.key);
+  return "opened";
+}
+
+/** One line of NDJSON per event, flushed as it happens; the client reads it with fetch. */
+function eventStream(req, res, ctx, key) {
+  // Both refusals have to happen before the head goes out, or they arrive as a broken stream.
+  ctx.store.get(key);
+  if (ctx.streams.size >= limits.eventStreams) throw new HttpError(429, "too many event streams");
+  res.writeHead(200, { ...STATIC_HEADERS, "content-type": "application/x-ndjson; charset=utf-8" });
+  res.flushHeaders();
+  const detach = ctx.streams.open(key, (event) => res.write(JSON.stringify(event) + "\n"));
+  req.on("close", detach);
 }
 
 function pollTimeout(raw) {

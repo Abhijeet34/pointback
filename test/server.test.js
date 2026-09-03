@@ -4,6 +4,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
+import { limits } from "../src/limits.js";
 import { serve } from "../src/server.js";
 import { fixture } from "./helpers/env.js";
 
@@ -208,7 +209,98 @@ test("bad input on the api is a 4xx, not a crash", async () => {
   assert.equal(Object.prototype.status, undefined);
 });
 
-test("an idle server stops itself", async () => {
+/** Opens an event stream and yields one parsed line at a time, so a test can await an event. */
+async function eventStream(path) {
+  const controller = new AbortController();
+  const res = await fetch(base + path, { headers, signal: controller.signal });
+  if (!res.ok) {
+    controller.abort();
+    return { status: res.status, close: () => {} };
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  return {
+    status: res.status,
+    contentType: res.headers.get("content-type"),
+    async next() {
+      for (;;) {
+        const newline = buffer.indexOf("\n");
+        if (newline !== -1) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          if (line !== "") return JSON.parse(line);
+        }
+        const { value, done } = await reader.read();
+        if (done) return null;
+        buffer += decoder.decode(value, { stream: true });
+      }
+    },
+    close: () => controller.abort(),
+  };
+}
+
+test("the event stream greets a tab, supersedes the older one and is capped", async () => {
+  const opened = await post("/api/sessions", { file: fixture });
+  const first = await eventStream(`/api/${opened.key}/events`);
+  assert.equal(first.contentType, "application/x-ndjson; charset=utf-8");
+  assert.deepEqual(await first.next(), {
+    type: "hello",
+    revision: 0,
+    presence: { state: "waiting" },
+    ended: null,
+  });
+  const second = await eventStream(`/api/${opened.key}/events`);
+  assert.equal((await second.next()).type, "hello");
+  assert.deepEqual(await first.next(), { type: "superseded" });
+
+  const rest = [];
+  while (rest.length + 2 < limits.eventStreams) {
+    rest.push(await eventStream(`/api/${opened.key}/events`));
+  }
+  const overflow = await eventStream(`/api/${opened.key}/events`);
+  assert.equal(overflow.status, 429, `the ${limits.eventStreams + 1}th stream is refused`);
+  for (const stream of [first, second, ...rest]) stream.close();
+  assert.equal(await status(`/api/0000000000000000/events`, { headers }), 404);
+});
+
+test("the reviewer ends the review with the queue attached, and only a reopen revives it", async () => {
+  const opened = await post("/api/sessions", { file: fixture });
+  const ended = await post(
+    `/api/${opened.key}/end`,
+    {
+      by: "user",
+      prompts: [{ prompt: "One last thing", selector: "#title", tag: "h1", text: "Rollout" }],
+    },
+    { origin: base },
+  );
+  assert.deepEqual(ended, { status: "ended", ended_by: "user", queued: 1 });
+  const last = await get(`/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=1000`);
+  assert.equal(last.status, "feedback");
+  assert.equal(last.session_ended, true);
+  assert.equal(last.prompts[0].prompt, "One last thing");
+  assert.deepEqual(await get(`/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=1000`), {
+    status: "ended",
+    ended_by: "user",
+  });
+  assert.equal((await post("/api/sessions", { file: fixture })).status, "user-ended");
+  assert.equal((await post("/api/sessions", { file: fixture, reopen: true })).status, "opened");
+  assert.equal((await get(`/api/${opened.key}/session`)).ended, null);
+
+  // An agent that ended its own review needs no ceremony to come back.
+  await post(`/api/${opened.key}/end`, { by: "agent" }, { origin: base });
+  assert.equal((await post("/api/sessions", { file: fixture })).status, "opened");
+  assert.equal(
+    await status(`/api/${opened.key}/end`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ by: "nobody" }),
+    }),
+    400,
+  );
+});
+
+test("an idle server stops itself, unless a review tab is open", async () => {
   let idled = false;
   const short = await serve({
     stateDir: mkdtempSync(join(tmpdir(), "pb-idle-")),
@@ -218,4 +310,28 @@ test("an idle server stops itself", async () => {
   await new Promise((r) => setTimeout(r, 150));
   assert.equal(idled, true);
   await assert.rejects(fetch(`http://127.0.0.1:${short.port}/health`));
+
+  const held = await serve({
+    stateDir: mkdtempSync(join(tmpdir(), "pb-held-")),
+    idleMs: 60,
+    onIdle: () => assert.fail("a server with an open tab must not idle out"),
+  });
+  const info = { authorization: `Bearer ${held.token}`, "content-type": "application/json" };
+  const session = await fetch(`http://127.0.0.1:${held.port}/api/sessions`, {
+    method: "POST",
+    headers: info,
+    body: JSON.stringify({ file: fixture }),
+  }).then((r) => r.json());
+  const watching = new AbortController();
+  await fetch(`http://127.0.0.1:${held.port}/api/${session.key}/events`, {
+    headers: info,
+    signal: watching.signal,
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(
+    (await fetch(`http://127.0.0.1:${held.port}/health`).then((r) => r.json())).ok,
+    true,
+  );
+  watching.abort();
+  await held.close();
 });
