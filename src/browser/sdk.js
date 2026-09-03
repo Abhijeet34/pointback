@@ -55,8 +55,11 @@
     if (data?.type === "init") {
       nonce = data.nonce;
       // A reload replaces the document, so the chrome hands back where the reviewer was reading.
-      if (data.scroll) window.scrollTo(data.scroll.x, data.scroll.y);
+      if (data.scroll) restoreScroll(data.scroll);
       setAnnotate(data.annotate);
+      // The chrome counts the page shown only once it has finished loading, been put back where
+      // the reviewer was, and become annotatable; anything earlier is a page still moving.
+      whenLoaded(() => send({ type: "shown" }));
     } else if (data?.nonce === nonce && data.type === "annotate") {
       setAnnotate(data.on);
       // The chrome cannot otherwise know when this arrived: it posts into a
@@ -65,6 +68,19 @@
       send({ type: "annotate-ok", on: data.on });
     }
   });
+
+  function whenLoaded(then) {
+    if (document.readyState === "complete") then();
+    else window.addEventListener("load", then, { once: true });
+  }
+
+  // Layout can still grow after this script runs, which clamps an early scroll short of where
+  // the reviewer was; the second pass at load lands it.
+  function restoreScroll(to) {
+    const apply = () => window.scrollTo(to.x, to.y);
+    apply();
+    whenLoaded(apply);
+  }
 
   function candidate(node) {
     let element = node instanceof Element ? node : node?.parentElement;

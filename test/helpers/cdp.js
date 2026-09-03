@@ -63,7 +63,7 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
         targetId,
         flatten: true,
       });
-      const page = new Page(browser, sessionId);
+      const page = new Page(browser, sessionId, targetId);
       await page.send("Page.enable");
       await page.send("Runtime.enable");
       await page.send("Emulation.setDeviceMetricsOverride", {
@@ -120,9 +120,19 @@ function connect(url) {
 }
 
 class Page {
-  constructor(browser, sessionId) {
+  constructor(browser, sessionId, targetId) {
     this.browser = browser;
     this.sessionId = sessionId;
+    this.targetId = targetId;
+  }
+
+  /** Chromium starves a background tab's queued tasks, so a test drives the tab a reviewer sees. */
+  front() {
+    return this.send("Page.bringToFront");
+  }
+
+  close() {
+    return this.browser.send("Target.closeTarget", { targetId: this.targetId });
   }
 
   send(method, params) {

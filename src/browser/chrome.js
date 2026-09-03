@@ -44,6 +44,7 @@ let lastScroll = null;
 let workingTimer = null;
 let stream = null;
 let retaking = false;
+let problem = null;
 
 const api = (method, path, body) =>
   fetch(path, {
@@ -194,19 +195,22 @@ function render() {
       : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
   annotateSwitch.disabled = ended !== null;
   endButton.disabled = ended !== null;
-  statusLine.textContent = ended
-    ? count === 0
-      ? "Nothing more can be sent from this page."
-      : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
-    : working
-      ? "Your agent is working on your last notes. Send opens again when it comes back."
-      : deferredReload
-        ? "The file changed. This page updates as soon as you finish this note."
-        : chat.length === 0 && count === 0
-          ? "Turn on Annotate, then click an element or Tab to it and press Enter to leave a note."
-          : count === 0
-            ? "Every note has been sent."
-            : `${count} not sent yet.`;
+  // A failure the reviewer needs to see outlives the render that would otherwise write over it.
+  statusLine.textContent = problem
+    ? problem
+    : ended
+      ? count === 0
+        ? "Nothing more can be sent from this page."
+        : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
+      : working
+        ? "Your agent is working on your last notes. Send opens again when it comes back."
+        : deferredReload
+          ? "The file changed. This page updates as soon as you finish this note."
+          : chat.length === 0 && count === 0
+            ? "Turn on Annotate, then click an element or Tab to it and press Enter to leave a note."
+            : count === 0
+              ? "Every note has been sent."
+              : `${count} not sent yet.`;
 }
 
 function renderPresence() {
@@ -293,15 +297,14 @@ window.addEventListener("message", (event) => {
     nonce = crypto.randomUUID();
     post({ type: "init", annotate, scroll: lastScroll });
     document.body.dataset.ready = "1";
-    document.body.dataset.revision = String(shownRevision);
     return;
   }
   if (data?.nonce !== nonce) return;
   if (data.type === "annotate-ok") {
     document.body.dataset.annotate = data.on ? "1" : "0";
-    return;
-  }
-  if (data.type === "queue") {
+  } else if (data.type === "shown") {
+    document.body.dataset.revision = String(shownRevision);
+  } else if (data.type === "queue") {
     pending.push({ prompt: data.prompt.prompt, target: data.prompt });
     savePending();
     render();
@@ -338,6 +341,7 @@ endDialog.addEventListener("close", async () => {
   const choice = endDialog.returnValue;
   if (choice !== "end" && choice !== "discard") return;
   const sending = choice === "end" ? pending : [];
+  problem = null;
   try {
     await api("POST", `/api/${key}/end`, {
       by: "user",
@@ -349,7 +353,7 @@ endDialog.addEventListener("close", async () => {
     ended = { by: "user" };
     setAnnotate(false);
   } catch (error) {
-    statusLine.textContent = `Could not end the review: ${error.message}`;
+    problem = `Could not end the review: ${error.message}`;
   }
   render();
 });
@@ -359,6 +363,7 @@ document.getElementById("sendForm").addEventListener("submit", async (event) => 
   if (pending.length === 0) return;
   sendButton.disabled = true;
   sendButton.textContent = "Sending…";
+  problem = null;
   try {
     const prompts = pending.map((entry) => ({ ...entry.target, prompt: entry.prompt }));
     await api("POST", `/api/${key}/prompts`, { prompts });
@@ -367,9 +372,9 @@ document.getElementById("sendForm").addEventListener("submit", async (event) => 
     chat = (await api("GET", `/api/${key}/session`)).chat;
     render();
   } catch (error) {
-    statusLine.textContent = `Could not send: ${error.message}`;
-    render();
+    problem = `Could not send: ${error.message}`;
   }
+  render();
 });
 
 boot();

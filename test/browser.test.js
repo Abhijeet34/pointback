@@ -2,6 +2,9 @@
 // send, and have a separate poll return the notes with their anchors. Runs in a real
 // headless browser through DevTools; no browser means a loud skip, never a silent pass.
 import assert from "node:assert/strict";
+import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { envPrefix } from "../src/identity.js";
 import { findBrowser, launchBrowser } from "./helpers/cdp.js";
@@ -88,6 +91,18 @@ test(
     assert.equal(polled.prompts[0].text, "Rollout plan for the queue worker");
     assert.ok(roundTripMs < 5000, `send to poll return took ${roundTripMs} ms`);
 
+    // The agent has the batch and has not answered: the reviewer sees that, with the clock running.
+    await page.waitFor("document.getElementById('presence').dataset.state === 'working'");
+    assert.match(
+      await page.eval("document.getElementById('presenceText').textContent"),
+      /^Working \d+:\d\d$/,
+    );
+    assert.equal(
+      await page.eval("document.getElementById('send').textContent"),
+      "Agent is working…",
+    );
+    assert.equal(await page.eval("document.getElementById('send').disabled"), true);
+
     await page.waitFor(
       "document.querySelectorAll('.mark.sent').length === 2 && document.querySelectorAll('.mark:not(.sent)').length === 0",
     );
@@ -111,5 +126,99 @@ test(
     const page = await browser.page(opened.session.url.replace(/#.*$/, "#wrongtoken"));
     const text = await page.waitFor("document.getElementById('status').textContent");
     assert.match(text, /no longer works/);
+  },
+);
+
+/**
+ * A private copy of the fixture a test can save over, tall enough to scroll and ending in a
+ * block deep enough that a click near the foot of the frame can only have landed in it.
+ */
+function copyOfFixture() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-live-"));
+  const file = join(dir, "plan.html");
+  copyFileSync(join(dirname(fixture), "plan.css"), join(dir, "plan.css"));
+  const html = readFileSync(fixture, "utf8").replace(
+    "</main>",
+    `${"<p>filler</p>".repeat(60)}<style>#tail{display:block;min-height:200px;margin:0}</style>` +
+      `<p id="tail">Bottom of the plan</p></main>`,
+  );
+  writeFileSync(file, html);
+  return { file, html };
+}
+
+test(
+  "a save reloads the open page, keeps the reviewer's place, and the notes follow the new text",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const page = await browser.page(session.url);
+    await page.waitFor("document.body.dataset.ready === '1'");
+    assert.equal(await page.eval("document.body.dataset.revision"), "0");
+    assert.equal(await page.eval("document.getElementById('presence').dataset.state"), "waiting");
+
+    // Read to the bottom, then save: the page must come back at the bottom, not at the top.
+    const rect = JSON.parse(
+      await page.eval(
+        "JSON.stringify(document.getElementById('artifact').getBoundingClientRect())",
+      ),
+    );
+    await page.click(rect.left + 40, rect.top + rect.height - 34);
+    await page.key("End", { keyCode: 35 });
+    await new Promise((r) => setTimeout(r, 300));
+
+    const savedAt = Date.now();
+    writeFileSync(file, html.replace("Bottom of the plan", "Bottom of the revised plan"));
+    await page.waitFor("document.body.dataset.revision === '1'");
+    const reloadMs = Date.now() - savedAt;
+    assert.ok(reloadMs < 3000, `reload took ${reloadMs} ms`);
+
+    await page.eval("document.getElementById('annotate').click()");
+    await page.click(rect.left + 40, rect.top + rect.height - 34);
+    await page.type("Cut this line");
+    await page.enter();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    assert.equal(
+      await page.eval("document.querySelector('.mark:not(.sent) .mark-text').textContent"),
+      "Bottom of the revised plan",
+      "the note lands on the saved text at the place the reviewer was reading",
+    );
+
+    // A second tab takes the review; the first says so at once rather than at the next save.
+    const second = await browser.page(session.url);
+    await second.waitFor("document.body.dataset.ready === '1'");
+    const handover = await page.waitFor(
+      "document.getElementById('notice').hidden ? '' : document.getElementById('noticeText').textContent",
+    );
+    assert.match(handover, /Another tab took over/);
+    await page.eval("document.getElementById('takeOver').click()");
+    await second.waitFor(
+      "!document.getElementById('notice').hidden && document.getElementById('noticeText').textContent.includes('took over')",
+    );
+    await page.waitFor("document.getElementById('notice').hidden");
+    await second.close();
+    await page.front();
+
+    // Ending with a note still queued offers to send it, and the agent gets it as the last batch.
+    await page.eval("document.getElementById('end').click()");
+    assert.equal(await page.eval("document.getElementById('endDialog').open"), true);
+    assert.match(
+      await page.eval("document.getElementById('endText').textContent"),
+      /One note is still waiting/,
+    );
+    const polling = cli(["poll", file, "--timeout-ms", "10000"], lab.env);
+    await new Promise((r) => setTimeout(r, 300));
+    await page.eval("document.getElementById('endGo').click()");
+    const polled = (await polling).json();
+    assert.equal(polled.status, "feedback");
+    assert.equal(polled.session_ended, true);
+    assert.equal(polled.prompts[0].prompt, "Cut this line");
+    assert.match(polled.next_step, /stop polling/);
+    await page.waitFor(
+      "document.getElementById('noticeText').textContent === 'You ended this review.'",
+    );
+    assert.equal(await page.eval("document.getElementById('annotate').disabled"), true);
+    assert.equal(await page.eval("document.querySelectorAll('.mark:not(.sent)').length"), 0);
+    console.log(`browser lifecycle: file save to reloaded page ${reloadMs} ms`);
   },
 );
