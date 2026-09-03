@@ -28,3 +28,4 @@ jobs:
             -f ref="refs/tags/${TAG}" -f sha="${GITHUB_SHA}"
 
 # probe run 2: candidate A (creation+update+deletion, no bypass)
+# probe run 3: candidate B (update+deletion, no bypass)
