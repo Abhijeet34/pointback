@@ -161,20 +161,96 @@ test("pending prompts, chat entries and sessions are capped", () => {
   );
 });
 
-test("a poller wakes on feedback, times out to null, and a losing poller keeps waiting", async () => {
+test("a poller wakes on feedback, times out to waiting, and a losing poller keeps waiting", async () => {
   const { file, artifact } = lab();
   const store = new SessionStore(file);
   const { key } = store.open(artifact);
-  assert.equal(await store.waitForFeedback(key, 20), null);
+  assert.deepEqual(await store.waitForFeedback(key, 20), { status: "waiting" });
   const first = store.waitForFeedback(key, 5000);
   const second = store.waitForFeedback(key, 100);
   store.queue(key, [prompt()]);
-  assert.equal((await first).length, 1);
-  assert.equal(await second, null);
+  assert.equal((await first).prompts.length, 1);
+  assert.deepEqual(await second, { status: "waiting" });
   const aborted = new AbortController();
   const third = store.waitForFeedback(key, 5000, aborted.signal);
   aborted.abort();
   assert.equal(await third, null);
+});
+
+test("presence follows the polls: waiting, listening, working, and back after the bound", async (t) => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  const seen = [];
+  store.on(key, (event) => event.type === "presence" && seen.push(event.state));
+  assert.deepEqual(store.presence(key), { state: "waiting" });
+  const poll = store.waitForFeedback(key, 5000);
+  assert.deepEqual(store.presence(key), { state: "listening" });
+  store.queue(key, [prompt()]);
+  await poll;
+  assert.equal(store.presence(key).state, "working");
+  assert.match(store.presence(key).since, /^\d{4}-/);
+  assert.equal(store.status(key).presence.state, "working");
+  // A second poll while working is the agent coming back: listening again, then waiting on timeout.
+  await store.waitForFeedback(key, 10);
+  assert.deepEqual(store.presence(key), { state: "waiting" });
+  // Feedback taken at once (no attach) still counts as working, and working ages out on its own.
+  store.queue(key, [prompt()]);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await store.waitForFeedback(key, 10);
+  assert.equal(store.presence(key).state, "working");
+  t.mock.timers.tick(limits.workingMaxMs);
+  assert.deepEqual(store.presence(key), { state: "waiting" });
+  t.mock.timers.reset();
+  assert.deepEqual(seen, ["listening", "working", "listening", "waiting", "working", "waiting"]);
+});
+
+test("a file change bumps the revision, persists it and is announced", () => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  const events = [];
+  store.on(key, (event) => events.push(event));
+  assert.equal(store.bumpRevision(key), 1);
+  assert.equal(store.bumpRevision(key), 2);
+  assert.deepEqual(events, [
+    { type: "reload", revision: 1 },
+    { type: "reload", revision: 2 },
+  ]);
+  assert.equal(new SessionStore(file).status(key).revision, 2);
+});
+
+test("ending queues the last prompts in the same step, wakes a waiting poll, and reopens", async () => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  assert.throws(
+    () => store.end(key, "user", [{ ...prompt(), prompt: "" }]),
+    (e) => e.status === 400,
+  );
+  assert.equal(store.status(key).ended, null, "a refused prompt does not end the session");
+  const events = [];
+  store.on(key, (event) => events.push(event.type));
+  assert.deepEqual(store.end(key, "user", [prompt("last")]), {
+    status: "ended",
+    ended_by: "user",
+    queued: 1,
+  });
+  assert.deepEqual(events, ["ended"]);
+  const final = await store.waitForFeedback(key, 5000);
+  assert.equal(final.status, "feedback");
+  assert.equal(final.prompts[0].prompt, "last");
+  assert.equal(final.session_ended, true);
+  assert.equal(final.ended_by, "user");
+  assert.deepEqual(await store.waitForFeedback(key, 5000), { status: "ended", ended_by: "user" });
+  assert.equal(store.presence(key).state, "waiting", "an ended session has no working agent");
+  assert.equal(new SessionStore(file).status(key).ended.by, "user");
+
+  store.reopen(key);
+  assert.equal(store.status(key).ended, null);
+  const waiting = store.waitForFeedback(key, 5000);
+  store.end(key, "agent");
+  assert.deepEqual(await waiting, { status: "ended", ended_by: "agent" });
 });
 
 test("concurrent polls are capped", async () => {

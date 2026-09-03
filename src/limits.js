@@ -8,7 +8,10 @@ export const limits = Object.freeze({
   promptTextChars: 20_000,
   sessions: 64,
   concurrentPolls: 32,
+  eventStreams: 64,
   pollTimeoutDefaultMs: 60_000,
   pollTimeoutMaxMs: 600_000,
+  // An agent that took feedback and never came back must not hold the reviewer's Send forever.
+  workingMaxMs: 3 * 60_000,
   idleShutdownMs: 30 * 60_000,
 });
