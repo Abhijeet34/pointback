@@ -30,7 +30,8 @@ jobs:
   test:
     name: ${{ matrix.os }} / node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # A backstop the step timeout below should always reach first.
+    timeout-minutes: 20
     strategy:
       # One red platform should not hide the state of the others.
       fail-fast: false
@@ -72,9 +73,21 @@ jobs:
         env:
           BROWSER_PATH: ${{ matrix.browser }}
         run: |
+          set -euo pipefail
+          # Existence, not `--version`: chrome.exe on Windows has no console to
+          # print to and opens a window instead, which is the hazard this whole
+          # change is about. A runner image that dropped Chrome fails here.
+          [ -e "$BROWSER_PATH" ] || {
+            echo "::error::no browser at $BROWSER_PATH on ${{ matrix.os }}" >&2
+            exit 1
+          }
           node --input-type=module -e '
             import { envPrefix } from "./src/identity.js";
             console.log(`${envPrefix}BROWSER=${process.env.BROWSER_PATH}`);
           ' >> "$GITHUB_ENV"
 
-      - run: npm run check
+      # The same bound as ci.yml, doubled: these runners are slower, and a macOS
+      # minute costs about ten Linux ones, so a hang here is the expensive one.
+      - name: check
+        timeout-minutes: 12
+        run: npm run check

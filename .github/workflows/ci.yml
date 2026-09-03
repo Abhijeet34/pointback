@@ -35,7 +35,11 @@ jobs:
     name: check
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # A backstop, never the mechanism. A job that outlives this is reported
+    # `cancelled`, which carries no verdict and which the `checks` aggregate can
+    # only refuse; the steps below therefore end themselves first. Ten minutes
+    # against a run that takes about thirty seconds.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -59,13 +63,37 @@ jobs:
       # variable's name is derived, not typed, because the product name is a
       # parameter (src/identity.js, AGENTS.md).
       - name: Point the browser suite at the runner's Chrome
+        env:
+          BROWSER_PATH: /usr/bin/google-chrome
         run: |
+          set -euo pipefail
+          # Asked of the binary before the suite needs it, so a runner image that
+          # dropped Chrome says so here in one second instead of inside a test.
+          "$BROWSER_PATH" --version
           node --input-type=module -e '
             import { envPrefix } from "./src/identity.js";
-            console.log(`${envPrefix}BROWSER=/usr/bin/google-chrome`);
+            console.log(`${envPrefix}BROWSER=${process.env.BROWSER_PATH}`);
           ' >> "$GITHUB_ENV"
 
-      - run: npm run check
+      # The suite bounds its own waits, so this budget should never be reached;
+      # when it is, a step timeout fails the step and the job reports `failure`,
+      # where the job's own timeout reports `cancelled` and says nothing.
+      - name: check
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          npm run check 2>&1 | tee "$RUNNER_TEMP/check.log"
+
+      # Whether the only end-to-end coverage ran is not something a reader should
+      # have to infer from a green tick, so the suite's own verdict line is lifted
+      # out of the log and into the summary - including when the step above failed.
+      - name: Say whether the browser case ran
+        if: always()
+        run: |
+          set -uo pipefail
+          verdict=$(grep -m1 '^browser suite' "$RUNNER_TEMP/check.log" 2>/dev/null || true)
+          echo "${verdict:-browser suite: no verdict, the run ended before the suite reached it}" \
+            >> "$GITHUB_STEP_SUMMARY"
 
   # Not a call to automation's shared-secret-scan.yml, which is the fleet
   # canonical and what every private sibling uses. GitHub's reusable-workflow

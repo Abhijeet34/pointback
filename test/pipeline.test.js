@@ -30,6 +30,33 @@ test("a pull request runs Linux runners only", () => {
   assert.match(workflows["cross-platform.yml"], /^\s*workflow_dispatch:/m);
 });
 
+// A step that outlives its own budget fails the step, and the job reports a verdict a
+// reader and the `checks` aggregate can both act on. A job that outlives timeout-minutes
+// is reported `cancelled`, which carries no verdict at all: that is how run 33788793925
+// spent twenty runner-minutes and told nobody what broke.
+test("the step that runs the suite ends itself before its job's backstop does", () => {
+  const steps = (text) => text.split(/\n {6}- /).slice(1);
+  for (const file of ["ci.yml", "cross-platform.yml"]) {
+    const running = steps(workflows[file]).filter((step) => /npm run check/.test(step));
+    assert.equal(running.length, 1, `${file}: expected exactly one step to run the suite`);
+    const step = Number(running[0].match(/timeout-minutes: (\d+)/)?.[1]);
+    const job = Number(workflows[file].match(/^ {4}timeout-minutes: (\d+)$/m)?.[1]);
+    assert.ok(step > 0, `${file}: the step that runs the suite carries no timeout-minutes`);
+    assert.ok(
+      step < job,
+      `${file}: the step's ${step} min budget must land inside the job's ${job}`,
+    );
+  }
+});
+
+test("a leaked handle cannot turn a finished suite into a hung job", () => {
+  // Measured on Node 24.11.1: `node --test --test-timeout=3000` over a file that leaks a
+  // child process runs until something outside kills it, because a per-test timeout does
+  // not close a handle; --test-force-exit ended the identical run in 0.13 s.
+  assert.match(pkg.scripts.test, /--test-force-exit/);
+  assert.match(pkg.scripts.test, /--test-timeout=\d+/);
+});
+
 test("the release and scheduled paths never cancel a run in flight", () => {
   for (const file of ["release.yml", "cross-platform.yml"]) {
     assert.doesNotMatch(directives(workflows[file]), /cancel-in-progress/, file);
