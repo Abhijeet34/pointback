@@ -352,9 +352,18 @@ test(
         "JSON.stringify(document.getElementById('artifact').getBoundingClientRect())",
       ),
     );
-    await page.click(rect.left + 40, rect.top + rect.height - 34);
-    await page.key("End", { keyCode: 35 });
-    await new Promise((r) => setTimeout(r, 300));
+    // The reviewer reads to the bottom, driven through the artifact's own session. Synthetic
+    // input is the wrong instrument here: a key goes to whichever frame holds focus, and a
+    // wheel goes to the frame under the point only once the browser holds that out-of-process
+    // frame's hit-test region - measured, a wheel re-sent for ten seconds still left scrollY
+    // at 0 about once in forty runs, and the fixed pause this replaces left the page at the
+    // top often enough to fail in CI, anchoring the note to whatever the foot of the frame
+    // happened to show. Clicking and typing into the frame stays covered by the annotation
+    // test above; this one is about the page coming back where the reviewer was.
+    const artifact = await page.frame();
+    await artifact.eval("window.scrollTo(0, document.documentElement.scrollHeight)");
+    // Then wait for that place to reach the chrome, which is what a reload restores from.
+    await page.waitFor("Number(document.body.dataset.scroll) > 0");
 
     // Five saves in a row, timed from the write to the page being parsed, placed and annotatable.
     const latencies = [];

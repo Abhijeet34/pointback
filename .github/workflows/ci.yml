@@ -97,13 +97,13 @@ jobs:
           echo "${verdict:-browser suite: no verdict, the run ended before the suite reached it}" \
             >> "$GITHUB_STEP_SUMMARY"
 
-  # Not a call to automation's shared-secret-scan.yml, which is the fleet
-  # canonical and what every private sibling uses. GitHub's reusable-workflow
-  # access table permits a private caller to use a private or a public workflow
-  # and a PUBLIC caller only a public one, so this repository cannot reach it
-  # while automation is private (docs/GIT-WORKFLOW.md records the check and the
-  # day it stops being needed). The two SYNCED files are still canonical and
-  # pinned below; only this body is local.
+  # A local body rather than a call to the shared secret-scan workflow this
+  # gate's upstream publishes. GitHub's reusable-workflow access table permits a
+  # private caller to use a private or a public workflow and a PUBLIC caller
+  # only a public one, so a public repository cannot reach a workflow in a
+  # private one (docs/GIT-WORKFLOW.md records the check and the day it stops
+  # being needed). The two SYNCED files are still canonical and pinned below;
+  # only this body is local.
   secret-scan:
     name: secret scan
     runs-on: ubuntu-24.04
@@ -111,9 +111,9 @@ jobs:
     env:
       GITLEAKS_VERSION: "8.30.1"
       GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
-      # `.ci/gitleaks/sync.sh --digest config` and `--digest hook` in automation
-      # print these. A copy that drifts from canonical fails here, which is the
-      # intended direction: the fix is to re-run sync.sh, never to edit the file.
+      # The canonical upstream copies of these two files print their own
+      # digests. A copy that drifts from canonical fails here, which is the
+      # intended direction: the fix is to re-sync, never to edit the file.
       CONFIG_SHA256: "e5adcb3ceaf8a1645a5924bda7aebfb49903bb9c4b411a3b8c0690960a1f30dd"
       HOOK_SHA256: "0bc282dcd6fe93ce88ca09fa73cf713bb00be61650c4c1352eef7c41b61fbd92"
     steps:
@@ -139,13 +139,13 @@ jobs:
           rc=0
           pinned() {
             if [ ! -r "$1" ]; then
-              echo "::error::$1 is missing, so this repository is not carrying the canonical gate. Re-run automation's .ci/gitleaks/sync.sh." >&2
+              echo "::error::$1 is missing, so this repository is not carrying the canonical gate. Re-sync it from the canonical upstream copy." >&2
               rc=1
               return
             fi
             actual=$(sha256sum "$1" | cut -d' ' -f1)
             if [ "$actual" != "$2" ]; then
-              echo "::error::$1 has drifted from automation's canonical copy (pinned $2, found $actual). Re-run automation's .ci/gitleaks/sync.sh." >&2
+              echo "::error::$1 has drifted from the canonical upstream copy (pinned $2, found $actual). Re-sync it rather than editing it here." >&2
               rc=1
             fi
           }
@@ -156,7 +156,8 @@ jobs:
           # says nothing, so a byte-perfect hook committed 100644 reads exactly
           # like a hook that found nothing. The mode is tracked, so CI sees it.
           # The other inertness, core.hooksPath unset in a clone, is repository
-          # config no checkout carries; only sync.sh --check reaches it.
+          # config no checkout carries; only the upstream sync's own check
+          # mode reaches it.
           if [ -r .githooks/pre-push ] && [ ! -x .githooks/pre-push ]; then
             echo "::error::.githooks/pre-push is not executable, so git will never run it. chmod +x and commit the mode." >&2
             rc=1

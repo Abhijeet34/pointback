@@ -88,16 +88,16 @@ This applies to the web UI and the API as well, which sign with GitHub's own key
 
 The gate is `.githooks/pre-push`, which refuses a push before anything reaches the remote.
 The rules are `.gitleaks.toml`.
-**Both files are canonical copies owned by the `automation` repository and are never hand-edited here.**
-Install or re-sync them, which also points `core.hooksPath` at `.githooks`, without which a byte-perfect hook is inert:
+**Both files are copies of one canonical gate maintained in a private upstream repository shared across its siblings, and are never hand-edited here.**
+A change belongs upstream and reaches this tree as a re-sync.
+The hook is also inert until the clone points at it, which no checkout does for you and which the sync does as its last step:
 
 ```sh
-/Users/abhijeet/Developer/automation/.ci/gitleaks/sync.sh /path/to/pointback
-/Users/abhijeet/Developer/automation/.ci/gitleaks/sync.sh --check /path/to/pointback
+git config core.hooksPath .githooks
 ```
 
 CI is the backstop, not the gate: the `secret scan` job in `ci.yml` re-reads the full history weekly, because history does not change between runs but gitleaks' rule set does.
-It pins the SHA-256 of both synced files, so a drifted copy fails the job and the fix is to re-run `sync.sh`, never to edit the file.
+It pins the SHA-256 of both synced files, so a drifted copy fails the job and the fix is to re-sync from upstream, never to edit the file.
 
 That job is a local body rather than a call to `automation`'s `shared-secret-scan.yml`, which every private sibling uses.
 GitHub's reusable-workflow access table permits a private caller to use a workflow from a private or a public repository and permits a **public** caller only a public one, so a public repository cannot reach a workflow in a private one.
@@ -230,16 +230,16 @@ On the GitHub side a release can be marked pre-release or deleted, but the tag s
 
 ## Applying the settings that are not files
 
-The day the repository exists, one command.
+These settings are applied; one command re-applies them, which is also how a setting changed in the web UI is put back.
 Everything it sends is a setting, not a credential, and every value it sends is a file in this repository: `.github/rulesets/main.json`, `.github/rulesets/tags.json`, and the three exports under `.github/settings/`.
 
 ```sh
 REPO=OWNER/pointback
 scripts/apply-repo-settings.sh "$REPO"
 
-# Install the secret-scan gate in the clone. CI checks the files; only this
-# checks core.hooksPath, which no checkout carries.
-/Users/abhijeet/Developer/automation/.ci/gitleaks/sync.sh .
+# Install the secret-scan gate in the clone. CI checks the file contents; only
+# this points git at the hook, which no checkout carries.
+git config core.hooksPath .githooks
 ```
 
 It is idempotent: a ruleset whose name already exists is updated in place, so re-run it after editing any of those files rather than deleting and recreating a ruleset.
