@@ -138,6 +138,7 @@ document.getElementById("sendForm").addEventListener("submit", async (event) => 
   event.preventDefault();
   if (pending.length === 0) return;
   sendButton.disabled = true;
+  sendButton.textContent = "Sending…";
   try {
     const prompts = pending.map((entry) => ({ ...entry.target, prompt: entry.prompt }));
     await api("POST", `/api/${key}/prompts`, { prompts });
@@ -147,7 +148,7 @@ document.getElementById("sendForm").addEventListener("submit", async (event) => 
     render();
   } catch (error) {
     statusLine.textContent = `Could not send: ${error.message}`;
-    sendButton.disabled = false;
+    render();
   }
 });
 
