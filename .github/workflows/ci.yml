@@ -1,0 +1,232 @@
+name: CI
+
+# Every job a merge depends on lives in this one file, because the `checks`
+# aggregate at the bottom can only `needs:` jobs in its own workflow. The branch
+# ruleset (.github/rulesets/main.json) requires exactly that one context, so jobs
+# here can be added, renamed or path-scoped without touching branch protection.
+#
+# Linux only, deliberately: macOS and Windows run weekly and on the release path
+# in cross-platform.yml. AGENTS.md, "CI runner platforms", states the rule and
+# docs/GIT-WORKFLOW.md prices it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The history does not change between two runs of the secret scan; gitleaks'
+  # rule set does. The weekly run is that re-scan, and nothing else here needs it.
+  schedule:
+    - cron: "19 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  # A superseded pull request run is noise. A superseded push run on main is the
+  # only record that the merged commit was ever green.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+# Third-party actions are pinned to a commit SHA, never a tag: a tag can be
+# repointed at new code by whoever owns the action. Dependabot's grouped
+# github-actions update (.github/dependabot.yml) moves these pins.
+jobs:
+  check:
+    name: check
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      # Ubuntu 24.04 confines unprivileged user namespaces with AppArmor, which
+      # is the mechanism Chrome's own sandbox uses; without this the browser
+      # suite dies on "No usable sandbox!". Lifting the confinement keeps that
+      # sandbox switched on, where the usual --no-sandbox workaround turns it off.
+      - name: Let Chrome's sandbox start
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # Naming the binary rather than letting the suite discover one: on a runner
+      # with no browser the suite skips itself and the job still goes green, and a
+      # silent skip of the only end-to-end coverage is worse than a red job. The
+      # variable's name is derived, not typed, because the product name is a
+      # parameter (src/identity.js, AGENTS.md).
+      - name: Point the browser suite at the runner's Chrome
+        run: |
+          node --input-type=module -e '
+            import { envPrefix } from "./src/identity.js";
+            console.log(`${envPrefix}BROWSER=/usr/bin/google-chrome`);
+          ' >> "$GITHUB_ENV"
+
+      - run: npm run check
+
+  # Not a call to automation's shared-secret-scan.yml, which is the fleet
+  # canonical and what every private sibling uses. GitHub's reusable-workflow
+  # access table permits a private caller to use a private or a public workflow
+  # and a PUBLIC caller only a public one, so this repository cannot reach it
+  # while automation is private (docs/GIT-WORKFLOW.md records the check and the
+  # day it stops being needed). The two SYNCED files are still canonical and
+  # pinned below; only this body is local.
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+      # `.ci/gitleaks/sync.sh --digest config` and `--digest hook` in automation
+      # print these. A copy that drifts from canonical fails here, which is the
+      # intended direction: the fix is to re-run sync.sh, never to edit the file.
+      CONFIG_SHA256: "e5adcb3ceaf8a1645a5924bda7aebfb49903bb9c4b411a3b8c0690960a1f30dd"
+      HOOK_SHA256: "0bc282dcd6fe93ce88ca09fa73cf713bb00be61650c4c1352eef7c41b61fbd92"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A credential that was committed and later deleted is still published,
+          # so the tip alone is not enough.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL "$url" -o gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          rm -f gitleaks gitleaks.tar.gz
+
+      - name: Verify this repository carries the canonical gate
+        run: |
+          set -uo pipefail
+          rc=0
+          pinned() {
+            if [ ! -r "$1" ]; then
+              echo "::error::$1 is missing, so this repository is not carrying the canonical gate. Re-run automation's .ci/gitleaks/sync.sh." >&2
+              rc=1
+              return
+            fi
+            actual=$(sha256sum "$1" | cut -d' ' -f1)
+            if [ "$actual" != "$2" ]; then
+              echo "::error::$1 has drifted from automation's canonical copy (pinned $2, found $actual). Re-run automation's .ci/gitleaks/sync.sh." >&2
+              rc=1
+            fi
+          }
+          pinned .gitleaks.toml "${CONFIG_SHA256:-}"
+          pinned .githooks/pre-push "${HOOK_SHA256:-}"
+
+          # Content alone is not the gate: git skips a non-executable hook and
+          # says nothing, so a byte-perfect hook committed 100644 reads exactly
+          # like a hook that found nothing. The mode is tracked, so CI sees it.
+          # The other inertness, core.hooksPath unset in a clone, is repository
+          # config no checkout carries; only sync.sh --check reaches it.
+          if [ -r .githooks/pre-push ] && [ ! -x .githooks/pre-push ]; then
+            echo "::error::.githooks/pre-push is not executable, so git will never run it. chmod +x and commit the mode." >&2
+            rc=1
+          fi
+          exit $rc
+
+      - name: Scan the working tree
+        run: gitleaks dir . --config .gitleaks.toml --no-banner --redact --log-level warn
+
+      - name: Scan the full history
+        run: |
+          set -uo pipefail
+          fail() {
+            echo "::error::$1 Could not establish that this history is clean." >&2
+            exit 1
+          }
+
+          # A shallow checkout scans the tip and pronounces the whole repository
+          # clean, which is the false verdict `fetch-depth: 0` exists to prevent.
+          # Assert it took effect rather than assume it.
+          [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = false ] \
+            || fail "The checkout is shallow, so the full history was never fetched."
+          expected=$(git rev-list --count --all) || fail "Cannot enumerate this repository's commits."
+
+          # Measured on gitleaks 8.30.1 and recorded in automation: a run that
+          # cannot read the repository logs an ERR, reports "0 commits scanned."
+          # and still exits 0, so the exit code alone fails open. --log-level
+          # info is what prints that count. `rc=$?` on its own line would never
+          # run: the runner's shell is `bash -e {0}` and would abort on the
+          # failing assignment, taking the step down before it printed anything.
+          rc=0
+          out=$(gitleaks git . --config .gitleaks.toml \
+            --no-banner --no-color --redact --log-level info 2>&1) || rc=$?
+          printf '%s\n' "$out"
+
+          printf '%s\n' "$out" | grep -q ' ERR ' \
+            && fail "gitleaks reported an error while reading the repository."
+          scanned=$(printf '%s\n' "$out" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) commits scanned\..*/\1/p' | tail -1)
+          [ -n "${scanned:-}" ] || fail "gitleaks did not report how many commits it scanned."
+
+          # Only that it read something, never that it read all $expected:
+          # gitleaks counts commits that contributed added content, so merges and
+          # empty commits are legitimately uncounted. Coverage is established by
+          # the shallow check above instead.
+          if [ "$expected" -gt 0 ] && [ "$scanned" -eq 0 ]; then
+            fail "gitleaks scanned 0 of the $expected commits in this repository."
+          fi
+
+          case $rc in
+            0) echo "scanned $scanned commits, no leaks found" ;;
+            1) echo "::error::Secrets found in this repository's history - rotate the credential first, rewriting history does not un-leak it." >&2
+               exit 1 ;;
+            *) fail "The scan did not complete (gitleaks exit $rc)." ;;
+          esac
+
+  # GitHub's own action, available here because the repository is public: it is
+  # "available for all public repositories, as well as private repositories that
+  # have GitHub Code Security or GitHub Advanced Security enabled". It reads the
+  # pull request's dependency diff, so it has nothing to say on a push.
+  dependency-review:
+    name: dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # This tree has one runtime dependency and six dev ones, so there is no
+          # backlog to grandfather and no reason to start above the floor.
+          fail-on-severity: low
+          # A dev dependency here is not "not shipped": src/browser/ is served to
+          # the reviewer's browser and the tests drive a real one. Scope is not a
+          # safety boundary in this repository.
+          fail-on-scopes: runtime, development
+          comment-summary-in-pr: on-failure
+
+  # The single required context. Everything above reaches branch protection
+  # through this job and nowhere else, so `if: always()` is load-bearing: without
+  # it a failed dependency would leave this job skipped, and a skipped required
+  # check is not a failing one.
+  checks:
+    name: checks
+    if: always()
+    needs: [check, secret-scan, dependency-review]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job that ran must have succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "results: $RESULTS"
+          # 'skipped' is accepted only because two jobs above skip themselves by
+          # event: dependency-review off a pull request, check on the schedule.
+          # No job here `needs:` another, so nothing else can produce it.
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::a required job reported '$result'" >&2; exit 1 ;;
+            esac
+          done

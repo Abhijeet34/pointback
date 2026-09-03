@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { env } from "../../src/identity.js";
 
 const KNOWN_BROWSERS = [
   "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
@@ -14,10 +15,12 @@ const KNOWN_BROWSERS = [
   "/usr/bin/chromium",
   "/usr/bin/chromium-browser",
   "/usr/bin/brave-browser",
+  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
 ];
 
 export function findBrowser(environment = process.env) {
-  const configured = environment.POINTBACK_BROWSER;
+  const configured = env("BROWSER", environment);
   if (configured) return configured === "none" ? null : configured;
   return KNOWN_BROWSERS.find((path) => existsSync(path)) ?? null;
 }

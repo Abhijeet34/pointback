@@ -1,0 +1,80 @@
+name: cross-platform
+
+# The macOS and Windows coverage that ci.yml deliberately does not carry.
+# AGENTS.md, "CI runner platforms": a pull request runs Linux only, because
+# GitHub bills a macOS minute at about 10x a Linux one and a Windows minute at
+# about 1.67x against the same allowance. This repository is public, so those
+# minutes are currently free (docs/GIT-WORKFLOW.md shows the arithmetic both
+# ways); the split still holds, because a three-OS matrix on every push costs
+# wall-clock and attention whatever it costs in dollars.
+#
+# What only these runners can find: the product spawns a detached server, hands
+# a URL to the platform's own opener (src/client.js), canonicalises artifact
+# paths and writes 0600 state. Those are the four things that differ per OS.
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+  # Called by release.yml before it publishes, so a release is never cut on
+  # evidence from one platform.
+  workflow_call:
+
+# No `concurrency` block at all: AGENTS.md forbids cancel-in-progress on a
+# scheduled or release workflow, and a superseded weekly run is the only record
+# of its own result.
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # One red platform should not hide the state of the others.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            node: "24"
+            browser: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+          - os: windows-2025
+            node: "24"
+            browser: C:\Program Files\Google\Chrome\Application\chrome.exe
+          # `engines.node` says ">=24" with no upper bound, and nothing else
+          # tests the upper half of that claim. Current Node on Linux is the
+          # cheapest leg that can, and it belongs here rather than in ci.yml: a
+          # Node release nobody asked for should not redden a pull request.
+          - os: ubuntu-24.04
+            node: "26"
+            browser: /usr/bin/google-chrome
+    defaults:
+      run:
+        # bash on all three, so one script body works everywhere; the Windows
+        # runner's default is pwsh.
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Let Chrome's sandbox start
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Point the browser suite at this runner's Chrome
+        env:
+          BROWSER_PATH: ${{ matrix.browser }}
+        run: |
+          node --input-type=module -e '
+            import { envPrefix } from "./src/identity.js";
+            console.log(`${envPrefix}BROWSER=${process.env.BROWSER_PATH}`);
+          ' >> "$GITHUB_ENV"
+
+      - run: npm run check

@@ -2,3 +2,8 @@ node_modules
 coverage
 package-lock.json
 .claude
+
+# Canonical copies from automation, installed by its .ci/gitleaks/sync.sh.
+# A formatter that reflows either one breaks the digest CI pins.
+.githooks
+.gitleaks.toml

@@ -3,6 +3,7 @@
 // headless browser through DevTools; no browser means a loud skip, never a silent pass.
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { envPrefix } from "../src/identity.js";
 import { findBrowser, launchBrowser } from "./helpers/cdp.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
 
@@ -23,7 +24,7 @@ after(async () => {
 
 test(
   "a reviewer annotates by mouse and by keyboard, sends, and the CLI returns it",
-  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
   async () => {
     const page = await browser.page(opened.session.url);
     const started = Date.now();
