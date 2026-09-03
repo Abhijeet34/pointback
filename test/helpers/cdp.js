@@ -18,6 +18,10 @@ const CONNECT_MS = 10_000;
 /** No DevTools command in this suite is slow; a reply that never comes is a dead browser. */
 const COMMAND_MS = 30_000;
 const TERMINATE_MS = 3000;
+/** A page that never fires its load event is a dead navigation, not a slow one. */
+const LOAD_MS = 15_000;
+/** The iframe attaches within a paint or two of the page requesting it. */
+const ATTACH_MS = 10_000;
 
 const KNOWN_BROWSERS = [
   "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
@@ -136,11 +140,9 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
       return page;
     },
     async close() {
-      // The reply to Browser.close races the browser's own exit, so the request is asked
-      // for and never waited on; the signals in discard() are what actually end it.
-      Promise.resolve()
-        .then(() => browser.send("Browser.close"))
-        .catch(() => {});
+      // The reply to Browser.close races the browser's own exit, so the request is sent
+      // and never waited on; the signals in discard() are what actually end it.
+      browser.send("Browser.close").catch(() => {});
       browser.socket.close();
       await discard();
     },
@@ -236,17 +238,23 @@ class Page {
   }
 
   loaded() {
-    return new Promise(
-      /** @param {(value?: unknown) => void} resolve */ (resolve) => {
-        const listener = (message) => {
-          if (message.sessionId === this.sessionId && message.method === "Page.loadEventFired") {
-            this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
-            resolve();
-          }
-        };
-        this.browser.listeners.push(listener);
-      },
-    );
+    return new Promise((resolve, reject) => {
+      const settle = (fn, value) => {
+        clearTimeout(timer);
+        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+        fn(value);
+      };
+      const listener = (message) => {
+        if (message.sessionId === this.sessionId && message.method === "Page.loadEventFired") {
+          settle(resolve);
+        }
+      };
+      const timer = setTimeout(
+        () => settle(reject, new Error(`waited ${LOAD_MS} ms for the page to fire its load event`)),
+        LOAD_MS,
+      );
+      this.browser.listeners.push(listener);
+    });
   }
 
   /** Evaluates an expression in the page's own (top) context and returns its JSON value. */
@@ -284,13 +292,21 @@ class Page {
    * an auto-attached session of its own. Input still goes to the page, in page coordinates.
    */
   async frame() {
-    const attached = new Promise((resolve) => {
+    const attached = new Promise((resolve, reject) => {
+      const settle = (fn, value) => {
+        clearTimeout(timer);
+        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+        fn(value);
+      };
       const listener = (message) => {
         if (message.method !== "Target.attachedToTarget") return;
         if (message.params.targetInfo.type !== "iframe") return;
-        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
-        resolve(message.params.sessionId);
+        settle(resolve, message.params.sessionId);
       };
+      const timer = setTimeout(
+        () => settle(reject, new Error(`waited ${ATTACH_MS} ms for the artifact iframe to attach`)),
+        ATTACH_MS,
+      );
       this.browser.listeners.push(listener);
     });
     await this.send("Target.setAutoAttach", {
