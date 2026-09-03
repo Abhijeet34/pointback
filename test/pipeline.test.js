@@ -54,19 +54,17 @@ test("main is protected against force-push, deletion and unsigned commits", () =
   assert.deepEqual(JSON.parse(read(".github/rulesets/main.json")).bypass_actors, []);
 });
 
-test("only GitHub Actions may create, move or delete a v* tag", () => {
+test("nobody may move or delete a v* tag once it exists", () => {
   const ruleset = JSON.parse(read(".github/rulesets/tags.json"));
   assert.equal(ruleset.target, "tag");
   assert.deepEqual(ruleset.conditions.ref_name.include, ["refs/tags/v*"]);
-  assert.deepEqual(
-    ruleset.rules.map((rule) => rule.type).sort(),
-    ["creation", "deletion", "update"],
-    "a rule missing here is a tag a person can still move",
-  );
-  assert.deepEqual(
-    ruleset.bypass_actors.map((actor) => actor.actor_type),
-    ["Integration"],
-  );
+  assert.deepEqual(ruleset.rules.map((rule) => rule.type).sort(), ["deletion", "update"]);
+  // No `creation`, and no bypass actors, and the two go together: GitHub
+  // refuses an Integration bypass actor on a user-owned repository, and a
+  // `creation` rule without one blocks release automation's own tag. Measured
+  // both ways; docs/GIT-WORKFLOW.md, "What protects main", carries the 422s.
+  assert.deepEqual(ruleset.bypass_actors, []);
+  assert.ok(!ruleset.rules.some((rule) => rule.type === "creation"));
 });
 
 test("the tag namespace is bare v<version>, and the manifest agrees with package.json", () => {
@@ -87,6 +85,25 @@ test("the first release is 0.1.0, not 1.0.0", () => {
   assert.equal(JSON.parse(read(".release-please-manifest.json"))["."], "0.0.0");
 });
 
+test("every repository setting that is not a file has a committed export", () => {
+  // Files do not apply themselves; this is the one script that applies them.
+  const script = read("scripts/apply-repo-settings.sh");
+  for (const file of [
+    ".github/rulesets/main.json",
+    ".github/rulesets/tags.json",
+    ".github/settings/repository.json",
+    ".github/settings/actions-permissions.json",
+    ".github/settings/actions-workflow-permissions.json",
+  ]) {
+    JSON.parse(read(file)); // it must at least be the JSON the API is handed
+    assert.ok(script.includes(file), `apply-repo-settings.sh never applies ${file}`);
+  }
+  // enabled is required alongside it; on its own the API answers 422.
+  const permissions = JSON.parse(read(".github/settings/actions-permissions.json"));
+  assert.equal(permissions.sha_pinning_required, true);
+  assert.equal(permissions.enabled, true);
+});
+
 test("the setting that lets release-please open its pull request is a committed file", () => {
   // It lives only in a web UI otherwise, and the first release run failed on
   // exactly this: "GitHub Actions is not permitted to create or approve pull
@@ -94,11 +111,6 @@ test("the setting that lets release-please open its pull request is a committed 
   const settings = JSON.parse(read(".github/settings/actions-workflow-permissions.json"));
   assert.equal(settings.can_approve_pull_request_reviews, true);
   assert.equal(settings.default_workflow_permissions, "read");
-  assert.match(
-    read("docs/GIT-WORKFLOW.md"),
-    /--input \.github\/settings\/actions-workflow-permissions\.json/,
-    "the day-one checklist must apply the file, not a retyped flag",
-  );
 });
 
 test("publishing is off unless a repository variable says otherwise", () => {

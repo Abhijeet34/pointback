@@ -49,7 +49,20 @@ The other rules and why each is there:
 | `pull_request`, `allowed_merge_methods: ["squash"]`                                         | A merge or rebase merge, which would break version derivation                                |
 | `required_signatures`                                                                       | An unsigned commit, including one made through the web UI or the API                         |
 | `deletion`, `non_fast_forward`                                                              | Deleting `main`, and force-pushing over published history                                    |
-| Tag ruleset: `creation`, `update`, `deletion` on `refs/tags/v*`, bypass `Integration` 15368 | A person creating, moving or deleting a release tag by hand; only the GitHub Actions app can |
+| Tag ruleset: `update`, `deletion` on `refs/tags/v*`, no bypass actors                       | Anyone, including automation, moving or deleting a release tag once it exists                |
+
+**The tag ruleset has no `creation` rule, and that is measured rather than chosen.**
+A `bypass_actors` entry for the GitHub Actions app (`Integration`, `actor_id` 15368, the id `GET /apps/github-actions` returns) is refused on this repository:
+
+```
+422 Validation Failed
+Actor GitHub Actions integration must be part of the ruleset source or owner organization
+```
+
+There is no owner organization on a user-owned repository, so no app can be a bypass actor here.
+Without a bypass, a `creation` rule blocks release automation too, and that was verified rather than assumed: a workflow calling `POST /repos/{owner}/{repo}/git/refs` with `GITHUB_TOKEN`, the same path release-please tags with, failed `422 Reference update failed` under a `creation` rule and succeeded under the ruleset as it now stands.
+An unsatisfiable rule that freezes the first release is worse than no rule, so `creation` is out and the two rules that automation never needs stay in: once a `v*` tag exists, nobody moves or deletes it, not a person and not a workflow.
+A person creating a stray `v*` tag by hand is the residual hole, and `scripts/release-preflight.js` is what stands in it.
 
 `required_approving_review_count` is 0.
 A single-maintainer repository gains nothing from self-approval, and the required check is what actually reads the change.
@@ -138,8 +151,8 @@ A tag is `v<version>` and nothing else.
 **A release must never attach to a tag that already existed**, because GitHub reuses a tag without complaining and the release then points at a commit nobody reviewed.
 Three things stand against it, in the order they take effect:
 
-1. The tag ruleset: only the GitHub Actions app can create, move or delete `refs/tags/v*`, so a hand-pushed or a stray `git push --tags` cannot put one there.
-1. `scripts/release-preflight.js`, run by the `artifacts` job before anything is uploaded: it compares the commit the tag resolves to against the commit release-please reported releasing, and refuses when they differ.
+1. The tag ruleset: nobody can move or delete a `refs/tags/v*` once it exists, so the tag a release attaches to cannot be repointed underneath it. It cannot stop a stray tag being created, for the reason in "What protects main".
+1. `scripts/release-preflight.js`, run by the `artifacts` job before anything is uploaded: it compares the commit the tag resolves to against the commit release-please reported releasing, and refuses when they differ. With `creation` unavailable, this is the load-bearing one.
 1. `test/release-preflight.test.js`, which demonstrates that refusal rather than assuming it.
 
 ## Releasing
@@ -217,41 +230,27 @@ On the GitHub side a release can be marked pre-release or deleted, but the tag s
 
 ## Applying the settings that are not files
 
-The day the repository exists, in this order.
-Everything here is a setting, not a credential.
+The day the repository exists, one command.
+Everything it sends is a setting, not a credential, and every value it sends is a file in this repository: `.github/rulesets/main.json`, `.github/rulesets/tags.json`, and the three exports under `.github/settings/`.
 
 ```sh
 REPO=OWNER/pointback
-
-# The two rulesets, from their committed exports.
-gh-axi api -X POST "repos/$REPO/rulesets" --input .github/rulesets/main.json
-gh-axi api -X POST "repos/$REPO/rulesets" --input .github/rulesets/tags.json
-
-# Squash only, and keep the commit messages: a Release-As: footer has to survive.
-gh-axi api -X PATCH "repos/$REPO" \
-  -F allow_squash_merge=true -F allow_merge_commit=false -F allow_rebase_merge=false \
-  -f squash_merge_commit_message=COMMIT_MESSAGES
-
-# Read-only default token, and no unpinned action can come back.
-# can_approve_pull_request_reviews is what lets release-please open its release
-# pull request; without it the release job fails with "GitHub Actions is not
-# permitted to create or approve pull requests". It is committed rather than
-# typed, for the same reason the rulesets are.
-gh-axi api -X PUT "repos/$REPO/actions/permissions/workflow" \
-  --input .github/settings/actions-workflow-permissions.json
-gh-axi api -X PUT "repos/$REPO/actions/permissions" -F sha_pinning_required=true
+scripts/apply-repo-settings.sh "$REPO"
 
 # Install the secret-scan gate in the clone. CI checks the files; only this
 # checks core.hooksPath, which no checkout carries.
 /Users/abhijeet/Developer/automation/.ci/gitleaks/sync.sh .
 ```
 
-Verify afterwards, and diff the live rulesets against the committed exports whenever one is changed:
+It is idempotent: a ruleset whose name already exists is updated in place, so re-run it after editing any of those files rather than deleting and recreating a ruleset.
+Two things it encodes that cost a round to find out. A ruleset is created with `POST /repos/{owner}/{repo}/rulesets` but updated with `PUT .../rulesets/{id}`, and the id is not in the file, so the script looks it up by name.
+And `PUT /repos/{owner}/{repo}/actions/permissions` rejects a body carrying only `sha_pinning_required`; `enabled` is required alongside it, which is why `.github/settings/actions-permissions.json` carries all three fields.
+
+Verify afterwards:
 
 ```sh
 gh-axi api "repos/$REPO/rulesets" --jq '.[] | "\(.id) \(.name) \(.target) \(.enforcement)"'
-gh-axi api "repos/$REPO/rulesets/<id>" > /tmp/live.json && diff /tmp/live.json .github/rulesets/main.json
-gh-axi api "repos/$REPO/branches/main/protection" 2>&1 | head -1
+gh-axi api "repos/$REPO/actions/permissions"
 # Must read back the two values in .github/settings/actions-workflow-permissions.json.
 gh-axi api "repos/$REPO/actions/permissions/workflow" \
   --jq '{default_workflow_permissions,can_approve_pull_request_reviews}'
@@ -275,6 +274,10 @@ gh-axi variable set NPM_PUBLISH_ENABLED --body true -R "$REPO"
 - **No watermark-scan backstop.**
   `automation`'s `shared-watermark-scan.yml` is out of reach for the same visibility reason as the secret scan, and it also requires the caller to carry `watermark-scan.py`, which this tree does not.
   The machine-wide pre-push hook is still the gate; nothing in CI re-checks a commit that bypassed it.
+- **A person can still create a `v*` tag by hand.**
+  The `creation` rule is unavailable here for the reason measured in "What protects main", so `scripts/release-preflight.js` is the only thing between a stray tag and a release attached to it.
+  Moving the repository under an organization would make a GitHub App bypass actor legal and let `creation` come back; nothing else would.
+
 - **No ruleset drift job.**
   The committed exports and the `diff` above are the whole mechanism, run by a person.
   A weekly job that reads the live rulesets would be better, and the token scope it needs is unverified.
