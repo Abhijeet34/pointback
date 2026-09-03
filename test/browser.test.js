@@ -12,9 +12,28 @@ import { findBrowser, launchBrowser } from "./helpers/cdp.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
 
 const executable = findBrowser();
+const optedOut = process.env[`${envPrefix}BROWSER`] === "none";
+// One line, always printed, saying which of the two happened. A suite that reports green
+// over a case it never ran is worse than no case at all, so the skip has to be as loud as
+// the run; CI reads this line back into the job summary.
+console.log(
+  executable
+    ? `browser suite: running against ${executable}`
+    : `browser suite: SKIPPED, no end-to-end coverage in this run (${envPrefix}BROWSER=none)`,
+);
+
 const lab = isolatedEnv();
 let browser;
 let opened;
+
+// The skip above is opt-in. Finding no browser and saying nothing is the failure this
+// guards: without it a runner that lost its Chrome reports a clean suite.
+test("the browser suite has a browser to run against", () => {
+  assert.ok(
+    executable || optedOut,
+    `no browser found. Install Chrome or set ${envPrefix}BROWSER to its path, or to "none" to opt out of the only end-to-end coverage this repository has.`,
+  );
+});
 
 before(async () => {
   if (!executable) return;
