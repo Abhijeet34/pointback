@@ -28,7 +28,6 @@ const RETRIES = 5;
 
 let nonce = "";
 let annotate = false;
-let pending = readPending();
 let chat = [];
 let session = null;
 let revision = 0;
@@ -45,6 +44,9 @@ let workingTimer = null;
 let stream = null;
 let retaking = false;
 let problem = null;
+const stored = readStored();
+let pending = stored.prompts;
+let structure = stored.structure;
 
 const api = (method, path, body) =>
   fetch(path, {
@@ -161,16 +163,22 @@ function apply(event) {
   render();
 }
 
-function readPending() {
+// The outline is stored beside the notes it was taken with: a chrome reload must not
+// send a batch describing a page nobody outlined.
+function readStored() {
   try {
-    return JSON.parse(sessionStorage.getItem(pendingKey) ?? "[]");
+    const raw = JSON.parse(sessionStorage.getItem(pendingKey) ?? "{}");
+    return {
+      prompts: Array.isArray(raw.prompts) ? raw.prompts : [],
+      structure: typeof raw.structure === "string" ? raw.structure : "",
+    };
   } catch {
-    return [];
+    return { prompts: [], structure: "" };
   }
 }
 
 function savePending() {
-  sessionStorage.setItem(pendingKey, JSON.stringify(pending));
+  sessionStorage.setItem(pendingKey, JSON.stringify({ prompts: pending, structure }));
 }
 
 function render() {
@@ -207,7 +215,7 @@ function render() {
         : deferredReload
           ? "The file changed. This page updates as soon as you finish this note."
           : chat.length === 0 && count === 0
-            ? "Turn on Annotate, then click an element or Tab to it and press Enter to leave a note."
+            ? "Turn on Annotate, then click an element or Tab to it and press Enter. Select the text, or hold Shift and press an arrow key, for a passage."
             : count === 0
               ? "Every note has been sent."
               : `${count} not sent yet.`;
@@ -253,10 +261,10 @@ function mark(entry, sent) {
   target.className = "mark-target";
   const tag = document.createElement("span");
   tag.className = "mark-tag";
-  tag.textContent = entry.target.tag;
+  tag.textContent = entry.tag;
   const text = document.createElement("span");
   text.className = "mark-text";
-  text.textContent = entry.target.text;
+  text.textContent = describe(entry);
   target.append(tag, text);
   const note = document.createElement("p");
   note.className = "mark-note";
@@ -276,6 +284,15 @@ function mark(entry, sent) {
     li.append(remove);
   }
   return li;
+}
+
+// Two notes on one element have to be told apart in the margin, so a passage is quoted
+// and a cell carries the row and column it was named by.
+function describe(entry) {
+  if (entry.tag === "text") return `“${entry.text}”`;
+  const cell = entry.target?.type === "table-cell" ? entry.target : null;
+  const where = cell ? [cell.row, cell.column].filter(Boolean).join(" › ") : "";
+  return where ? `${entry.text} · ${where}` : entry.text;
 }
 
 function post(message) {
@@ -304,8 +321,9 @@ window.addEventListener("message", (event) => {
     document.body.dataset.annotate = data.on ? "1" : "0";
   } else if (data.type === "shown") {
     document.body.dataset.revision = String(shownRevision);
-  } else if (data.type === "queue") {
-    pending.push({ prompt: data.prompt.prompt, target: data.prompt });
+  } else if (data.type === "queue" && data.prompt && typeof data.prompt === "object") {
+    pending.push(data.prompt);
+    if (typeof data.structure === "string") structure = data.structure;
     savePending();
     render();
   } else if (data.type === "scroll") {
@@ -365,8 +383,7 @@ document.getElementById("sendForm").addEventListener("submit", async (event) => 
   sendButton.textContent = "Sending…";
   problem = null;
   try {
-    const prompts = pending.map((entry) => ({ ...entry.target, prompt: entry.prompt }));
-    await api("POST", `/api/${key}/prompts`, { prompts });
+    await api("POST", `/api/${key}/prompts`, { prompts: pending, structure });
     pending = [];
     savePending();
     chat = (await api("GET", `/api/${key}/session`)).chat;
