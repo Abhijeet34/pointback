@@ -54,6 +54,8 @@
     const data = event.data;
     if (data?.type === "init") {
       nonce = data.nonce;
+      // A reload replaces the document, so the chrome hands back where the reviewer was reading.
+      if (data.scroll) window.scrollTo(data.scroll.x, data.scroll.y);
       setAnnotate(data.annotate);
     } else if (data?.nonce === nonce && data.type === "annotate") {
       setAnnotate(data.on);
@@ -131,6 +133,7 @@
 
   function openCard(element) {
     open = element;
+    send({ type: "editing", on: true });
     outline(element);
     targetLine.textContent = `${element.tagName.toLowerCase()} · ${visibleText(element)}`;
     textarea.value = "";
@@ -147,6 +150,7 @@
     if (!open) return;
     const element = open;
     open = null;
+    send({ type: "editing", on: false });
     card.classList.remove("open");
     box.style.display = "none";
     if (annotate && element.isConnected) element.focus({ preventScroll: true });
@@ -212,6 +216,21 @@
   document.addEventListener("focusin", (event) => {
     if (annotate && !open) outline(candidate(event.target));
   });
+
+  // One report per frame at most: the chrome only needs the last position before a reload.
+  let scrolling = false;
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (scrolling) return;
+      scrolling = true;
+      requestAnimationFrame(() => {
+        scrolling = false;
+        send({ type: "scroll", x: window.scrollX, y: window.scrollY });
+      });
+    },
+    { passive: true },
+  );
 
   document.documentElement.append(host);
   send({ type: "ready" });

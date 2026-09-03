@@ -245,12 +245,134 @@ body {
   cursor: default;
 }
 
+/* A quiet control: the bar's second action and the dialog's non-default choices. */
+.quiet {
+  min-height: 32px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font: 13px var(--font);
+  cursor: pointer;
+}
+
+.quiet:hover:not(:disabled) {
+  background: var(--graphite);
+}
+
+.quiet:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.quiet.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Presence is a fact about the agent, so it reads as a label, never as something to press. */
+.presence {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.presence-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line);
+}
+
+.presence[data-state="listening"] .presence-dot,
+.presence[data-state="working"] .presence-dot {
+  background: var(--pencil);
+}
+
+.presence[data-state="working"] .presence-dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--line);
+  background: var(--graphite);
+}
+
+.notice-text {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+.dialog {
+  width: min(380px, calc(100vw - var(--s5)));
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--text);
+}
+
+.dialog::backdrop {
+  background: oklch(0% 0 0 / 0.5);
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.dialog-text {
+  margin: var(--s2) 0 var(--s4);
+  color: var(--muted);
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+.dialog-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  justify-content: flex-end;
+}
+
+/* The safe path is the wide one: ending without sending is a deliberate step off it. */
+.dialog-go {
+  width: auto;
+  min-height: 32px;
+  padding: 0 var(--s4);
+  font-size: 13px;
+}
+
 :focus-visible {
   outline: 2px solid var(--pencil);
   outline-offset: 2px;
 }
 
 /* Below 900px the margin becomes a band under the page; the list keeps a two-mark floor. */
+/* The app's own name is the first thing to go when the bar runs out of room. */
+@media (max-width: 699px) {
+  .bar-name {
+    display: none;
+  }
+}
+
 @media (max-width: 899px) {
   body {
     grid-template-columns: minmax(0, 1fr);

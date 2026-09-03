@@ -10,7 +10,11 @@ export const DEBOUNCE_MS = 100;
  * The parent directory is watched rather than the file, because a rename-replace save leaves an
  * inode watch pointing at the old file while a directory watch sees the new one arrive.
  */
-export function watchFile(file, onChange, { debounceMs = DEBOUNCE_MS, onError = () => {} } = {}) {
+export function watchFile(
+  file,
+  onChange,
+  { debounceMs = DEBOUNCE_MS, onError = (/** @type {Error} */ _error) => {} } = {},
+) {
   const name = basename(file);
   let last = signature(file);
   let timer;

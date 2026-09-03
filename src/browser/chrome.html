@@ -12,10 +12,15 @@
     <header class="bar">
       <span class="bar-name" id="appName"></span>
       <span class="bar-file" id="fileName"></span>
+      <span class="presence" id="presence" data-state="waiting">
+        <span class="presence-dot" aria-hidden="true"></span>
+        <span id="presenceText"></span>
+      </span>
       <button class="switch" id="annotate" type="button" role="switch" aria-checked="false">
         <span class="switch-track" aria-hidden="true"></span>
         Annotate
       </button>
+      <button class="quiet" id="end" type="button">End review</button>
     </header>
     <main class="mount">
       <iframe
@@ -26,12 +31,29 @@
       ></iframe>
     </main>
     <aside class="margin" aria-label="Notes">
+      <div class="notice" id="notice" role="status" hidden>
+        <p class="notice-text" id="noticeText"></p>
+        <button class="quiet" id="takeOver" type="button" hidden>Take over here</button>
+      </div>
       <p class="margin-status" id="status" role="status"></p>
       <ol class="marks" id="marks" aria-label="Notes"></ol>
       <form class="send" id="sendForm">
         <button class="send-button" id="send" type="submit" disabled>Send to agent</button>
       </form>
     </aside>
+    <dialog class="dialog" id="endDialog" aria-labelledby="endTitle">
+      <form method="dialog">
+        <h2 class="dialog-title" id="endTitle">End this review?</h2>
+        <p class="dialog-text" id="endText"></p>
+        <div class="dialog-row">
+          <button class="quiet" value="cancel" type="submit">Cancel</button>
+          <button class="quiet danger" id="endDiscard" value="discard" type="submit" hidden>
+            Discard and end
+          </button>
+          <button class="send-button dialog-go" id="endGo" value="end" type="submit">End</button>
+        </div>
+      </form>
+    </dialog>
   </body>
   <script type="module" src="/chrome.js"></script>
 </html>

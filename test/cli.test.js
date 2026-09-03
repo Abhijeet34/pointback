@@ -67,6 +67,35 @@ test("poll waits for feedback and returns it with its target intact", async () =
   assert.deepEqual(empty.json(), { status: "waiting" });
 });
 
+test("end closes the review, and only --reopen opens it again", async () => {
+  const ended = await cli(["end", fixture], lab.env);
+  assert.equal(ended.code, 0, ended.stderr);
+  assert.deepEqual(ended.json(), { status: "ended", ended_by: "agent", queued: 0 });
+  const polled = await cli(["poll", fixture, "--timeout-ms", "50"], lab.env);
+  assert.equal(polled.json().status, "ended");
+  assert.match(polled.json().next_step, /Do not poll this file again/);
+  // The agent ended it, so the agent may open it again without ceremony.
+  assert.equal((await cli([fixture], lab.env)).json().session.status, "opened");
+
+  const info = lab.serverInfo();
+  const key = (await cli([fixture], lab.env))
+    .json()
+    .session.url.match(/session\/([0-9a-f]{16})/)[1];
+  await fetch(`http://127.0.0.1:${info.port}/api/${key}/end`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${info.token}`,
+      "content-type": "application/json",
+      origin: `http://127.0.0.1:${info.port}`,
+    },
+    body: JSON.stringify({ by: "user" }),
+  });
+  const refused = await cli([fixture], lab.env);
+  assert.equal(refused.json().session.status, "user-ended");
+  assert.match(refused.json().next_step, /--reopen/);
+  assert.equal((await cli([fixture, "--reopen"], lab.env)).json().session.status, "opened");
+});
+
 test("a missing file argument or file is an error exit, not a stack trace", async () => {
   const noArg = await cli(["poll"], lab.env);
   assert.equal(noArg.code, 1);
