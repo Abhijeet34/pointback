@@ -183,6 +183,7 @@ test(
     assert.ok(Math.max(...latencies) < 3000, `reloads took ${latencies.join(", ")} ms`);
 
     await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor("document.body.dataset.annotate === '1'");
     await page.click(rect.left + 40, rect.top + rect.height - 34);
     await page.type("Cut this line");
     await page.enter();
