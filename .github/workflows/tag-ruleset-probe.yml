@@ -26,3 +26,5 @@ jobs:
           set -x
           gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
             -f ref="refs/tags/${TAG}" -f sha="${GITHUB_SHA}"
+
+# probe run 2: candidate A (creation+update+deletion, no bypass)
