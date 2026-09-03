@@ -172,11 +172,14 @@ export class SessionStore {
     return { status: "ended", ended_by: by, queued };
   }
 
+  /** Reopens an ended review, so a tab still showing the ended notice comes back to life. */
   reopen(key) {
     const session = this.get(key);
+    if (!session.endedAt) return;
     delete session.endedAt;
     delete session.endedBy;
     this.#persist();
+    this.#events.emit(key, { type: "reopened" });
   }
 
   /** Hands every waiting prompt to the agent exactly once. */
@@ -250,6 +253,8 @@ export class SessionStore {
 
   #setWorking(key, before = this.presence(key).state) {
     this.#clearWorking(key);
+    // The final delivery of an ended session has no agent to wait for, so it leaves presence alone.
+    if (this.get(key).endedAt) return this.#announce(key, before);
     const timer = setTimeout(() => {
       this.#working.delete(key);
       this.#announce(key, "working");
