@@ -328,6 +328,10 @@ window.addEventListener("message", (event) => {
     render();
   } else if (data.type === "scroll") {
     lastScroll = { x: data.x, y: data.y };
+    // Published for the same reason as ready, revision and annotate: the reviewer's place is
+    // what a reload restores, and it arrives from another frame's event loop. Anything acting
+    // on it - a reload, a test - would otherwise be guessing that the report had landed.
+    document.body.dataset.scroll = String(data.y);
   } else if (data.type === "editing") {
     editing = data.on;
     if (!editing && deferredReload) show();
