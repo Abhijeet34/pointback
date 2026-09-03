@@ -25,6 +25,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The one required status check is `checks` in `.github/workflows/ci.yml`; anything worth blocking a merge becomes a job there, never a second required context.
 - `.gitleaks.toml` and `.githooks/pre-push` are copies of one canonical secret-scanning gate maintained outside this repository, in a private upstream shared across its siblings. Never hand-edit either: `ci.yml` pins the SHA-256 of both, so a drifted copy fails the required check, and the fix is to re-sync from upstream rather than to edit the file here.
 - `test/pipeline.test.js` pins the load-bearing lines of the workflows and rulesets, so a change that quietly unprotects something fails the gate.
+- The repository is public and licensed Apache-2.0 (`LICENSE`, copyright Abhijeet Halder); `SECURITY.md` routes vulnerability reports through GitHub private advisories, and no email address or other personal contact detail belongs anywhere in this repository. Publishing to npm stays off behind the `NPM_PUBLISH_ENABLED` repository variable, pinned by `test/pipeline.test.js`.
 
 ## CI runner platforms
 
