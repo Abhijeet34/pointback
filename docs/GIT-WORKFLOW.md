@@ -142,6 +142,11 @@ release-please 17.6.0 (the version bundled in `release-please-action` v5.0.0, `p
 Seeding the manifest with `0.1.0` instead would take that backfill: release-please would treat `0.1.0` as already released, bump from it, and cut `0.1.1` as the first release, skipping `0.1.0` forever.
 That is why the fix is `initial-version` and not a seeded manifest.
 
+Both of those facts describe the window before the first release, and the test that pins them ends with it.
+release-please writes `CHANGELOG.md`, the manifest and `package.json` in one commit, so the changelog existing is this tree saying the window has closed: from then on the manifest holds a released version and `0.0.0` is the wrong answer, not the load-bearing one.
+`test/pipeline.test.js` skips that test once `CHANGELOG.md` exists, and says so in its output rather than passing silently.
+Asserting it past the window is not hypothetical: it failed the release pull request's own diff, which is the one change that must move the manifest off the sentinel.
+
 `1.0.0` is cut on purpose, by putting `Release-As: 1.0.0` in the squash body of a merged pull request.
 From then on `feat:` is a minor and `!` is a major.
 
@@ -173,6 +178,22 @@ merge the release pull request
 
 `CHANGELOG.md` is release-please's file.
 Nobody edits it by hand.
+`.prettierignore` excludes it for that reason: it is generated markdown, not formatted source, and `format:check` reading it failed the release pull request before anyone could review the release.
+
+**The release pull request's CI does not start on its own.**
+It is opened by `github-actions[bot]`, and GitHub classifies a bot's pull request as an external contribution even when the branch is in this repository, so every run on it completes as `action_required` with no check runs at all.
+That was measured rather than inferred: runs `33800809078`, `33801077938` and `33816315115` all ended `action_required` on branch `release-please--branches--main--components--pointback`, `GET /repos/OWNER/REPO/commits/<head sha>/check-runs` returned `total_count: 0`, and one `POST .../actions/runs/33816315115/approve` released it into a real run that reported four check runs and a verdict 26 seconds later.
+`.github/settings/actions-fork-pr-contributor-approval.json` is the policy that does it, committed at GitHub's default so a change to it is visible in a diff; none of the three values that policy accepts is defined over bots, and the two community reports of this behaviour say loosening it does not exempt `github-actions[bot]`.
+
+So a release costs one deliberate approval, from the pull request's Checks tab or from the command line:
+
+```sh
+gh-axi api -X POST "repos/OWNER/REPO/actions/runs/RUN_ID/approve"
+```
+
+The `checks` context then appears on the release pull request's head commit and the branch ruleset is satisfied in the ordinary way; nothing merges unchecked.
+Removing that click means giving release automation a token identity that is not `github-actions[bot]` - a GitHub App installation token or a fine-grained PAT with `contents: write` and `pull-requests: write` - passed to `release-please-action` as `token:`.
+That is a credential to store and rotate for one click a release, which is why it has not been done.
 
 The `artifacts` job checks the tag out rather than `main`, so the tarball is packed from the tagged tree, and the `cross-platform` job it depends on runs on the release commit, which the preflight proves is the commit the tag names.
 The SBOM comes from GitHub's dependency-graph export (`gh api repos/OWNER/REPO/dependency-graph/sbom`), which describes the manifests from the same data the pull request dependency review reads.
@@ -278,6 +299,10 @@ gh-axi variable set NPM_PUBLISH_ENABLED --body true -R "$REPO"
 - **A person can still create a `v*` tag by hand.**
   The `creation` rule is unavailable here for the reason measured in "What protects main", so `scripts/release-preflight.js` is the only thing between a stray tag and a release attached to it.
   Moving the repository under an organization would make a GitHub App bypass actor legal and let `creation` come back; nothing else would.
+
+- **Every release needs one human approval before its checks can run.**
+  The cause and the two rejected remedies are in "Releasing"; the residual gap is that a release stalls silently, because a pull request whose checks never appeared reads the same as one whose checks have not finished.
+  A token identity for release automation is the only thing that would close it.
 
 - **No ruleset drift job.**
   The committed exports and the `diff` above are the whole mechanism, run by a person.

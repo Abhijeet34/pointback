@@ -3,6 +3,12 @@ coverage
 package-lock.json
 .claude
 
+# release-please's file, rewritten on every release and never edited by hand
+# (docs/GIT-WORKFLOW.md, "Releasing"). Generated changelog markdown is not
+# formatted source, and checking it failed every release pull request at
+# `format:check` before the release could ever be reviewed.
+CHANGELOG.md
+
 # Copies of a canonical secret-scanning gate maintained upstream, not files
 # maintained here. A formatter that reflows either one breaks the digest CI pins.
 .githooks
