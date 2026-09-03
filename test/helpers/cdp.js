@@ -1,11 +1,27 @@
 // A minimal Chrome DevTools Protocol client on Node's own WebSocket: enough to open a page,
 // evaluate script, and send real key and mouse events, with no browser-automation dependency.
+//
+// Every wait here is bounded and every failure path kills the browser it spawned. Both rules
+// come from one measured incident: on run 33788793925 the launch failed at 15 s, nothing
+// killed the browser, and the live child process kept Node's event loop open until the job
+// hit its own 20-minute limit and was reported `cancelled`. A test may fail; it may not hang.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { env } from "../../src/identity.js";
+
+/** Chrome prints its DevTools URL within a second or two of starting; this is 10x that. */
+const STARTUP_MS = 15_000;
+const CONNECT_MS = 10_000;
+/** No DevTools command in this suite is slow; a reply that never comes is a dead browser. */
+const COMMAND_MS = 30_000;
+const TERMINATE_MS = 3000;
+/** A page that never fires its load event is a dead navigation, not a slow one. */
+const LOAD_MS = 15_000;
+/** The iframe attaches within a paint or two of the page requesting it. */
+const ATTACH_MS = 10_000;
 
 const KNOWN_BROWSERS = [
   "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
@@ -23,6 +39,52 @@ export function findBrowser(environment = process.env) {
   const configured = env("BROWSER", environment);
   if (configured) return configured === "none" ? null : configured;
   return KNOWN_BROWSERS.find((path) => existsSync(path)) ?? null;
+}
+
+/** SIGTERM, then SIGKILL, then done: nothing this module spawns outlives the call that spawned it. */
+function terminate(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGTERM");
+  const forced = setTimeout(() => child.kill("SIGKILL"), TERMINATE_MS);
+  return exited.finally(() => clearTimeout(forced));
+}
+
+/** Resolves with the ws:// endpoint Chrome prints on stderr, or rejects saying what it printed instead. */
+function devToolsUrl(child, executable) {
+  return new Promise((resolve, reject) => {
+    let text = "";
+    const settle = (fn, value) => {
+      clearTimeout(timer);
+      child.stderr.off("data", onData);
+      child.off("exit", onExit);
+      fn(value);
+    };
+    const onData = (chunk) => {
+      text += chunk;
+      const match = text.match(/DevTools listening on (ws:\/\/\S+)/);
+      if (match) settle(resolve, match[1]);
+    };
+    const onExit = (code) =>
+      settle(
+        reject,
+        new Error(
+          `${executable} exited ${code} before announcing DevTools: ${text.trim() || "(silent)"}`,
+        ),
+      );
+    const timer = setTimeout(
+      () =>
+        settle(
+          reject,
+          new Error(
+            `waited ${STARTUP_MS} ms for ${executable} to print "DevTools listening on"; it printed: ${text.trim() || "(nothing)"}`,
+          ),
+        ),
+      STARTUP_MS,
+    );
+    child.stderr.on("data", onData);
+    child.once("exit", onExit);
+  });
 }
 
 export async function launchBrowser(executable, { width = 1200, height = 800 } = {}) {
@@ -44,17 +106,19 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
-  const wsUrl = await new Promise((resolve, reject) => {
-    let text = "";
-    child.stderr.on("data", (chunk) => {
-      text += chunk;
-      const match = text.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) resolve(match[1]);
-    });
-    child.once("exit", (code) => reject(new Error(`browser exited ${code}: ${text}`)));
-    setTimeout(() => reject(new Error(`browser gave no DevTools URL: ${text}`)), 15_000).unref();
-  });
-  const browser = await connect(wsUrl);
+  const discard = async () => {
+    await terminate(child);
+    rmSync(profile, { recursive: true, force: true });
+  };
+  let browser;
+  try {
+    browser = await connect(await devToolsUrl(child, executable));
+  } catch (error) {
+    // The one line the incident turned on: a browser nobody kills keeps the suite alive
+    // long after it has a verdict, and the verdict never gets printed.
+    await discard();
+    throw error;
+  }
   return {
     pid: child.pid,
     async page(url) {
@@ -76,13 +140,11 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
       return page;
     },
     async close() {
-      const exited = new Promise((resolve) => child.once("exit", resolve));
-      await browser.send("Browser.close").catch(() => {});
+      // The reply to Browser.close races the browser's own exit, so the request is sent
+      // and never waited on; the signals in discard() are what actually end it.
+      browser.send("Browser.close").catch(() => {});
       browser.socket.close();
-      // A browser that ignores the polite request is not left behind.
-      const forced = setTimeout(() => child.kill("SIGKILL"), 3000);
-      await exited;
-      clearTimeout(forced);
+      await discard();
     },
   };
 }
@@ -93,23 +155,46 @@ function connect(url) {
     const pending = new Map();
     const listeners = [];
     let nextId = 1;
-    socket.addEventListener("open", () =>
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(
+        new Error(`the browser opened no DevTools connection on ${url} within ${CONNECT_MS} ms`),
+      );
+    }, CONNECT_MS);
+    socket.addEventListener("open", () => {
+      clearTimeout(timer);
       resolve({
         socket,
         listeners,
         send(method, params = {}, sessionId) {
           const id = nextId++;
           socket.send(JSON.stringify({ id, method, params, sessionId }));
-          return new Promise((res, rej) => pending.set(id, { res, rej }));
+          return new Promise((res, rej) => {
+            // Unref'd: while the socket is open it holds the loop and this still fires, and
+            // once the socket is gone there is no caller left for it to keep waiting for.
+            const deadline = setTimeout(() => {
+              pending.delete(id);
+              rej(new Error(`the browser sent no reply to ${method} within ${COMMAND_MS} ms`));
+            }, COMMAND_MS).unref();
+            const done = (fn) => (value) => {
+              clearTimeout(deadline);
+              fn(value);
+            };
+            pending.set(id, { res: done(res), rej: done(rej) });
+          });
         },
-      }),
-    );
-    socket.addEventListener("error", () => reject(new Error(`cannot connect to ${url}`)));
+      });
+    });
+    socket.addEventListener("error", () => {
+      clearTimeout(timer);
+      reject(new Error(`cannot connect to ${url}`));
+    });
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(String(event.data));
       if (message.id !== undefined) {
         const waiter = pending.get(message.id);
         pending.delete(message.id);
+        if (!waiter) return; // its deadline already passed and its caller has moved on
         if (message.error) waiter.rej(new Error(message.error.message));
         else waiter.res(message.result);
       } else {
@@ -153,17 +238,23 @@ class Page {
   }
 
   loaded() {
-    return new Promise(
-      /** @param {(value?: unknown) => void} resolve */ (resolve) => {
-        const listener = (message) => {
-          if (message.sessionId === this.sessionId && message.method === "Page.loadEventFired") {
-            this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
-            resolve();
-          }
-        };
-        this.browser.listeners.push(listener);
-      },
-    );
+    return new Promise((resolve, reject) => {
+      const settle = (fn, value) => {
+        clearTimeout(timer);
+        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+        fn(value);
+      };
+      const listener = (message) => {
+        if (message.sessionId === this.sessionId && message.method === "Page.loadEventFired") {
+          settle(resolve);
+        }
+      };
+      const timer = setTimeout(
+        () => settle(reject, new Error(`waited ${LOAD_MS} ms for the page to fire its load event`)),
+        LOAD_MS,
+      );
+      this.browser.listeners.push(listener);
+    });
   }
 
   /** Evaluates an expression in the page's own (top) context and returns its JSON value. */
@@ -201,13 +292,21 @@ class Page {
    * an auto-attached session of its own. Input still goes to the page, in page coordinates.
    */
   async frame() {
-    const attached = new Promise((resolve) => {
+    const attached = new Promise((resolve, reject) => {
+      const settle = (fn, value) => {
+        clearTimeout(timer);
+        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+        fn(value);
+      };
       const listener = (message) => {
         if (message.method !== "Target.attachedToTarget") return;
         if (message.params.targetInfo.type !== "iframe") return;
-        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
-        resolve(message.params.sessionId);
+        settle(resolve, message.params.sessionId);
       };
+      const timer = setTimeout(
+        () => settle(reject, new Error(`waited ${ATTACH_MS} ms for the artifact iframe to attach`)),
+        ATTACH_MS,
+      );
       this.browser.listeners.push(listener);
     });
     await this.send("Target.setAutoAttach", {
