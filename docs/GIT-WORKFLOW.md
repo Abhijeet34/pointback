@@ -1,7 +1,7 @@
 # Git and delivery workflow
 
 How a change reaches `main`, how a release is cut, and what happens when one has to be withdrawn.
-Everything here is either in the repository or is a repository setting with a committed copy under `.github/rulesets/`, so nothing load-bearing lives only in someone's memory of a settings page.
+Everything here is either in the repository or is a repository setting with a committed copy under `.github/rulesets/` or `.github/settings/`, so nothing load-bearing lives only in someone's memory of a settings page.
 
 <!-- toc -->
 
@@ -119,6 +119,16 @@ SemVer, derived by release-please from the conventional-commit subjects that lan
 `release-please-config.json` sets `bump-minor-pre-major` and `bump-patch-for-minor-pre-major`, so below 1.0.0 a `fix:` and a `feat:` both bump the patch and a breaking change bumps the minor.
 Nothing is a major bump before 1.0.0, deliberately: a 0.x line that hands out major versions has no way to say "this one is different".
 
+**The line starts at `0.1.0`, and neither of those two flags is what puts it there.**
+They govern a bump from an existing version; the first release is not a bump.
+release-please 17.6.0 (the version bundled in `release-please-action` v5.0.0, `package-lock.json` at that tag) resolves the first release in `Strategy.buildNewVersion`: with no previous release it returns `initialReleaseVersion()`, which is `Version.parse('1.0.0')` unless `initial-version` is configured (`src/strategies/base.ts`, read 2026-09-03).
+`initial-version: "0.1.0"` in `release-please-config.json` is that configuration, and it is inert from the second release onwards, when a previous release exists and the two bump flags take over.
+
+`.release-please-manifest.json` stays at `0.0.0` until release-please writes to it, and that exact string is load-bearing.
+`src/manifest.ts` backfills a synthetic previous release from the manifest for a package with no GitHub release, and skips the backfill when the manifest entry is `0.0.0`.
+Seeding the manifest with `0.1.0` instead would take that backfill: release-please would treat `0.1.0` as already released, bump from it, and cut `0.1.1` as the first release, skipping `0.1.0` forever.
+That is why the fix is `initial-version` and not a seeded manifest.
+
 `1.0.0` is cut on purpose, by putting `Release-As: 1.0.0` in the squash body of a merged pull request.
 From then on `feat:` is a minor and `!` is a major.
 
@@ -223,8 +233,12 @@ gh-axi api -X PATCH "repos/$REPO" \
   -f squash_merge_commit_message=COMMIT_MESSAGES
 
 # Read-only default token, and no unpinned action can come back.
+# can_approve_pull_request_reviews is what lets release-please open its release
+# pull request; without it the release job fails with "GitHub Actions is not
+# permitted to create or approve pull requests". It is committed rather than
+# typed, for the same reason the rulesets are.
 gh-axi api -X PUT "repos/$REPO/actions/permissions/workflow" \
-  -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true
+  --input .github/settings/actions-workflow-permissions.json
 gh-axi api -X PUT "repos/$REPO/actions/permissions" -F sha_pinning_required=true
 
 # Install the secret-scan gate in the clone. CI checks the files; only this
@@ -238,6 +252,9 @@ Verify afterwards, and diff the live rulesets against the committed exports when
 gh-axi api "repos/$REPO/rulesets" --jq '.[] | "\(.id) \(.name) \(.target) \(.enforcement)"'
 gh-axi api "repos/$REPO/rulesets/<id>" > /tmp/live.json && diff /tmp/live.json .github/rulesets/main.json
 gh-axi api "repos/$REPO/branches/main/protection" 2>&1 | head -1
+# Must read back the two values in .github/settings/actions-workflow-permissions.json.
+gh-axi api "repos/$REPO/actions/permissions/workflow" \
+  --jq '{default_workflow_permissions,can_approve_pull_request_reviews}'
 ```
 
 `NPM_PUBLISH_ENABLED` is set only when the maintainer says so, and it is the last step, after a first manual publish and after the trusted publisher is configured:

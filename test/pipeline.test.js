@@ -75,6 +75,32 @@ test("the tag namespace is bare v<version>, and the manifest agrees with package
   assert.equal(JSON.parse(read(".release-please-manifest.json"))["."], pkg.version);
 });
 
+test("the first release is 0.1.0, not 1.0.0", () => {
+  // The two bump flags govern a bump from an existing version; the first
+  // release is not a bump, and release-please answers it with a hardcoded
+  // 1.0.0 unless `initial-version` says otherwise. docs/GIT-WORKFLOW.md,
+  // "Versioning", carries the mechanism and the source it was read from.
+  assert.equal(JSON.parse(read("release-please-config.json"))["initial-version"], "0.1.0");
+  // Load-bearing sentinel, not a placeholder: release-please backfills a
+  // synthetic previous release from any manifest entry that is not "0.0.0",
+  // which would make the first release 0.1.1 and skip 0.1.0 entirely.
+  assert.equal(JSON.parse(read(".release-please-manifest.json"))["."], "0.0.0");
+});
+
+test("the setting that lets release-please open its pull request is a committed file", () => {
+  // It lives only in a web UI otherwise, and the first release run failed on
+  // exactly this: "GitHub Actions is not permitted to create or approve pull
+  // requests".
+  const settings = JSON.parse(read(".github/settings/actions-workflow-permissions.json"));
+  assert.equal(settings.can_approve_pull_request_reviews, true);
+  assert.equal(settings.default_workflow_permissions, "read");
+  assert.match(
+    read("docs/GIT-WORKFLOW.md"),
+    /--input \.github\/settings\/actions-workflow-permissions\.json/,
+    "the day-one checklist must apply the file, not a retyped flag",
+  );
+});
+
 test("publishing is off unless a repository variable says otherwise", () => {
   assert.match(workflows["release.yml"], /vars\.NPM_PUBLISH_ENABLED == 'true'/);
   // Trusted publishing generates provenance on its own; the explicit flag only
