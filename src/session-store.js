@@ -38,13 +38,14 @@ export class SessionStore {
     writeJsonAtomic(this.#file, { sessions: Object.fromEntries(this.#sessions) });
   }
 
-  /** Returns the session for a file, creating it on first sight. */
+  /** Returns the session for a file, creating it on first sight and touching its recency. */
   open(file) {
     const canonical = canonicalFile(file);
     const key = sessionKey(canonical);
+    const now = new Date().toISOString();
     let session = this.#sessions.get(key);
     if (!session) {
-      if (this.#sessions.size >= limits.sessions) throw new HttpError(429, "too many sessions");
+      if (this.#sessions.size >= limits.sessions) this.#evict();
       session = {
         key,
         file: canonical,
@@ -54,12 +55,36 @@ export class SessionStore {
         revision: 0,
         pending: [],
         chat: [],
-        createdAt: new Date().toISOString(),
+        createdAt: now,
+        lastActive: now,
       };
       this.#sessions.set(key, session);
-      this.#persist();
+    } else {
+      session.lastActive = now;
     }
+    this.#persist();
     return session;
+  }
+
+  /**
+   * Makes room at the cap by disposing the least useful session, so a review is a bounded thing that
+   * ends rather than an entry that accumulates until the tool wedges. An ended review goes before a
+   * live one, and the longest-untouched before a recent one; a session with a poll attached right now
+   * is never disposed, so an agent is never left polling a session that vanished. If every session has
+   * a poll, the cap is real work and the new open is refused.
+   */
+  #evict() {
+    const evictable = [...this.#sessions.values()].filter(
+      (s) => (this.#pollsByKey.get(s.key) ?? 0) === 0,
+    );
+    if (evictable.length === 0) throw new HttpError(429, "too many active sessions");
+    evictable.sort((a, b) => {
+      if (Boolean(a.endedAt) !== Boolean(b.endedAt)) return a.endedAt ? -1 : 1;
+      return (a.lastActive ?? a.createdAt).localeCompare(b.lastActive ?? b.createdAt);
+    });
+    const victim = evictable[0];
+    this.#sessions.delete(victim.key);
+    this.#clearWorking(victim.key);
   }
 
   get(key) {
@@ -67,6 +92,11 @@ export class SessionStore {
     const session = this.#sessions.get(key);
     if (!session) throw new HttpError(404, "no such session");
     return session;
+  }
+
+  /** How many sessions are held right now; bounded by `limits.sessions`. */
+  get count() {
+    return this.#sessions.size;
   }
 
   keyFor(file) {
@@ -128,6 +158,7 @@ export class SessionStore {
       throw new HttpError(429, "too many prompts waiting for the agent");
     }
     const at = new Date().toISOString();
+    session.lastActive = at;
     const accepted = prompts.map((raw) => {
       const prompt = validatePrompt(raw);
       return { uid: session.nextUid++, at, ...prompt };
@@ -145,7 +176,10 @@ export class SessionStore {
 
   /** The file changed on disk: number the new state and tell every open tab. */
   bumpRevision(key) {
-    const session = this.get(key);
+    // A watcher can outlive its session by a beat if the session was evicted; then there is nothing
+    // to renumber, so tolerate the gap rather than throwing inside the fs.watch callback.
+    const session = this.#sessions.get(key);
+    if (!session) return 0;
     session.revision += 1;
     this.#persist();
     this.#events.emit(key, { type: "reload", revision: session.revision });

@@ -79,6 +79,7 @@ async function boot() {
   sync(session);
   render();
   listen();
+  startHeartbeat(typeof app.idleMs === "number" ? app.idleMs : 1_800_000);
 }
 
 /** Adopts the state the server just described, reloading the page under review if it moved on. */
@@ -129,6 +130,24 @@ async function listen() {
   }
   connection = "gone";
   render();
+}
+
+// The daemon idles out on inactivity, so a tab keeps it alive only while the reviewer is actually on
+// it: a heartbeat runs while the tab is visible and stops while it is hidden. An open tab left and
+// walked away from therefore stops holding the process, rather than pinning it open for good, and the
+// review is not lost - pending notes live in sessionStorage and the tab resyncs when it comes back.
+let heartbeat = null;
+function beat() {
+  fetch("/health").catch(() => {});
+}
+function startHeartbeat(idleMs) {
+  clearInterval(heartbeat);
+  const everyMs = Math.max(500, Math.floor(idleMs / 3));
+  const tick = () => document.visibilityState === "visible" && beat();
+  heartbeat = setInterval(tick, everyMs);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") beat();
+  });
 }
 
 async function* lines(body) {

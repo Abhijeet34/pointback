@@ -211,8 +211,8 @@ test("the page outline is bounded, replaced with each batch, and delivered with 
   }
 });
 
-test("pending prompts, chat entries and sessions are capped", () => {
-  const { file, artifact, dir } = lab();
+test("pending prompts and chat entries are capped", () => {
+  const { file, artifact } = lab();
   const store = new SessionStore(file);
   const { key } = store.open(artifact);
   const batch = Array.from({ length: limits.promptsPerRequest }, () => prompt());
@@ -226,17 +226,61 @@ test("pending prompts, chat entries and sessions are capped", () => {
     store.get(key).chat.length,
     Math.min(limits.pendingPromptsPerSession, limits.chatEntriesPerSession),
   );
+});
+
+test("sessions are bounded: opening past the cap disposes the oldest instead of wedging", () => {
+  const { file, artifact, dir } = lab();
+  const store = new SessionStore(file);
+  const first = store.open(artifact).key;
+  const keys = [first];
   for (let i = 1; i < limits.sessions; i += 1) {
     const extra = join(dir, `extra-${i}.html`);
     writeFileSync(extra, "<p></p>");
-    store.open(extra);
+    keys.push(store.open(extra).key);
   }
+  // At the cap, a brand-new file opens rather than being refused, and the count stays bounded.
   const oneMore = join(dir, "one-more.html");
   writeFileSync(oneMore, "<p></p>");
+  const fresh = store.open(oneMore).key;
+  assert.equal(store.count, limits.sessions, "the session count never grows past the cap");
+  assert.ok(store.get(fresh).file.endsWith("one-more.html"), "the fresh review opened");
+  // The oldest, least-recently-active session is the one disposed, so a review is bounded and a
+  // machine holds at most `limits.sessions` sessions no matter how many files have been reviewed.
   assert.throws(
-    () => store.open(oneMore),
-    (e) => e.status === 429,
+    () => store.get(first),
+    (e) => e.status === 404,
+    "the least-recently-active session was disposed",
   );
+});
+
+test("an ended review is disposed before a live one, and a polled session is never disposed", async () => {
+  const { file, artifact, dir } = lab();
+  const store = new SessionStore(file);
+  const live = store.open(artifact).key;
+  const files = [];
+  for (let i = 1; i < limits.sessions; i += 1) {
+    const extra = join(dir, `extra-${i}.html`);
+    writeFileSync(extra, "<p></p>");
+    files.push(extra);
+    store.open(extra);
+  }
+  // End the second-opened session so it becomes the preferred eviction candidate.
+  const endedKey = store.keyFor(files[0]);
+  store.end(endedKey, "user");
+  // Hold a poll on the oldest session so it cannot be the victim despite its age.
+  const aborted = new AbortController();
+  const held = store.waitForFeedback(live, 5000, aborted.signal);
+  const oneMore = join(dir, "one-more.html");
+  writeFileSync(oneMore, "<p></p>");
+  store.open(oneMore);
+  assert.throws(
+    () => store.get(endedKey),
+    (e) => e.status === 404,
+    "the ended review was disposed before the older live one",
+  );
+  assert.equal(store.get(live).key, live, "the session with a poll attached was kept");
+  aborted.abort();
+  assert.equal(await held, null);
 });
 
 test("a poller wakes on feedback, times out to waiting, and a losing poller keeps waiting", async () => {

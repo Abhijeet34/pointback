@@ -158,6 +158,11 @@ The review script is inserted into the artifact as a DOM node through a real HTM
 Sibling assets resolve through a path check that survives encoded traversal, backslashes, unicode lookalikes, null bytes, absolute paths and symlink escape.
 State is written to a temporary file and renamed, `0600` in a `0700` directory.
 
+A review is a bounded thing that ends, not state that piles up.
+The daemon idles out after `POINTBACK_IDLE_MS` of no activity, and a review tab keeps it alive only while the reviewer is on it: the tab heartbeats while its page is visible and stops when it is hidden, so a review left open and walked away from releases the process rather than pinning it open for good.
+Sessions are capped at `sessions` in `src/limits.js`; opening past the cap disposes the least-recently-active session, an ended review before a live one, so `state.json` holds at most that many sessions no matter how many files have been reviewed.
+After a hundred reviews on a long-lived machine, then, there is one small loopback daemon that exits on its own when idle, and a `state.json` bounded to the most recent sessions, each holding that session's path and the notes sent in it.
+
 The process opens no outbound connection, ever; `test/egress.test.js` proves it across the whole slice.
 
 ## Develop

@@ -354,6 +354,39 @@ setInterval(() => {
   },
 );
 
+test(
+  "a hidden tab stops heartbeating so the daemon idles out, a visible one keeps it alive",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // A private daemon with a short idle, so the whole abandon-and-release lifecycle fits a test.
+    const lab2 = isolatedEnv({ POINTBACK_IDLE_MS: "1500" });
+    try {
+      const session = (await cli([fixture], lab2.env)).json().session;
+      const port = lab2.serverInfo().port;
+      const alive = () =>
+        fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(500) })
+          .then((r) => r.ok)
+          .catch(() => false);
+      const page = await browser.page(session.url);
+      await page.waitFor("document.body.dataset.ready === '1'");
+      // With the tab's event stream open, the daemon does not idle out past its short idle.
+      await new Promise((r) => setTimeout(r, 2000));
+      assert.equal(await alive(), true, "an open tab keeps the daemon alive past its idle");
+      // Hide the tab: its heartbeat stops, and with no activity touching it the daemon idles out even
+      // though the stream is still open. This is the abandoned-tab case the heartbeat is here to end.
+      await page.eval(
+        `Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+         document.dispatchEvent(new Event("visibilitychange"));`,
+      );
+      await new Promise((r) => setTimeout(r, 3000));
+      assert.equal(await alive(), false, "a hidden tab lets the daemon release the process");
+      await page.close();
+    } finally {
+      await lab2.stop();
+    }
+  },
+);
+
 /**
  * A private copy of the fixture a test can save over, tall enough to scroll and ending in a
  * block deep enough that a click near the foot of the frame can only have landed in it.
