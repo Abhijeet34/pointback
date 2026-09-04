@@ -9,36 +9,44 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# No `concurrency` block: cancelling a publish mid-flight causes real damage
-# (AGENTS.md, "CI runner platforms").
+# No `concurrency` block, for two reasons rather than one. Cancelling a publish
+# mid-flight causes real damage (AGENTS.md, "CI runner platforms"), and GitHub
+# keeps only one PENDING run per group even when nothing is cancelled in flight:
+# a third push evicts the second, and the run it evicts could be the one carrying
+# a release. Queueing here would lose a release to save a runner.
 
 permissions:
   contents: read
 
 jobs:
-  # Opens or updates the release pull request; on the merge of that pull request
-  # it tags and creates the GitHub release. Nothing below runs otherwise.
-  release-please:
-    name: release-please
+  # release-please does two things on two different events, and only one of them
+  # may be gated. Opening the release pull request has to happen on every push to
+  # `main`, unconditionally: a gate in front of it would stop the pull request
+  # from ever appearing, which is a worse failure than the one being fixed. So the
+  # action is split by its own two skip inputs. This half opens and updates the
+  # pull request and `skip-github-release` keeps it from tagging anything;
+  # `release-tag` at the bottom is the other half, behind the matrix.
+  release-pr:
+    name: release-pr
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # A dispatch names a ref, and the workflow that runs is the one on that ref.
     # This says out loud what `on: push` already restricts, so a dispatch aimed at
-    # a branch cannot run the release path from a tree nobody merged.
+    # a branch cannot run the release path from a tree nobody merged. Every job
+    # below reaches this guard through `needs:`, so it is stated once.
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
       pull-requests: write
-    outputs:
-      created: ${{ steps.rp.outputs.release_created }}
-      tag: ${{ steps.rp.outputs.tag_name }}
-      sha: ${{ steps.rp.outputs.sha }}
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: rp
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # "if set to true, then do not try to tag releases" - the action's own
+          # description of this input, at the SHA pinned above.
+          skip-github-release: true
 
   # The release pull request's CI does not start on its own: release-please opens
   # it with GITHUB_TOKEN, GitHub creates the resulting `pull_request` run in an
@@ -50,7 +58,7 @@ jobs:
   # the narrowing, and test/approve-release-checks.test.js demonstrates it.
   release-pr-checks:
     name: release-pr-checks
-    needs: release-please
+    needs: release-pr
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -71,19 +79,56 @@ jobs:
       - name: Approve the release pull request's parked checks
         run: node scripts/approve-release-checks.js
 
-  # The release commit is main's head, which is what this workflow's own
-  # checkout ref resolves to, so the tree these runners test is the tree the tag
-  # names - and the preflight below proves that rather than assuming it.
+  # Unconditional, and that is the whole point. This job used to sit behind
+  # `release-please` and behind `outputs.created`, which put the three-platform
+  # matrix AFTER the tag it was meant to gate: on run 33859541647 the tag v0.1.1
+  # and its release were created by the first job, `windows-2025` then failed, and
+  # `artifacts` was skipped - the same empty release as v0.1.0, from the run that
+  # was merged to prevent it.
+  #
+  # Asking "is this push a release?" before running the matrix is what would
+  # reintroduce it: that answer is release-please's to give, and a second opinion
+  # that says no when the truth is yes skips the matrix, skips `release-tag` with
+  # it, and drops the release. So there is no second opinion. The matrix runs on
+  # every push to `main`, and the tag is on the far side of it.
+  #
+  # The tree it tests is main's head, which is the tree `release-tag` tags and the
+  # tree `artifacts` packs; the preflight there proves that rather than assuming it.
   cross-platform:
     name: cross-platform
-    needs: release-please
-    if: needs.release-please.outputs.created == 'true'
+    needs: release-pr
     uses: ./.github/workflows/cross-platform.yml
+
+  # The other half of release-please: this one tags and creates the GitHub
+  # release, and it cannot start until macOS, Windows and Linux have all passed
+  # in this run, on this tree. `skip-github-pull-request` keeps it from opening a
+  # second pull request behind `release-pr`'s back. On an ordinary push there is
+  # no merged release pull request to release, so it does nothing and says so
+  # through `created`.
+  release-tag:
+    name: release-tag
+    needs: [release-pr, cross-platform]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+      sha: ${{ steps.rp.outputs.sha }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
 
   artifacts:
     name: artifacts
-    needs: [release-please, cross-platform]
-    if: needs.release-please.outputs.created == 'true'
+    needs: release-tag
+    if: needs.release-tag.outputs.created == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -93,12 +138,12 @@ jobs:
       attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ needs.release-please.outputs.tag }}
-      RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
+      TAG: ${{ needs.release-tag.outputs.tag }}
+      RELEASE_SHA: ${{ needs.release-tag.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ needs.release-tag.outputs.tag }}
           # The preflight resolves the tag object, which a ref-only fetch of the
           # commit would not bring.
           fetch-depth: 0
@@ -148,8 +193,8 @@ jobs:
   # signed by the job above.
   publish:
     name: publish
-    needs: [release-please, artifacts]
-    if: needs.release-please.outputs.created == 'true' && vars.NPM_PUBLISH_ENABLED == 'true'
+    needs: [release-tag, artifacts]
+    if: needs.release-tag.outputs.created == 'true' && vars.NPM_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -157,12 +202,12 @@ jobs:
       id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ needs.release-please.outputs.tag }}
-      RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
+      TAG: ${{ needs.release-tag.outputs.tag }}
+      RELEASE_SHA: ${{ needs.release-tag.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ needs.release-tag.outputs.tag }}
           fetch-depth: 0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
