@@ -28,7 +28,10 @@ const directives = (text) =>
 function namedStepBody(text, stepName) {
   const escaped = stepName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = text.match(
-    new RegExp(`^ {6}- name: ${escaped}\\n(?: {8}if: .*\\n)? {8}run: \\|\\n((?: {10}.*\\n|\\n)+)`, "m"),
+    new RegExp(
+      `^ {6}- name: ${escaped}\\n(?: {8}if: .*\\n)? {8}run: \\|\\n((?: {10}.*\\n|\\n)+)`,
+      "m",
+    ),
   );
   assert.ok(match, `no step named "${stepName}" with a run: | body`);
   return match[1].replace(/^ {10}/gm, "").replace(/\n+$/, "");
