@@ -52,6 +52,24 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+/* The mark and the wordmark are one unit: the mark keeps the identity when the name is dropped. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.brand-mark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  stroke: var(--text);
+}
+
+.brand-mark .dot {
+  fill: var(--pencil);
+}
+
 .bar-name {
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -326,16 +344,22 @@ body {
   white-space: nowrap;
 }
 
+/* Away is a ring, not a dimmed dot: an outline reads as "not here yet", a faded dot as "off". */
 .presence-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--line);
+  border: 2px solid var(--muted);
 }
 
 .presence[data-state="listening"] .presence-dot,
 .presence[data-state="working"] .presence-dot {
+  border-color: var(--pencil);
   background: var(--pencil);
+}
+
+.presence-since:empty {
+  display: none;
 }
 
 .presence[data-state="working"] .presence-dot {
@@ -444,5 +468,6 @@ body {
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
+    animation: none !important;
   }
 }

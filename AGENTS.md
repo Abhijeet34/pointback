@@ -18,6 +18,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   A leaked child keeps Node's event loop open after the suite has its verdict, so `npm test` also carries `--test-force-exit`; `--test-timeout` alone does not close a handle (measured on Node 24.11.1: a file leaking a child ran until killed from outside, force-exit ended the same run in 0.13 s).
 - The browser suite says on stdout which of the two it did, `browser suite: running against <path>` or `browser suite: SKIPPED`, and CI lifts that line into the job summary.
   A skip needs an explicit `<PREFIX>BROWSER=none`; finding no browser at all fails.
+- The mark is one geometry in two places, `src/browser/icon.svg` for the tab and the same paths inlined in `chrome.html` for the header; `README.md`, "Develop", says how `icon-32.png` is regenerated when the SVG changes. Neither file may contain the product name (`test/identity.test.js`).
 - The page outline the SDK sends with every batch is capped in characters at both ends (`MAX_OUTLINE_CHARS` in `src/browser/sdk.js`, `structureChars` in `src/limits.js`) because it lands in an agent's context window on every delivery; `README.md` carries the measured before and after.
 
 ## Delivery

@@ -23,11 +23,20 @@ import { writeJsonAtomic } from "./state-dir.js";
 
 const SDK_PATH = "/sdk.js";
 const browserDir = new URL("./browser/", import.meta.url);
-const staticFiles = {
-  "/sdk.js": ["sdk.js", "text/javascript; charset=utf-8"],
-  "/chrome.js": ["chrome.js", "text/javascript; charset=utf-8"],
-  "/chrome.css": ["chrome.css", "text/css; charset=utf-8"],
-};
+// Read once at startup like the chrome page itself: these bytes never change while the
+// daemon runs, and a Map keeps a request for "__proto__" from finding anything.
+const staticFiles = new Map(
+  Object.entries({
+    "/sdk.js": "text/javascript; charset=utf-8",
+    "/chrome.js": "text/javascript; charset=utf-8",
+    "/chrome.css": "text/css; charset=utf-8",
+    "/icon.svg": "image/svg+xml",
+    "/icon-32.png": "image/png",
+  }).map(([path, type]) => [
+    path,
+    { type, body: readFileSync(new URL(path.slice(1), browserDir)) },
+  ]),
+);
 const chromeHtml = readFileSync(new URL("chrome.html", browserDir), "utf8");
 
 const contentTypes = {
@@ -126,10 +135,10 @@ async function route(req, res, ctx) {
     setImmediate(() => process.exit(0));
     return;
   }
-  if (req.method === "GET" && Object.hasOwn(staticFiles, pathname)) {
-    const [file, type] = staticFiles[pathname];
-    res.writeHead(200, { ...STATIC_HEADERS, "content-type": type });
-    return res.end(readFileSync(new URL(file, browserDir)));
+  const asset = req.method === "GET" ? staticFiles.get(pathname) : undefined;
+  if (asset) {
+    res.writeHead(200, { ...STATIC_HEADERS, "content-type": asset.type });
+    return res.end(asset.body);
   }
 
   const chrome = pathname.match(/^\/session\/([^/]+)$/);

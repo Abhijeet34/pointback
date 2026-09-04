@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- The point the reviewer made, and the return that carries it back. Drawn on a 16px grid
+       with 2px strokes on whole pixels, so the tab icon is crisp at 1x; the colours follow the
+       tab strip's own scheme. The same geometry is inlined in chrome.html for the header. -->
+  <style>
+    .stroke { stroke: #282e38; }
+    .dot { fill: #0087bc; }
+    @media (prefers-color-scheme: dark) {
+      .stroke { stroke: #eae8e0; }
+      .dot { fill: #59c5f5; }
+    }
+  </style>
+  <path class="stroke" d="M11 7v4H3M7 7 3 11l4 4" fill="none" stroke-width="2" />
+  <circle class="dot" cx="11" cy="4" r="3" />
+</svg>

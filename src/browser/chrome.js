@@ -21,12 +21,18 @@ const card = /** @type {HTMLFormElement} */ (document.getElementById("card"));
 const cardTarget = document.getElementById("cardTarget");
 const cardText = /** @type {HTMLTextAreaElement} */ (document.getElementById("cardText"));
 const cardCancel = /** @type {HTMLButtonElement} */ (document.getElementById("cardCancel"));
+const presenceSince = document.getElementById("presenceSince");
 const pendingKey = `pending:${key}`;
 
+// Every label is read by a reviewer mid-review, so the resting state between two polls
+// is "away", never a negative: it is the normal state, and Send works the same in it.
 const PRESENCE = {
-  waiting: ["Not listening", "Your agent is not connected. It will pick your notes up next time."],
-  listening: ["Listening", "Your agent is connected and waiting for your notes."],
-  working: ["Working", "Your agent took your last notes and is working on them."],
+  waiting: [
+    "Agent away",
+    "Your agent is not checking for notes right now. Send still works: notes wait here and go out the next time it checks.",
+  ],
+  listening: ["Agent listening", "Your agent is connected and waiting for your notes."],
+  working: ["Agent working", "Your agent took your last notes and is working on them."],
 };
 const RETRIES = 5;
 
@@ -48,6 +54,8 @@ let workingTimer = null;
 let stream = null;
 let retaking = false;
 let problem = null;
+let marksDirty = true;
+let shownMarks = 0;
 const stored = readStored();
 let pending = stored.prompts;
 let structure = stored.structure;
@@ -64,8 +72,9 @@ const api = (method, path, body) =>
   });
 
 async function boot() {
-  const app = await fetch("/health").then((r) => r.json());
-  document.getElementById("appName").textContent = app.app;
+  // The name and the session are independent, so both requests are in flight at once.
+  const health = fetch("/health").then((r) => r.json());
+  health.then((app) => (document.getElementById("appName").textContent = app.app));
   try {
     session = await api("GET", `/api/${key}/session`);
   } catch {
@@ -73,6 +82,7 @@ async function boot() {
       "This link no longer works. Run the command on the file again to get a fresh one.";
     return;
   }
+  const app = await health;
   document.title = `${session.fileName} · ${app.app}`;
   document.getElementById("fileName").textContent = session.fileName;
   chat = session.chat;
@@ -205,12 +215,9 @@ function savePending() {
   sessionStorage.setItem(pendingKey, JSON.stringify({ prompts: pending, structure }));
 }
 
+/** Every state change lands here; the notes list is rebuilt only when the notes changed. */
 function render() {
-  marks.replaceChildren(
-    ...chat.map((entry) => mark(entry, true)),
-    ...pending.map((entry) => mark(entry, false)),
-  );
-  marks.scrollTop = marks.scrollHeight;
+  if (marksDirty) renderMarks();
   renderPresence();
   renderNotice();
   const working = presence.state === "working" && !ended;
@@ -228,31 +235,62 @@ function render() {
   annotateSwitch.disabled = ended !== null;
   endButton.disabled = ended !== null;
   // A failure the reviewer needs to see outlives the render that would otherwise write over it.
-  statusLine.textContent = problem
-    ? problem
-    : ended
-      ? count === 0
-        ? "Nothing more can be sent from this page."
-        : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
-      : working
-        ? "Your agent is working on your last notes. Send opens again when it comes back."
-        : deferredReload
-          ? "The file changed. This page updates as soon as you finish this note."
-          : chat.length === 0 && count === 0
-            ? "Turn on Annotate, then click an element or Tab to it and press Enter. Select the text, or hold Shift and press an arrow key, for a passage."
-            : count === 0
-              ? "Every note has been sent."
-              : `${count} not sent yet.`;
+  setText(
+    statusLine,
+    problem
+      ? problem
+      : ended
+        ? count === 0
+          ? "Nothing more can be sent from this page."
+          : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
+        : working
+          ? "Your agent is working on your last notes. Send opens again when it comes back."
+          : deferredReload
+            ? "The file changed. This page updates as soon as you finish this note."
+            : chat.length === 0 && count === 0
+              ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
+              : count === 0
+                ? "Every note has been sent."
+                : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
+  );
+}
+
+// Rebuilt only on a change to the notes, and scrolled to the end only when one was added:
+// a presence flip or a reload must not yank a reviewer who scrolled up to reread a note.
+function renderMarks() {
+  marksDirty = false;
+  marks.replaceChildren(
+    ...chat.map((entry) => mark(entry, true)),
+    ...pending.map((entry) => mark(entry, false)),
+  );
+  const shown = chat.length + pending.length;
+  if (shown > shownMarks) marks.scrollTop = marks.scrollHeight;
+  shownMarks = shown;
+}
+
+function notesChanged() {
+  marksDirty = true;
+  render();
+}
+
+/** A live region announces every write, so an unchanged status is left alone. */
+function setText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
 }
 
 function renderPresence() {
   const [label, explanation] = PRESENCE[presence.state] ?? PRESENCE.waiting;
   presencePill.dataset.state = presence.state;
   presencePill.title = explanation;
-  presenceText.textContent =
-    presence.state === "working" ? `${label} ${elapsed(presence.since)}` : label;
+  setText(presenceText, label);
   clearInterval(workingTimer);
-  workingTimer = presence.state === "working" ? setInterval(renderPresence, 1000) : null;
+  workingTimer = presence.state === "working" ? setInterval(tickSince, 1000) : null;
+  tickSince();
+}
+
+// The clock ticks outside the live region, so a screen reader hears "working" once, not every second.
+function tickSince() {
+  presenceSince.textContent = presence.state === "working" ? elapsed(presence.since) : "";
 }
 
 function elapsed(since) {
@@ -271,7 +309,10 @@ function renderNotice() {
         : connection === "lost"
           ? ["Reconnecting…", false]
           : !liveReload
-            ? ["Live reload stopped, so this page will not follow the file any more.", false]
+            ? [
+                "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                false,
+              ]
             : [null, false];
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
@@ -303,7 +344,7 @@ function mark(entry, sent) {
     remove.addEventListener("click", () => {
       pending = pending.filter((item) => item !== entry);
       savePending();
-      render();
+      notesChanged();
     });
     li.append(remove);
   }
@@ -447,7 +488,7 @@ endDialog.addEventListener("close", async () => {
   } catch (error) {
     problem = `Could not end the review: ${error.message}`;
   }
-  render();
+  notesChanged();
 });
 
 document.getElementById("sendForm").addEventListener("submit", async (event) => {
@@ -461,11 +502,10 @@ document.getElementById("sendForm").addEventListener("submit", async (event) => 
     pending = [];
     savePending();
     chat = (await api("GET", `/api/${key}/session`)).chat;
-    render();
   } catch (error) {
     problem = `Could not send: ${error.message}`;
   }
-  render();
+  notesChanged();
 });
 
 card.addEventListener("submit", (event) => {
@@ -479,6 +519,9 @@ card.addEventListener("submit", (event) => {
   pending.push({ prompt, ...composing.note, at: new Date().toISOString() });
   structure = composing.structure;
   savePending();
+  // The one path that adds a note, so the one that must mark the list stale: closeCompose's own
+  // render leaves it alone, which is the point - a presence flip or a reload must not rebuild it.
+  marksDirty = true;
   closeCompose(true);
 });
 cardText.addEventListener("keydown", (event) => {
