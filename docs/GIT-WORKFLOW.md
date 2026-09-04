@@ -12,6 +12,7 @@ Everything here is either in the repository or is a repository setting with a co
 - [What a pull request costs](#what-a-pull-request-costs)
 - [Versioning](#versioning)
 - [Releasing](#releasing)
+- [The identity release automation runs as](#the-identity-release-automation-runs-as)
 - [Publishing to npm](#publishing-to-npm)
 - [Rolling back](#rolling-back)
 - [Applying the settings that are not files](#applying-the-settings-that-are-not-files)
@@ -166,38 +167,80 @@ Merging any conventional commit to `main` starts `.github/workflows/release.yml`
 
 ```text
 squash-merge to main
-  └─ release-please ── opens or updates "chore(main): release x.y.z"
-                       (nothing else runs; the pull request accumulates changes)
+  ├─ release-please ───── opens or updates "chore(main): release x.y.z"
+  └─ release-pr-checks ── releases that pull request's parked run, so it is checked
+                          (the release pull request accumulates changes; nothing ships)
 
-merge the release pull request
+the release pull request, green on Linux, macOS and Windows, is merged
   └─ release-please ── writes CHANGELOG.md and package.json, tags vX.Y.Z, creates the GitHub release
-       ├─ cross-platform ── macOS, Windows and current-Node Linux, all green before anything ships
+       ├─ cross-platform ── the tagged tree, on all three, before anything ships
        ├─ artifacts ─────── preflight, npm pack, SBOM, build provenance, upload both to the release
        └─ publish ───────── only if the NPM_PUBLISH_ENABLED repository variable is "true"
 ```
+
+Merging is the one step a person takes, and it is the one step that should stay theirs.
+Everything on either side of it is machinery.
 
 `CHANGELOG.md` is release-please's file.
 Nobody edits it by hand.
 `.prettierignore` excludes it for that reason: it is generated markdown, not formatted source, and `format:check` reading it failed the release pull request before anyone could review the release.
 
-**The release pull request's CI does not start on its own.**
-It is opened by `github-actions[bot]`, and GitHub classifies a bot's pull request as an external contribution even when the branch is in this repository, so every run on it completes as `action_required` with no check runs at all.
-That was measured rather than inferred: runs `33800809078`, `33801077938` and `33816315115` all ended `action_required` on branch `release-please--branches--main--components--pointback`, `GET /repos/OWNER/REPO/commits/<head sha>/check-runs` returned `total_count: 0`, and one `POST .../actions/runs/33816315115/approve` released it into a real run that reported four check runs and a verdict 26 seconds later.
-`.github/settings/actions-fork-pr-contributor-approval.json` is the policy that does it, committed at GitHub's default so a change to it is visible in a diff; none of the three values that policy accepts is defined over bots, and the two community reports of this behaviour say loosening it does not exempt `github-actions[bot]`.
+**The release pull request's CI does not start on its own, and `release-pr-checks` is what starts it.**
+GitHub's documentation on triggering a workflow states the cause: when a workflow using `GITHUB_TOKEN` creates or updates a pull request, the resulting `pull_request` event creates workflow runs in an approval-required state.
+release-please opens the release pull request with exactly that token.
+Its run therefore completes as `action_required` having produced no check runs at all, the required `checks` context never appears, and the one pull request that carries a release was the one pull request in this repository that nothing checked.
 
-So a release costs one deliberate approval, from the pull request's Checks tab or from the command line:
+Measured here, not inferred.
+Six of the eight `pull_request` runs ever created on `release-please--branches--main--components--pointback` concluded `action_required`: `33800809078`, `33801077938`, `33827701874`, `33847530622`, `33848542837`, `33849288493`.
+The two that did not, `33816315115` and `33818965689`, ran because a person clicked.
+On 2026-09-04, `GET /repos/OWNER/REPO/commits/b06ba06.../check-runs` answered `total_count: 0` and `.../status` answered `total_count: 0, state: pending`, while pull request 12 on this repository at the same moment reported four check runs.
+Note what that rules out: the runs are created and then held, so this is not the blanket rule that a `GITHUB_TOKEN` event creates no run at all.
 
-```sh
-gh-axi api -X POST "repos/OWNER/REPO/actions/runs/RUN_ID/approve"
-```
+`scripts/approve-release-checks.js` releases them, and the `release-pr-checks` job runs it after `release-please` on every push to `main`.
+It holds `actions: write` and no other write, and the only pull request it can reach is one whose author is `github-actions[bot]`, whose head branch starts `release-please--` and is in this repository rather than a fork, and whose base is the default branch.
+`test/approve-release-checks.test.js` puts one impostor against each of those four clauses.
+A parked run it cannot release fails the job, because the thing being replaced is a release that stalls in silence: a pull request whose checks never appeared reads exactly like one whose checks have not finished.
 
-The `checks` context then appears on the release pull request's head commit and the branch ruleset is satisfied in the ordinary way; nothing merges unchecked.
-Removing that click means giving release automation a token identity that is not `github-actions[bot]` - a GitHub App installation token or a fine-grained PAT with `contents: write` and `pull-requests: write` - passed to `release-please-action` as `token:`.
-That is a credential to store and rotate for one click a release, which is why it has not been done.
+**That the workflow's own `GITHUB_TOKEN` may approve was measured, because the REST documentation does not say.**
+The page for `POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve` names a scope for OAuth and classic tokens and lists no fine-grained permission at all.
+Run `33852140477` ran this script under `GITHUB_TOKEN` with `permissions: actions: write`, printed `approving run 33851478839 on #10` and then `#10 at 74fc89a... now faces the same gates as any other pull request`, in a step that took 2.3 seconds.
+Pull request 10 went from "no CI checks configured" to `check`, `secret scan` and `dependency review` running on it.
+No credential was stored to do that, and none is stored anywhere on this path.
+
+**The release pull request also runs macOS and Windows, and it is the only pull request that does.**
+Merging it is what creates the tag and the GitHub release, and no gate after the tag can un-cut a release.
+That is not hypothetical.
+On run `33822348514` the `release-please` job created `v0.1.0` and its GitHub release, `cross-platform` then failed on `windows-2025`, and `artifacts` and `publish` were skipped: release `382407638` stands today with `assets: []`, so v0.1.0 has no tarball, no SBOM and no attestation.
+The three platforms are a condition of the merge now instead.
+The `cross-platform` job in `ci.yml` calls the same reusable workflow, guarded on `startsWith(github.head_ref, 'release-please--')`, and reaches branch protection through `checks` like every other job.
+Every other pull request skips it and pays nothing.
+
+A gate that runs after the thing it was meant to prevent is decoration.
 
 The `artifacts` job checks the tag out rather than `main`, so the tarball is packed from the tagged tree, and the `cross-platform` job it depends on runs on the release commit, which the preflight proves is the commit the tag names.
 The SBOM comes from GitHub's dependency-graph export (`gh api repos/OWNER/REPO/dependency-graph/sbom`), which describes the manifests from the same data the pull request dependency review reads.
 `actions/attest-build-provenance` signs the tarball, so the release asset is verifiable with `gh attestation verify` whether or not it was ever published to npm.
+
+## The identity release automation runs as
+
+Release automation runs as `github-actions[bot]`, holding the per-run `GITHUB_TOKEN` and nothing else.
+Two alternatives exist. Neither is taken, and the table is why.
+
+| Identity                                                             | To set up                                                                           | Forever after                                                    | What a leak hands over                                                                                    | When a person leaves                                                      |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `GITHUB_TOKEN` as `github-actions[bot]`, current                     | Nothing; it is the default                                                          | Nothing to store, rotate or renew                                | Nothing outlives the job it was minted for, and its scope is this repository                              | Nothing changes; the identity belongs to the repository                   |
+| A GitHub App, minting an installation token per run                  | Create the app, generate a private key, install it, store the id and key as secrets | A private key on a rotation calendar, and an app to maintain     | Installation tokens for every repository the app is installed on, from anywhere, until the key is revoked | An app on a personal account leaves with the account unless transferred   |
+| A fine-grained PAT with `contents: write` and `pull-requests: write` | Mint it, store it as a repository secret                                            | Re-mint it before it expires; GitHub caps the lifetime at a year | Write on this repository's contents and pull requests, as the person who minted it, until it is revoked   | It dies with the account and the release path stops the next time it runs |
+
+Both alternatives exist for one reason.
+An installation token and a PAT are not `GITHUB_TOKEN`, so a pull request opened with one is not held for approval, and the click disappears.
+`release-pr-checks` removes the click without either, so a credential with a lifetime would buy nothing that a job holding `actions: write` for one API call does not already do.
+
+Weigh them against the word that matters, which is untethered.
+The current identity depends on no stored secret, no person being available, and no personal account.
+The other two fail on the first, and on a user-owned repository the app also fails on the third.
+
+The cheapest identity is the one nobody has to remember.
 
 ## Publishing to npm
 
@@ -206,6 +249,21 @@ The `publish` job runs only when the repository variable `NPM_PUBLISH_ENABLED` i
 With the variable unset the release ends at the tag, the GitHub release and its two assets, and the job is visibly skipped rather than quietly absent.
 `package.json` used to hold a second refusal in `"private": true` and `"license": "UNLICENSED"`; both were dropped once the name was settled and the licence became Apache-2.0, so the variable stands alone.
 `scripts/release-preflight.js --publishing` still refuses a publish with `private` true, with the licence absent or `UNLICENSED`, or with no `files` allowlist, which is what catches a regression to any of those rather than a first setup.
+
+**Trusted publishing is configured on this side and on no other, and the rest cannot be done from this repository.**
+The workflow half is real: `id-token: write` on the `publish` job, `registry-url` on `setup-node`, the npm version assertion, and `npm publish` with no `--provenance` flag.
+The registry half does not exist.
+`GET https://registry.npmjs.org/pointback` answered `404 {"error":"Not found"}` on 2026-09-04, so there is no package, no package settings page, and therefore no trusted publisher to match the OIDC claim against.
+Setting `NPM_PUBLISH_ENABLED` today would reach `npm publish` and fail with `ENEEDAUTH`, after the tag and the GitHub release already exist.
+
+Two things have to happen on npmjs.com first, and neither can be done from here:
+
+1. Publish `0.1.0` by hand, once, from a laptop with `npm login` and 2FA. `npm/cli#8544`, "Allow publishing initial version with OIDC", is open on exactly this.
+1. Configure the trusted publisher on the package's settings page: this repository, and the workflow filename `release.yml`, both case-sensitive and exact.
+
+`package.json` also carries a `repository` field now, which it did not.
+npm's provenance prerequisites require "a public `repository` that matches (case-sensitive) where you are publishing with provenance from", trusted publishing generates provenance by default, and without the field the publish fails at the registry with the tag already cut.
+`scripts/release-preflight.js --publishing` refuses that case now, alongside `private`, the licence and the `files` allowlist, so it is caught on the runner rather than by npm.
 
 The mechanism, when it is turned on, is **npm trusted publishing over OIDC**.
 No long-lived token is stored anywhere: the `publish` job asks GitHub for an OIDC token and npm trusts the claim, which names the owner, the repository and the workflow filename.
@@ -220,11 +278,7 @@ From npm's trusted-publishing documentation, read 2026-09-03:
 So there is no `--provenance` flag in the publish command, and there should not be: it is redundant when the repository is public and it turns a provenance-ineligible publish into a failed release.
 The workflow asserts the npm version itself, because an old npm fails with `ENEEDAUTH`, which reads like a misconfigured trusted publisher rather than an old client.
 
-**The one thing OIDC cannot do is create the package.**
-Trusted publishing is configured in a package's settings page on npmjs.com, and that page exists only for a package that has been published.
-`npm/cli#8544`, "Allow publishing initial version with OIDC", is open on this point.
-So the first publish of a name is a manual one, from a laptop, with `npm login` and 2FA, and every release after it comes from CI with no token anywhere.
-Check the npmjs.com form at the time: if it offers a trusted publisher for a name that has never been published, skip the manual step.
+Check the npmjs.com form at the time: if it offers a trusted publisher for a name that has never been published, skip the manual first publish above.
 
 If a token is ever genuinely required instead, it is a granular access token scoped to this package alone, read and write, at the shortest expiry npm offers, stored as the repository secret `NPM_TOKEN` and consumed as `NODE_AUTH_TOKEN`.
 That is the fallback, not the plan.
@@ -297,9 +351,14 @@ gh-axi variable set NPM_PUBLISH_ENABLED --body true -R "$REPO"
   The `creation` rule is unavailable here for the reason measured in "What protects main", so `scripts/release-preflight.js` is the only thing between a stray tag and a release attached to it.
   Moving the repository under an organization would make a GitHub App bypass actor legal and let `creation` come back; nothing else would.
 
-- **Every release needs one human approval before its checks can run.**
-  The cause and the two rejected remedies are in "Releasing"; the residual gap is that a release stalls silently, because a pull request whose checks never appeared reads the same as one whose checks have not finished.
-  A token identity for release automation is the only thing that would close it.
+- **The tag is created before `artifacts` runs, and nothing can take it back.**
+  The merge that creates it is now gated on all three platforms, so the tree is proven; what is not gated is the four steps after the tag, and a failure in any of them leaves a real release carrying no assets.
+  That is what release `382407638` is: v0.1.0, `assets: []`, from run `33822348514`.
+  A draft release promoted by `artifacts` would close it, and was not taken here because GitHub withholds the tag itself until a draft release is published, which `scripts/release-preflight.js` resolves and compares.
+
+- **Approving the release pull request's checks is not reviewing them.**
+  `release-pr-checks` starts the gates; it does not merge, and `required_approving_review_count` is 0, so a green release pull request can be merged by anyone with write access.
+  That is the same property every pull request here has, recorded in "What protects main", and the approval job does not change it.
 
 - **No ruleset drift job.**
   The committed exports and the `diff` above are the whole mechanism, run by a person.
