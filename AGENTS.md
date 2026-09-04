@@ -40,6 +40,7 @@ Never add `cancel-in-progress` to a release, publish, or scheduled workflow: can
 Chrome is present on all three runner images, and both workflows resolve it through `KNOWN_BROWSERS` in `test/helpers/cdp.js` rather than naming a path, so a moved binary is one edit there.
 Never quote a glob in a `package.json` script: npm runs a script through `cmd.exe` on Windows and cmd keeps the quotes, so `'test/*.test.js'` reached `node --test` with its quote characters, matched nothing, and passed `windows-2025` green over zero tests on run 33824393013.
 Each leg reports in its own job summary which browser it drove, and a leg that reports no verdict fails; that is the guard against the same silence going green again.
+The product itself does not pass on Windows: `docs/GIT-WORKFLOW.md`, "Known gaps", carries the 20 failures grouped by cause, and the leg stays red until that product decision is made.
 
 ## Maintaining this file
 
