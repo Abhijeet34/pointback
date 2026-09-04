@@ -57,24 +57,32 @@ jobs:
       - name: Let Chrome's sandbox start
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      # Naming the binary rather than letting the suite discover one: on a runner
-      # with no browser the suite skips itself and the job still goes green, and a
-      # silent skip of the only end-to-end coverage is worse than a red job. The
-      # variable's name is derived, not typed, because the product name is a
-      # parameter (src/identity.js, AGENTS.md).
-      - name: Point the browser suite at the runner's Chrome
-        env:
-          BROWSER_PATH: /usr/bin/google-chrome
+      # Resolved, never typed here: `KNOWN_BROWSERS` in test/helpers/cdp.js is the one
+      # list of paths this repository knows a browser by, and a matrix column naming a
+      # path of its own meant a runner image that moved Chrome could only be found out
+      # by a red release. Resolving in a named step rather than letting the suite
+      # discover one keeps the loud failure: no browser is this step failing in a
+      # second with the candidates printed, never a skip inside a green job.
+      #
+      # Existence, not `--version`: chrome.exe on Windows has no console to print to and
+      # opens a window instead. What a present-but-broken binary does is now the
+      # launcher's to report - it distinguishes a browser that would not start from one
+      # that started and was not detected, which this step never could.
+      - name: Point the browser suite at this runner's Chrome
         run: |
           set -euo pipefail
-          # Asked of the binary before the suite needs it, so a runner image that
-          # dropped Chrome says so here in one second instead of inside a test.
-          "$BROWSER_PATH" --version
-          # The ${...} below belongs to the JavaScript template literal, not to the shell.
+          # The ${...} below belongs to the JavaScript template literals, not to the shell.
           # shellcheck disable=SC2016
           node --input-type=module -e '
             import { envPrefix } from "./src/identity.js";
-            console.log(`${envPrefix}BROWSER=${process.env.BROWSER_PATH}`);
+            import { KNOWN_BROWSERS, findBrowser } from "./test/helpers/cdp.js";
+            const found = findBrowser();
+            if (!found) {
+              console.error(`::error::no browser on ${process.env.RUNNER_OS}. Looked for: ${KNOWN_BROWSERS.join(", ")}`);
+              process.exit(1);
+            }
+            console.error(`resolved the browser for ${process.env.RUNNER_OS} to ${found}`);
+            console.log(`${envPrefix}BROWSER=${found}`);
           ' >> "$GITHUB_ENV"
 
       # The suite bounds its own waits, so this budget should never be reached;
@@ -89,13 +97,25 @@ jobs:
       # Whether the only end-to-end coverage ran is not something a reader should
       # have to infer from a green tick, so the suite's own verdict line is lifted
       # out of the log and into the summary - including when the step above failed.
+      #
+      # And a missing verdict fails the job rather than noting itself. Reporting alone
+      # was not enough: on run 33824393013 windows-2025 ran zero tests, because npm
+      # hands a script to cmd.exe there and cmd keeps the quotes around the glob, so
+      # `node --test` matched no file, printed a 100% coverage report of an empty set
+      # and exited 0. The job was green over a suite that never ran.
       - name: Say whether the browser case ran
         if: always()
         run: |
           set -uo pipefail
+          rc=0
           verdict=$(grep -m1 '^browser suite' "$RUNNER_TEMP/check.log" 2>/dev/null || true)
-          echo "${verdict:-browser suite: no verdict, the run ended before the suite reached it}" \
-            >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$verdict" ]; then
+            verdict="browser suite: NO VERDICT, this platform never reached the suite"
+            echo "::error::$verdict" >&2
+            rc=1
+          fi
+          echo "${{ runner.os }} - $verdict" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
 
   # A local body rather than a call to the shared secret-scan workflow this
   # gate's upstream publishes. GitHub's reusable-workflow access table permits a

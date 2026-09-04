@@ -6,14 +6,23 @@
 // killed the browser, and the live child process kept Node's event loop open until the job
 // hit its own 20-minute limit and was reported `cancelled`. A test may fail; it may not hang.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { env } from "../../src/identity.js";
 
-/** Chrome prints its DevTools URL within a second or two of starting; this is 10x that. */
-const STARTUP_MS = 15_000;
+/**
+ * A loaded runner is slow to hand a browser its first frame, and 15 s was not enough: on run
+ * 33823294930 Chrome 152 was still alive and still starting up at 26.6 s, and the suite
+ * called it dead. Detection below is a poll, so the happy path is unaffected by the ceiling
+ * and only a genuine failure pays it. A bounded 45 s, never the 20-minute job timeout.
+ */
+const STARTUP_MS = 45_000;
+/** Between two reads of the port file; a browser that is ready is picked up within one tick. */
+const STARTUP_POLL_MS = 100;
+/** Enough of the browser's own output to name a failure by, without holding a session of it. */
+const STDERR_KEPT = 4000;
 const CONNECT_MS = 10_000;
 /** No DevTools command in this suite is slow; a reply that never comes is a dead browser. */
 const COMMAND_MS = 30_000;
@@ -23,7 +32,12 @@ const LOAD_MS = 15_000;
 /** The iframe attaches within a paint or two of the page requesting it. */
 const ATTACH_MS = 10_000;
 
-const KNOWN_BROWSERS = [
+/**
+ * Every path this repository knows a browser by, most specific first, and the one list of
+ * them: the CI workflows resolve through `findBrowser` rather than naming a path of their
+ * own, so a runner image that moves Chrome is a one-line change here and not a red release.
+ */
+export const KNOWN_BROWSERS = [
   "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -50,41 +64,47 @@ function terminate(child) {
   return exited.finally(() => clearTimeout(forced));
 }
 
-/** Resolves with the ws:// endpoint Chrome prints on stderr, or rejects saying what it printed instead. */
-function devToolsUrl(child, executable) {
-  return new Promise((resolve, reject) => {
-    let text = "";
-    const settle = (fn, value) => {
-      clearTimeout(timer);
-      child.stderr.off("data", onData);
-      child.off("exit", onExit);
-      fn(value);
-    };
-    const onData = (chunk) => {
-      text += chunk;
-      const match = text.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) settle(resolve, match[1]);
-    };
-    const onExit = (code) =>
-      settle(
-        reject,
-        new Error(
-          `${executable} exited ${code} before announcing DevTools: ${text.trim() || "(silent)"}`,
-        ),
-      );
-    const timer = setTimeout(
-      () =>
-        settle(
-          reject,
-          new Error(
-            `waited ${STARTUP_MS} ms for ${executable} to print "DevTools listening on"; it printed: ${text.trim() || "(nothing)"}`,
-          ),
-        ),
-      STARTUP_MS,
-    );
-    child.stderr.on("data", onData);
-    child.once("exit", onExit);
+/**
+ * The DevTools endpoint, read from the file Chromium writes rather than the line it prints.
+ * `<user-data-dir>/DevToolsActivePort` is written once the DevTools server is listening -
+ * line 1 the port, line 2 the browser's websocket path - and a file is a guarantee where
+ * stderr is not: on run 33823294930 a runner with no session bus printed four
+ * `dbus/bus.cc:405` errors, buried the announcement, and the suite called a live browser
+ * dead. Expected noise on a machine with no session bus must not read as a failure.
+ *
+ * The three things that go wrong here need three different fixes, so they get three
+ * different sentences: no browser at all is `findBrowser` returning null before this is
+ * ever called, a browser that would not start exits, and a browser that started but was
+ * not detected is still running when the budget ends.
+ */
+async function devToolsUrl(child, executable, profile) {
+  const portFile = join(profile, "DevToolsActivePort");
+  let printed = "";
+  // Never detached, unlike the listener this replaces: a piped stderr nobody reads fills
+  // its buffer and stalls the browser writing to it, hours after the launch succeeded.
+  child.stderr.on("data", (chunk) => {
+    printed = (printed + chunk).slice(-STDERR_KEPT);
   });
+  const said = () => printed.trim() || "(nothing)";
+
+  const deadline = Date.now() + STARTUP_MS;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(
+        `${executable} would not start: it exited ${child.exitCode ?? child.signalCode} ` +
+          `before opening a DevTools port. It printed: ${said()}`,
+      );
+    }
+    // Chromium writes this file in one go, but a read that catches it half-written must
+    // wait rather than parse a partial port, so both lines are checked before it is used.
+    const [port, path] = (existsSync(portFile) ? readFileSync(portFile, "utf8") : "").split("\n");
+    if (/^\d+$/.test(port ?? "") && path?.startsWith("/")) return `ws://127.0.0.1:${port}${path}`;
+    await sleep(STARTUP_POLL_MS);
+  }
+  throw new Error(
+    `${executable} started but was not detected: it is still running and wrote no DevTools ` +
+      `port to ${portFile} within ${STARTUP_MS} ms. It printed: ${said()}`,
+  );
 }
 
 export async function launchBrowser(executable, { width = 1200, height = 800 } = {}) {
@@ -102,6 +122,11 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
       "--disable-background-networking",
       "--disable-component-update",
       "--disable-sync",
+      // A CI runner gives /dev/shm 64 MB where a desktop gives it half of RAM, and
+      // Chromium's default shared-memory backing store takes a renderer down when it
+      // runs out. On a machine with a real /dev/shm this only moves those pages to
+      // a temporary file.
+      "--disable-dev-shm-usage",
       "about:blank",
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
@@ -112,7 +137,7 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
   };
   let browser;
   try {
-    browser = await connect(await devToolsUrl(child, executable));
+    browser = await connect(await devToolsUrl(child, executable, profile));
   } catch (error) {
     // The one line the incident turned on: a browser nobody kills keeps the suite alive
     // long after it has a verdict, and the verdict never gets printed.

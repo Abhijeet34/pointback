@@ -15,6 +15,8 @@ One person, one agent, one local file.
 
 Node 24 or newer, and a browser to review in.
 CI runs the suite on `ubuntu-24.04` every pull request, and on `macos-15` and `windows-2025` weekly and on every release.
+Linux and macOS pass it.
+Windows does not: the suite runs there and 20 tests fail, and `docs/GIT-WORKFLOW.md` under "Known gaps" says what breaks.
 
 ## Install
 

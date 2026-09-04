@@ -1,0 +1,8 @@
+# LF in the working tree on every platform. The Windows runner checks out under
+# git's core.autocrlf=true, so without this every text file arrives CRLF and
+# `prettier --check` refuses the whole tree - 61 of 61 files on run 33822348514,
+# which is what actually reddened the windows-2025 leg of the 0.1.0 release.
+# Normalising the checkout rather than relaxing prettier's `endOfLine` keeps one
+# line ending in the repository, the working tree and the packed tarball, and
+# leaves the formatter free to keep saying what it sees.
+* text=auto eol=lf
