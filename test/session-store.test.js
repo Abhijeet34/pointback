@@ -431,6 +431,54 @@ test("ending queues the last prompts in the same step, wakes a waiting poll, and
   assert.deepEqual(await waiting, { status: "ended", ended_by: "agent" });
 });
 
+test("ending while the agent is working says so, so no tab is left holding a disabled Send", async () => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  store.queue(key, [prompt()]);
+  await store.waitForFeedback(key, 5000);
+  assert.equal(store.presence(key).state, "working");
+  const seen = [];
+  store.on(key, (event) => event.type === "presence" && seen.push(event.state));
+  store.end(key, "user");
+  assert.deepEqual(seen, ["waiting"], "the tab is told the agent is no longer working");
+  assert.equal(store.presence(key).state, "waiting");
+  store.reopen(key);
+  assert.equal(store.presence(key).state, "waiting", "and a reopened review has no working agent");
+});
+
+test("an agent end never relabels a review the reviewer ended", () => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  store.end(key, "user");
+  assert.deepEqual(store.end(key, "agent"), { status: "ended", ended_by: "user", queued: 0 });
+  assert.equal(store.status(key).ended.by, "user");
+  assert.equal(new SessionStore(file).status(key).ended.by, "user");
+});
+
+test("each note keeps the time it was written, and an unusable stamp falls back to arrival", async () => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  const written = new Date().toISOString();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  store.queue(key, [
+    { ...prompt("first"), at: written },
+    prompt("second"),
+    { ...prompt("third"), at: "half past nine" },
+    { ...prompt("fourth"), at: new Date(Date.now() + 60_000).toISOString() },
+    { ...prompt("fifth"), at: new Date(2000, 0, 1).toISOString() },
+  ]);
+  const { prompts } = await store.waitForFeedback(key, 5000);
+  const arrived = prompts[1].at;
+  assert.equal(prompts[0].at, written, "the note carries when the reviewer wrote it");
+  assert.ok(prompts[0].at < arrived, "which is not the moment the batch arrived");
+  assert.equal(prompts[2].at, arrived, "a stamp that is not a time is not usable");
+  assert.equal(prompts[3].at, arrived, "nor one from the future");
+  assert.equal(prompts[4].at, arrived, "nor one from before the review opened");
+});
+
 test("concurrent polls are capped", async () => {
   const { file, artifact } = lab();
   const store = new SessionStore(file);

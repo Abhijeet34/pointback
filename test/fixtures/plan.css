@@ -16,3 +16,8 @@ th {
   border: 1px solid #ccc;
   padding: 6px 10px;
 }
+/* The header is painted in capitals and written in the source as `Owner`. Every anchor and
+   outline assertion against this table is therefore a regression on the difference. */
+th {
+  text-transform: uppercase;
+}

@@ -400,7 +400,7 @@ window.addEventListener("message", (event) => {
       data.rects,
     );
   } else if (data.type === "scroll") {
-    lastScroll = { x: data.x, y: data.y };
+    lastScroll = { x: data.x, y: data.y, selector: data.selector, text: data.text, top: data.top };
     // Published for the same reason as ready, revision and annotate: the reviewer's place is
     // what a reload restores, and it arrives from another frame's event loop. Anything acting
     // on it - a reload, a test - would otherwise be guessing that the report had landed.
@@ -470,7 +470,9 @@ card.addEventListener("submit", (event) => {
   if (!composing || prompt === "") return;
   // The instruction is this textarea's value; every other field describes the target the artifact
   // proposed. This is the only path that adds a note, and it runs only on the reviewer's submit.
-  pending.push({ prompt, ...composing.note });
+  // Stamped here, after the target spread, so the moment the reviewer wrote it survives a send
+  // that batches ten minutes of notes into one instant, and no proposed `at` can displace it.
+  pending.push({ prompt, ...composing.note, at: new Date().toISOString() });
   structure = composing.structure;
   savePending();
   closeCompose(true);
