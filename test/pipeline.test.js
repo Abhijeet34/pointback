@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { name } from "../src/identity.js";
+import { envPrefix, name } from "../src/identity.js";
 
 const root = new URL("../", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -19,6 +21,41 @@ const directives = (text) =>
     .split("\n")
     .filter((line) => !/^\s*#/.test(line))
     .join("\n");
+
+// Both workflows indent a step's `- name:` at 6 spaces, its `run: |` at 8, and the body at
+// 10; extracting by name (rather than by position) is what lets a test run the real step
+// body instead of matching its source text.
+function namedStepBody(text, stepName) {
+  const escaped = stepName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = text.match(
+    new RegExp(`^ {6}- name: ${escaped}\\n(?: {8}if: .*\\n)? {8}run: \\|\\n((?: {10}.*\\n|\\n)+)`, "m"),
+  );
+  assert.ok(match, `no step named "${stepName}" with a run: | body`);
+  return match[1].replace(/^ {10}/gm, "").replace(/\n+$/, "");
+}
+
+// Executes an extracted step body with bash, the same interpreter every runner this
+// repository uses hands a `run: |` block to.
+function runStepBody(body, { env = {} } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "pipeline-test-"));
+  try {
+    const script = join(dir, "step.sh");
+    writeFileSync(script, body);
+    try {
+      const stdout = execFileSync("bash", [script], {
+        cwd: root,
+        env: { ...process.env, ...env },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { status: 0, stdout, stderr: "" };
+    } catch (error) {
+      return { status: error.status, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 test("a pull request runs Linux runners only", () => {
   // AGENTS.md, "CI runner platforms". ci.yml is the only workflow a pull
@@ -60,7 +97,14 @@ test("the step that runs the suite ends itself before its job's backstop does", 
 // on run 33822348514, which is what reddened windows-2025 on the 0.1.0 release while
 // Linux and macOS went green. Deleting the file reddens the release path again silently.
 test("the checkout is LF on every platform, so the formatter sees one tree", () => {
-  assert.match(read(".gitattributes"), /^\* text=auto eol=lf$/m);
+  // Asked of git itself, the real consumer of .gitattributes, rather than of the file's
+  // own text: what matters is the checkout behavior git derives from it, not its wording.
+  const attr = execFileSync("git", ["check-attr", "text", "eol", "--", "README.md"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.match(attr, /:\s*text:\s*auto/);
+  assert.match(attr, /:\s*eol:\s*lf/);
 });
 
 // A green tick does not say whether the only end-to-end coverage ran, and a release is
@@ -73,12 +117,49 @@ test("the checkout is LF on every platform, so the formatter sees one tree", () 
 // always was: a silently skipped browser case reporting green is worse than a red one.
 test("a workflow that runs the suite fails when the browser case did not report", () => {
   for (const file of ["ci.yml", "cross-platform.yml"]) {
-    const text = workflows[file];
-    assert.match(text, /npm run check 2>&1 \| tee "\$RUNNER_TEMP\/check\.log"/, file);
-    assert.match(text, /name: Say whether the browser case ran\n\s+if: always\(\)/, file);
-    assert.match(text, /grep -m1 '\^browser suite' "\$RUNNER_TEMP\/check\.log"/, file);
-    assert.match(text, />> "\$GITHUB_STEP_SUMMARY"/, file);
-    assert.match(text, /NO VERDICT[\s\S]*?rc=1\n[\s\S]*?exit \$rc/, file);
+    // The step's own text names the platform through a GitHub expression the shell never
+    // sees; a literal stands in for it so the extracted body runs unmodified otherwise.
+    const body = namedStepBody(workflows[file], "Say whether the browser case ran").replace(
+      /\$\{\{\s*[\w.]+\s*\}\}/g,
+      "test-platform",
+    );
+
+    const ran = mkdtempSync(join(tmpdir(), "pipeline-test-"));
+    try {
+      writeFileSync(join(ran, "check.log"), "browser suite: running against /some/path\n");
+      const summary = join(ran, "summary");
+      writeFileSync(summary, "");
+      const result = runStepBody(body, {
+        env: { RUNNER_TEMP: ran, GITHUB_STEP_SUMMARY: summary },
+      });
+      assert.equal(result.status, 0, `${file}: ${result.stderr}`);
+      assert.equal(
+        readFileSync(summary, "utf8"),
+        "test-platform - browser suite: running against /some/path\n",
+        file,
+      );
+    } finally {
+      rmSync(ran, { recursive: true, force: true });
+    }
+
+    const notRan = mkdtempSync(join(tmpdir(), "pipeline-test-"));
+    try {
+      writeFileSync(join(notRan, "check.log"), "some other line\n");
+      const summary = join(notRan, "summary");
+      writeFileSync(summary, "");
+      const result = runStepBody(body, {
+        env: { RUNNER_TEMP: notRan, GITHUB_STEP_SUMMARY: summary },
+      });
+      assert.equal(result.status, 1, file);
+      assert.equal(
+        readFileSync(summary, "utf8"),
+        "test-platform - browser suite: NO VERDICT, this platform never reached the suite\n",
+        file,
+      );
+      assert.match(result.stderr, /::error::browser suite: NO VERDICT/, file);
+    } finally {
+      rmSync(notRan, { recursive: true, force: true });
+    }
   }
 });
 
@@ -98,12 +179,38 @@ test("the test script quotes no pattern, so Windows runs the suite too", () => {
 // lives in `KNOWN_BROWSERS` alone, and a workflow that types a path of its own puts it back
 // to three - a runner image that moves Chrome would again be found out only by a red job.
 test("no workflow types a browser path of its own", () => {
-  for (const file of workflowNames) {
-    assert.doesNotMatch(
-      directives(workflows[file]),
-      /google-chrome|chrome\.exe|Google Chrome/,
-      file,
-    );
+  for (const file of ["ci.yml", "cross-platform.yml"]) {
+    const body = namedStepBody(workflows[file], "Point the browser suite at this runner's Chrome");
+    const browserVar = `${envPrefix}BROWSER`;
+
+    // Resolves, rather than assumes: the value it writes back is exactly the one the
+    // environment handed it, proving the step defers to findBrowser instead of typing a path.
+    const resolved = mkdtempSync(join(tmpdir(), "pipeline-test-"));
+    try {
+      const envFile = join(resolved, "env");
+      writeFileSync(envFile, "");
+      const result = runStepBody(body, {
+        env: { [browserVar]: process.execPath, GITHUB_ENV: envFile },
+      });
+      assert.equal(result.status, 0, `${file}: ${result.stderr}`);
+      assert.equal(readFileSync(envFile, "utf8"), `${browserVar}=${process.execPath}\n`, file);
+    } finally {
+      rmSync(resolved, { recursive: true, force: true });
+    }
+
+    // No browser resolves at all: findBrowser returns null for the literal "none", and the
+    // step must fail loudly rather than let an empty value pass silently downstream.
+    const missing = mkdtempSync(join(tmpdir(), "pipeline-test-"));
+    try {
+      const envFile = join(missing, "env");
+      writeFileSync(envFile, "");
+      const result = runStepBody(body, { env: { [browserVar]: "none", GITHUB_ENV: envFile } });
+      assert.equal(result.status, 1, file);
+      assert.match(result.stderr, /::error::no browser on/, file);
+      assert.equal(readFileSync(envFile, "utf8"), "", file);
+    } finally {
+      rmSync(missing, { recursive: true, force: true });
+    }
   }
 });
 

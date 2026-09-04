@@ -116,6 +116,14 @@ jobs:
           fi
           echo "${{ runner.os }} - $verdict" >> "$GITHUB_STEP_SUMMARY"
           exit $rc
+
+  # A local body rather than a call to the shared secret-scan workflow this
+  # gate's upstream publishes. GitHub's reusable-workflow access table permits a
+  # private caller to use a private or a public workflow and a PUBLIC caller
+  # only a public one, so a public repository cannot reach a workflow in a
+  # private one (docs/GIT-WORKFLOW.md records the check and the day it stops
+  # being needed). The two SYNCED files are still canonical and pinned below;
+  # only this body is local.
   secret-scan:
     name: secret scan
     runs-on: ubuntu-24.04
