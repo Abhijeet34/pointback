@@ -200,7 +200,7 @@ The two that did not, `33816315115` and `33818965689`, ran because a person clic
 On 2026-09-04, `GET /repos/OWNER/REPO/commits/b06ba06.../check-runs` answered `total_count: 0` and `.../status` answered `total_count: 0, state: pending`, while pull request 12 on this repository at the same moment reported four check runs.
 Note what that rules out: the runs are created and then held, so this is not the blanket rule that a `GITHUB_TOKEN` event creates no run at all.
 
-`scripts/approve-release-checks.js` releases them, and the `release-pr-checks` job runs it after `release-please` on every push to `main`.
+`scripts/approve-release-checks.js` releases them, and the `release-pr-checks` job runs it after `release-pr` on every push to `main`.
 It holds `actions: write` and no other write, and the only pull request it can reach is one whose author is `github-actions[bot]`, whose head branch starts `release-please--` and is in this repository rather than a fork, and whose base is the default branch.
 `test/approve-release-checks.test.js` puts one impostor against each of those four clauses.
 A parked run it cannot release fails the job, because the thing being replaced is a release that stalls in silence: a pull request whose checks never appeared reads exactly like one whose checks have not finished.
