@@ -358,7 +358,9 @@ class Page {
       return 1;
     })()`);
     const deadline = Date.now() + timeoutMs;
+    let moves = 0;
     do {
+      moves += 1;
       await this.send("Input.dispatchMouseEvent", {
         type: "mouseMoved",
         x: point.x,
@@ -369,7 +371,17 @@ class Page {
       if (await frame.eval("globalThis.sawPointer")) return;
       await sleep(25);
     } while (Date.now() < deadline);
-    throw new Error(`the pointer never reached the frame at ${point.x},${point.y}`);
+    // Which of the two things went wrong is not something the coordinate alone can
+    // say, and they need different fixes: the page naming an element other than the
+    // frame is geometry measured too early, the page naming the frame is input that
+    // was never routed into it. Asked here rather than reconstructed from a rerun.
+    const at = await this.eval(
+      `(() => { const e = document.elementFromPoint(${point.x}, ${point.y}); return e ? e.id || e.tagName : "nothing"; })()`,
+    );
+    throw new Error(
+      `the pointer never reached the frame at ${point.x},${point.y}: ${moves} moves over ` +
+        `${timeoutMs} ms, and the page has "${at}" at that point`,
+    );
   }
 
   /** A press, a path and a release: what makes the browser build a real text selection. */
