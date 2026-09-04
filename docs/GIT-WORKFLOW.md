@@ -212,7 +212,7 @@ Merging it is what creates the tag and the GitHub release, and no gate after the
 That is not hypothetical.
 On run `33822348514` the `release-please` job created `v0.1.0` and its GitHub release, `cross-platform` then failed on `windows-2025`, and `artifacts` and `publish` were skipped: release `382407638` stands today with `assets: []`, so v0.1.0 has no tarball, no SBOM and no attestation.
 The three platforms are a condition of the merge now instead.
-The `cross-platform` job in `ci.yml` calls the same reusable workflow, guarded on `startsWith(github.head_ref, 'release-please--')`, and reaches branch protection through `checks` like every other job.
+The `cross-platform` job in `ci.yml` calls the same reusable workflow, guarded on `startsWith(github.head_ref, 'release-please--')` and on the head repository matching this one, and reaches branch protection through `checks` like every other job.
 Every other pull request skips it and pays nothing.
 That the guard fires was measured on a throwaway pull request from a `release-please--` branch: run `33853207426` reported seven jobs green - `check`, `secret scan`, `dependency review`, all three `cross-platform` legs, and `checks` - where the same tree on an ordinary branch reports four and skips the matrix.
 

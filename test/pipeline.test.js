@@ -97,7 +97,10 @@ test("an ordinary pull request runs Linux only; the release pull request runs al
   assert.match(guard[1], /startsWith\(github\.head_ref, 'release-please--'\)/);
   // A fork can name its branch release-please--anything; only the same-repository
   // clause below keeps that fork's pull request from spending the matrix too.
-  assert.match(guard[1], /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
+  assert.match(
+    guard[1],
+    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+  );
 });
 
 // The gap this closes was measured rather than assumed: on run 33822348514 the
