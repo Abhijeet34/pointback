@@ -281,7 +281,7 @@ Setting `NPM_PUBLISH_ENABLED` today would reach `npm publish` and fail with `ENE
 
 Two things have to happen on npmjs.com first, and neither can be done from here:
 
-1. Publish `0.1.0` by hand, once, from a laptop with `npm login` and 2FA. `npm/cli#8544`, "Allow publishing initial version with OIDC", is open on exactly this.
+1. Publish once by hand, from a laptop with `npm login` and 2FA. `npm/cli#8544`, "Allow publishing initial version with OIDC", is open on exactly this. Publish the release that carries the attested `.tgz` asset, not the oldest tag: `v0.1.0` and `v0.1.1` were both cut with `assets: []` by the bug `#15` fixed, so neither has a tarball anything signed.
 1. Configure the trusted publisher on the package's settings page: this repository, and the workflow filename `release.yml`, both case-sensitive and exact.
 
 `package.json` also carries a `repository` field now, which it did not.

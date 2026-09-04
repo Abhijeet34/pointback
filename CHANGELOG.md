@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/Abhijeet34/pointback/compare/v0.1.1...v0.1.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **npm:** make pointback's first publish package-page and manifest correct ([#17](https://github.com/Abhijeet34/pointback/issues/17)) ([87cf346](https://github.com/Abhijeet34/pointback/commit/87cf3465ea66807240be127e92949215cdbc6361))
+
 ## [0.1.1](https://github.com/Abhijeet34/pointback/compare/v0.1.0...v0.1.1) (2026-09-04)
 
 

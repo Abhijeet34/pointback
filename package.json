@@ -1,12 +1,29 @@
 {
   "name": "pointback",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Point at a rendered HTML page; the pointing comes back to your agent as an instruction.",
+  "keywords": [
+    "ai-agents",
+    "annotation",
+    "cli",
+    "code-review",
+    "developer-tools",
+    "feedback",
+    "html",
+    "local-first",
+    "nodejs",
+    "visual-review"
+  ],
   "type": "module",
   "license": "Apache-2.0",
+  "author": "Abhijeet Halder",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Abhijeet34/pointback.git"
+  },
+  "homepage": "https://github.com/Abhijeet34/pointback#readme",
+  "bugs": {
+    "url": "https://github.com/Abhijeet34/pointback/issues"
   },
   "bin": {
     "pointback": "bin/pointback.js"
@@ -14,10 +31,14 @@
   "files": [
     "bin",
     "src",
+    "!src/browser/tsconfig.json",
     "LICENSE",
     "README.md",
     "THIRD-PARTY-NOTICES.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=24"
   },
