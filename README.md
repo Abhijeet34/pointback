@@ -100,11 +100,11 @@ Each note in `prompts` looks like this:
 | Field      | What it carries                                                           |
 | ---------- | ------------------------------------------------------------------------- |
 | `uid`      | The note's number in this session, increasing                             |
-| `at`       | When the reviewer added it                                                |
+| `at`       | When the reviewer wrote it, not when the batch was sent                   |
 | `prompt`   | What the reviewer typed                                                   |
 | `selector` | A CSS selector for the element the reviewer was on                        |
 | `tag`      | That element's tag name, or `text` when the reviewer pointed at a passage |
-| `text`     | The visible text the reviewer saw there                                   |
+| `text`     | That element's own text, as the markup carries it                         |
 | `target`   | Present only for a passage or a table cell, and described below           |
 
 `prompt` is typed by the reviewer in the review chrome, never sent by the artifact page.
@@ -115,12 +115,17 @@ Each note in `prompts` looks like this:
 Every note carries `selector`, `tag` and `text`, which name the element the reviewer was looking at.
 Two kinds carry a `target` as well, because the element is not always the thing being pointed at.
 
+`selector` is a position, so it is the part that goes stale: add a section above the one a note is on and `main > h2:nth-of-type(1)` still resolves, to the heading you just wrote.
+`text` is what that element held when the note was written, so check it still matches before you edit there, and find the element by its text when it does not.
+`poll`'s own `next_step` says the same thing to the agent reading it.
+
 A `tag` of `text` is a passage, and its `target` is `{type: "text-range", start, end, before, after}`.
 `start` and `end` are character offsets into `selector`'s own `textContent`; `before` and `after` are up to 32 characters of the text on either side, whitespace collapsed.
 Resolve it with `element.textContent.slice(start, end)` and check that `before` and `after` still frame it.
 Offsets plus quotes survive the page being re-rendered from the same source, and a node path into the DOM does not, which is the whole reason the anchor is shaped this way.
 
 A `target.type` of `table-cell` names the cell by the table's header row and by the row's own first cell, as `{type: "table-cell", row: "Shadow traffic", column: "Owner"}`.
+Both names are the text the markup carries, not the text CSS painted, so a header styled `text-transform: uppercase` is still named `Owner` and still matches the file you are about to edit.
 A table with a `rowspan` or a `colspan` anywhere in it gets neither name: a shifted grid produces a wrong name, and a wrong name is worse than no name.
 
 `structure` is an outline of the page as the reviewer saw it, replaced with every batch: headings, sections, tables, lists, figures and code blocks, each addressed relative to the one above it, nothing that was not rendered, and capped at 2,000 characters.
@@ -141,7 +146,7 @@ The tab holds one connection, `GET /api/<key>/events`, and the server writes a l
 A capability token travels in a header, and an `EventSource` cannot send one, so the stream is NDJSON read with `fetch` rather than server-sent events.
 It carries four things.
 
-- **Live reload.** The server watches the artifact's directory, not its inode, so an editor's write-and-rename save still counts, and a burst of writes inside 100 ms is one change. Each change numbers a new revision; the tab reloads the artifact at that revision and puts the reviewer back where they were reading. A reload that would interrupt a half-typed note waits until the note is added.
+- **Live reload.** The server watches the artifact's directory, not its inode, so an editor's write-and-rename save still counts, and a burst of writes inside 100 ms is one change. Each change numbers a new revision; the tab reloads the artifact at that revision and puts the element the reviewer was reading back where it was on screen, so a section added above it does not push their line down the page. A reload that would interrupt a half-typed note waits until the note is added.
 - **Presence.** `waiting` when no poll is attached, `listening` while one is, `working` from the moment a poll takes a batch. Working is bounded by `workingMaxMs` in `src/limits.js`: an agent that took the feedback and never came back stops holding the reviewer's Send after three minutes.
 - **The handover.** Opening the file again opens a second tab, and the newest tab owns the artifact view. The older one is told the moment it happens and offers to take the review back, rather than finding out at the next save.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.

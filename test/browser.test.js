@@ -415,28 +415,59 @@ test(
     assert.equal(await page.eval("document.body.dataset.revision"), "0");
     assert.equal(await page.eval("document.getElementById('presence').dataset.state"), "waiting");
 
-    // Read to the bottom, then save: the page must come back at the bottom, not at the top.
     const rect = JSON.parse(
       await page.eval(
         "JSON.stringify(document.getElementById('artifact').getBoundingClientRect())",
       ),
     );
-    // The reviewer reads to the bottom, driven through the artifact's own session. Synthetic
-    // input is the wrong instrument here: a key goes to whichever frame holds focus, and a
-    // wheel goes to the frame under the point only once the browser holds that out-of-process
-    // frame's hit-test region - measured, a wheel re-sent for ten seconds still left scrollY
-    // at 0 about once in forty runs, and the fixed pause this replaces left the page at the
-    // top often enough to fail in CI, anchoring the note to whatever the foot of the frame
-    // happened to show. Clicking and typing into the frame stays covered by the annotation
-    // test above; this one is about the page coming back where the reviewer was.
+    // Both places below are set through the artifact's own session. Synthetic input is the wrong
+    // instrument here: a key goes to whichever frame holds focus, and a wheel goes to the frame
+    // under the point only once the browser holds that out-of-process frame's hit-test region -
+    // measured, a wheel re-sent for ten seconds still left scrollY at 0 about once in forty runs,
+    // and the fixed pause this replaces left the page at the top often enough to fail in CI,
+    // anchoring the note to whatever the foot of the frame happened to show. Clicking and typing
+    // into the frame stays covered by the annotation test above; this one is about the page
+    // coming back where the reviewer was.
     const artifact = await page.frame();
+
+    // The reviewer's place is a place in the page, not a number of pixels: an agent that adds a
+    // section above everything they have read must not push their line off the screen. Restoring
+    // the scroll offset alone did exactly that, by the height of whatever was inserted.
+    await artifact.eval("document.querySelector('blockquote').scrollIntoView({ block: 'center' })");
+    await page.waitFor("Number(document.body.dataset.scroll) > 0");
+    const wasAt = Number(
+      await artifact.eval(
+        "Math.round(document.querySelector('blockquote').getBoundingClientRect().top)",
+      ),
+    );
+    writeFileSync(
+      file,
+      html.replace(
+        "<main>",
+        '<main><section id="added"><h2>Added above</h2>' +
+          '<p style="height: 400px">A section the agent wrote above everything already read.</p>' +
+          "</section>",
+      ),
+    );
+    await page.waitFor("document.body.dataset.revision === '1'");
+    const nowAt = Number(
+      await artifact.eval(
+        "Math.round(document.querySelector('blockquote').getBoundingClientRect().top)",
+      ),
+    );
+    assert.ok(
+      Math.abs(nowAt - wasAt) <= 4,
+      `the passage the reviewer was reading moved from ${wasAt} px to ${nowAt} px`,
+    );
+
+    // Read to the bottom, then save: the page must come back at the bottom, not at the top.
     await artifact.eval("window.scrollTo(0, document.documentElement.scrollHeight)");
     // Then wait for that place to reach the chrome, which is what a reload restores from.
     await page.waitFor("Number(document.body.dataset.scroll) > 0");
 
     // Five saves in a row, timed from the write to the page being parsed, placed and annotatable.
     const latencies = [];
-    for (let revision = 1; revision <= 5; revision += 1) {
+    for (let revision = 2; revision <= 6; revision += 1) {
       const savedAt = Date.now();
       // Each save differs in size as well as content, so no two look alike to the watcher.
       writeFileSync(
