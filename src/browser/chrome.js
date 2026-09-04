@@ -17,6 +17,10 @@ const endGo = document.getElementById("endGo");
 const endDiscard = /** @type {HTMLButtonElement} */ (document.getElementById("endDiscard"));
 const presencePill = document.getElementById("presence");
 const presenceText = document.getElementById("presenceText");
+const card = /** @type {HTMLFormElement} */ (document.getElementById("card"));
+const cardTarget = document.getElementById("cardTarget");
+const cardText = /** @type {HTMLTextAreaElement} */ (document.getElementById("cardText"));
+const cardCancel = /** @type {HTMLButtonElement} */ (document.getElementById("cardCancel"));
 const pendingKey = `pending:${key}`;
 
 const PRESENCE = {
@@ -75,6 +79,7 @@ async function boot() {
   sync(session);
   render();
   listen();
+  startHeartbeat(typeof app.idleMs === "number" ? app.idleMs : 1_800_000);
 }
 
 /** Adopts the state the server just described, reloading the page under review if it moved on. */
@@ -127,6 +132,24 @@ async function listen() {
   render();
 }
 
+// The daemon idles out on inactivity, so a tab keeps it alive only while the reviewer is actually on
+// it: a heartbeat runs while the tab is visible and stops while it is hidden. An open tab left and
+// walked away from therefore stops holding the process, rather than pinning it open for good, and the
+// review is not lost - pending notes live in sessionStorage and the tab resyncs when it comes back.
+let heartbeat = null;
+function beat() {
+  fetch("/health").catch(() => {});
+}
+function startHeartbeat(idleMs) {
+  clearInterval(heartbeat);
+  const everyMs = Math.max(500, Math.floor(idleMs / 3));
+  const tick = () => document.visibilityState === "visible" && beat();
+  heartbeat = setInterval(tick, everyMs);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") beat();
+  });
+}
+
 async function* lines(body) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -147,6 +170,7 @@ function apply(event) {
     sync(event);
   } else if (event.type === "superseded") {
     current = false;
+    closeCompose(false);
   } else if (event.type === "reload") {
     revision = event.revision;
     if (current) show();
@@ -303,7 +327,52 @@ function post(message) {
 function setAnnotate(on) {
   annotate = on;
   annotateSwitch.setAttribute("aria-checked", String(on));
+  if (!on) closeCompose(false);
   post({ type: "annotate", on });
+}
+
+// The note card is composed in the chrome, from a target the artifact proposed. The artifact
+// sends the fields that describe what the reviewer pointed at, and never the note text, so a
+// hostile page cannot put words in the reviewer's mouth. `composing` holds the pending note.
+let composing = null;
+
+function openCompose(note, label, outline, rects) {
+  composing = { note, structure: typeof outline === "string" ? outline : "" };
+  // A half-typed note is worth more than a live reload; the reload lands when the card closes.
+  editing = true;
+  cardTarget.textContent = label;
+  cardText.value = "";
+  card.hidden = false;
+  placeCard(rects);
+  cardText.focus();
+  render();
+}
+
+function closeCompose(refocus) {
+  if (card.hidden) return;
+  card.hidden = true;
+  composing = null;
+  editing = false;
+  if (deferredReload) show();
+  // Tell the artifact the target is done so it drops the highlight; hand keyboard focus back to
+  // the frame and, for the keyboard path, ask it to refocus the element the reviewer came from.
+  post({ type: "compose", on: false, refocus });
+  if (refocus) frame.focus();
+  render();
+}
+
+/** Places the card over the artifact at the spot the reviewer pointed at, clamped to the mount. */
+function placeCard(rects) {
+  const mount = frame.parentElement;
+  const bounds = mount.getBoundingClientRect();
+  const frameBox = frame.getBoundingClientRect();
+  const r = Array.isArray(rects) && rects.length ? rects[rects.length - 1] : { left: 0, bottom: 0 };
+  const originX = frameBox.left - bounds.left;
+  const originY = frameBox.top - bounds.top;
+  const top = Math.min(originY + r.bottom + 8, bounds.height - card.offsetHeight - 8);
+  const left = Math.min(originX + r.left, bounds.width - card.offsetWidth - 8);
+  card.style.top = `${Math.max(8, top)}px`;
+  card.style.left = `${Math.max(8, left)}px`;
 }
 
 window.addEventListener("message", (event) => {
@@ -321,21 +390,21 @@ window.addEventListener("message", (event) => {
     document.body.dataset.annotate = data.on ? "1" : "0";
   } else if (data.type === "shown") {
     document.body.dataset.revision = String(shownRevision);
-  } else if (data.type === "queue" && data.prompt && typeof data.prompt === "object") {
-    pending.push(data.prompt);
-    if (typeof data.structure === "string") structure = data.structure;
-    savePending();
-    render();
+  } else if (data.type === "target" && data.note && typeof data.note === "object") {
+    // The artifact proposes a target; the reviewer's instruction is composed in the chrome, never
+    // sent by the page. A `queue` message carrying note text is deliberately not accepted here.
+    openCompose(
+      data.note,
+      typeof data.label === "string" ? data.label : "",
+      data.structure,
+      data.rects,
+    );
   } else if (data.type === "scroll") {
     lastScroll = { x: data.x, y: data.y };
     // Published for the same reason as ready, revision and annotate: the reviewer's place is
     // what a reload restores, and it arrives from another frame's event loop. Anything acting
     // on it - a reload, a test - would otherwise be guessing that the report had landed.
     document.body.dataset.scroll = String(data.y);
-  } else if (data.type === "editing") {
-    editing = data.on;
-    if (!editing && deferredReload) show();
-    render();
   }
 });
 
@@ -394,5 +463,26 @@ document.getElementById("sendForm").addEventListener("submit", async (event) => 
   }
   render();
 });
+
+card.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const prompt = cardText.value.trim();
+  if (!composing || prompt === "") return;
+  // The instruction is this textarea's value; every other field describes the target the artifact
+  // proposed. This is the only path that adds a note, and it runs only on the reviewer's submit.
+  pending.push({ prompt, ...composing.note });
+  structure = composing.structure;
+  savePending();
+  closeCompose(true);
+});
+cardText.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    card.requestSubmit();
+  } else if (event.key === "Escape") {
+    closeCompose(true);
+  }
+});
+cardCancel.addEventListener("click", () => closeCompose(true));
 
 boot();

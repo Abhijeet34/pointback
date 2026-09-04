@@ -60,10 +60,12 @@ export function serve({ stateDir, port = 0, idleMs = limits.idleShutdownMs, onId
   const store = new SessionStore(join(stateDir, "state.json"));
   const streams = new EventStreams(store);
   let idleTimer;
-  // An open review tab is a user, even a silent one, so the daemon idles only when none is left.
+  // The daemon idles out on inactivity. An open tab keeps it alive by heartbeating while the reviewer
+  // is on it, not merely by holding a stream open, so a review left and walked away from releases the
+  // process instead of pinning it forever. Every request - a poll, a heartbeat - is that activity.
   const touch = () => {
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => (streams.size > 0 ? touch() : close().then(onIdle)), idleMs);
+    idleTimer = setTimeout(() => close().then(onIdle), idleMs);
     idleTimer.unref();
   };
 
@@ -71,7 +73,7 @@ export function serve({ stateDir, port = 0, idleMs = limits.idleShutdownMs, onId
   const server = createServer(async (req, res) => {
     touch();
     try {
-      await route(req, res, { store, streams, token, port: boundPort() });
+      await route(req, res, { store, streams, token, port: boundPort(), idleMs });
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
       if (!(error instanceof HttpError)) console.error(error);
@@ -115,7 +117,7 @@ async function route(req, res, ctx) {
   assertHost(req, ctx.port);
 
   if (req.method === "GET" && pathname === "/health") {
-    return sendJson(res, 200, { ok: true, app: name, version });
+    return sendJson(res, 200, { ok: true, app: name, version, idleMs: ctx.idleMs });
   }
   if (req.method === "POST" && pathname === "/shutdown") {
     assertOrigin(req, ctx.port);
@@ -174,9 +176,10 @@ async function api(req, res, url, ctx) {
     if (!file) throw new HttpError(400, "file required");
     const key = ctx.store.keyFor(file);
     const timeoutMs = pollTimeout(url.searchParams.get("timeoutMs"));
+    const ack = pollAck(url.searchParams.get("ack"));
     const controller = new AbortController();
     req.on("close", () => controller.abort());
-    const answer = await ctx.store.waitForFeedback(key, timeoutMs, controller.signal);
+    const answer = await ctx.store.waitForFeedback(key, timeoutMs, controller.signal, ack);
     if (answer === null) return;
     return sendJson(res, 200, answer);
   }
@@ -233,6 +236,15 @@ function pollTimeout(raw) {
   if (!Number.isInteger(value) || value < 0)
     throw new HttpError(400, "timeoutMs must be a non-negative integer");
   return Math.min(value, limits.pollTimeoutMaxMs);
+}
+
+/** The cursor a poll acknowledges: the highest note uid the agent has already received. */
+function pollAck(raw) {
+  if (raw === null) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0)
+    throw new HttpError(400, "ack must be a non-negative integer");
+  return value;
 }
 
 function serveArtifact(res, store, match) {

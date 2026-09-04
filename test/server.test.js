@@ -170,9 +170,13 @@ test("prompts queue, show in the chat, and reach one poller with anchors intact"
   const chat = (await get(`/api/${key}/session`)).chat;
   assert.equal(chat.length, 1);
   assert.equal(chat[0].prompt, "Shorter");
-  assert.deepEqual(await get(`/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=10`), {
-    status: "waiting",
-  });
+  // Acknowledging the batch (its high uid) clears it, so the next poll waits instead of redelivering.
+  assert.deepEqual(
+    await get(
+      `/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=10&ack=${result.prompts[0].uid}`,
+    ),
+    { status: "waiting" },
+  );
 });
 
 test("bad input on the api is a 4xx, not a crash", async () => {
@@ -268,6 +272,33 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
   assert.equal(await status(`/api/0000000000000000/events`, { headers }), 404);
 });
 
+test("a poll whose connection dies before the reply redelivers the batch, never loses it", async () => {
+  const file = join(dir, "redeliver.html");
+  writeFileSync(file, "<p>x</p>");
+  const k = (await post("/api/sessions", { file })).key;
+  await post(
+    `/api/${k}/prompts`,
+    { prompts: [{ prompt: "do not lose me", selector: "#p", tag: "p", text: "x" }] },
+    { origin: base },
+  );
+  // The poll sends its request and drops the socket before reading the reply, so the batch is taken
+  // from the queue but its response never arrives - the exact shape of the silent loss this fixes.
+  await new Promise((resolve) => {
+    const socket = connect(srv.port, "127.0.0.1", () => {
+      socket.write(
+        `GET /api/poll?file=${encodeURIComponent(file)}&timeoutMs=0 HTTP/1.1\r\nHost: 127.0.0.1:${srv.port}\r\nAuthorization: Bearer ${srv.token}\r\nConnection: close\r\n\r\n`,
+      );
+      socket.destroy();
+      resolve();
+    });
+  });
+  await new Promise((r) => setTimeout(r, 150));
+  const again = await get(`/api/poll?file=${encodeURIComponent(file)}&timeoutMs=1000`);
+  assert.equal(again.status, "feedback");
+  assert.equal(again.prompts[0].prompt, "do not lose me");
+  assert.equal(again.prompts[0].uid, 1, "the redelivered note keeps its uid");
+});
+
 test("the reviewer ends the review with the queue attached, and only a reopen revives it", async () => {
   const opened = await post("/api/sessions", { file: fixture });
   const ended = await post(
@@ -283,10 +314,12 @@ test("the reviewer ends the review with the queue attached, and only a reopen re
   assert.equal(last.status, "feedback");
   assert.equal(last.session_ended, true);
   assert.equal(last.prompts[0].prompt, "One last thing");
-  assert.deepEqual(await get(`/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=1000`), {
-    status: "ended",
-    ended_by: "user",
-  });
+  assert.deepEqual(
+    await get(
+      `/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=1000&ack=${last.prompts[0].uid}`,
+    ),
+    { status: "ended", ended_by: "user" },
+  );
   assert.equal((await post("/api/sessions", { file: fixture })).status, "user-ended");
   assert.equal((await post("/api/sessions", { file: fixture, reopen: true })).status, "opened");
   assert.equal((await get(`/api/${opened.key}/session`)).ended, null);
@@ -304,21 +337,32 @@ test("the reviewer ends the review with the queue attached, and only a reopen re
   );
 });
 
-test("an idle server stops itself, unless a review tab is open", async () => {
+test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but silent tab does not", async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // With no activity, the daemon idles out and stops answering.
   let idled = false;
   const short = await serve({
     stateDir: mkdtempSync(join(tmpdir(), "pb-idle-")),
     idleMs: 60,
     onIdle: () => (idled = true),
   });
-  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(
+    (await fetch(`http://127.0.0.1:${short.port}/health`).then((r) => r.json())).idleMs,
+    60,
+    "the daemon reports its idle window so the tab can pace its heartbeat",
+  );
+  await sleep(200);
   assert.equal(idled, true);
   await assert.rejects(fetch(`http://127.0.0.1:${short.port}/health`));
 
+  // A stream stays open the whole time, but only the heartbeat keeps the daemon alive: when the
+  // heartbeat stops, the daemon releases even though the tab is still connected - an abandoned tab
+  // does not pin the process open, which a stream-keeps-it-alive rule would have let it do.
+  let released = false;
   const held = await serve({
     stateDir: mkdtempSync(join(tmpdir(), "pb-held-")),
-    idleMs: 60,
-    onIdle: () => assert.fail("a server with an open tab must not idle out"),
+    idleMs: 150,
+    onIdle: () => (released = true),
   });
   const info = { authorization: `Bearer ${held.token}`, "content-type": "application/json" };
   const session = await fetch(`http://127.0.0.1:${held.port}/api/sessions`, {
@@ -331,11 +375,13 @@ test("an idle server stops itself, unless a review tab is open", async () => {
     headers: info,
     signal: watching.signal,
   });
-  await new Promise((r) => setTimeout(r, 200));
-  assert.equal(
-    (await fetch(`http://127.0.0.1:${held.port}/health`).then((r) => r.json())).ok,
-    true,
-  );
+  for (let i = 0; i < 3; i += 1) {
+    await sleep(80);
+    await fetch(`http://127.0.0.1:${held.port}/health`);
+  }
+  assert.equal(released, false, "a heartbeat inside the idle window keeps it alive");
+  await sleep(400);
+  assert.equal(released, true, "an open but no-longer-heartbeating tab lets the daemon idle out");
   watching.abort();
   await held.close();
 });

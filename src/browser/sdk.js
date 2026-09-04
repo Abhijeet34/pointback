@@ -24,6 +24,8 @@
   let focusable = [];
   let open = null;
 
+  // Only the selection highlight lives in the artifact; the note card lives in the chrome, so the
+  // artifact never composes the reviewer's instruction. See selectTarget below and chrome.js.
   const host = document.createElement("div");
   host.style.cssText = "all:initial;position:fixed;inset:0 auto auto 0;z-index:2147483647";
   const shadow = host.attachShadow({ mode: "closed" });
@@ -31,26 +33,9 @@
     <style>
       :host { font: 14px/1.4 system-ui, sans-serif; }
       .box { position: fixed; pointer-events: none; border: 2px solid oklch(78% 0.12 230); border-radius: 3px; box-shadow: 0 0 0 2px oklch(78% 0.12 230 / 0.25); }
-      .card { position: fixed; width: min(360px, calc(100vw - 24px)); padding: 12px; border-radius: 6px; background: oklch(22% 0.02 260); color: oklch(93% 0.01 90); box-shadow: 0 8px 24px oklch(0% 0 0 / 0.35); display: none; }
-      .card.open { display: block; }
-      .target { margin: 0 0 8px; font: 12px ui-monospace, monospace; color: oklch(78% 0.12 230); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      textarea { width: 100%; min-height: 64px; box-sizing: border-box; padding: 8px; border: 1px solid oklch(40% 0.015 260); border-radius: 6px; background: oklch(30% 0.015 260); color: inherit; font: inherit; resize: vertical; }
-      textarea:focus-visible, button:focus-visible { outline: 2px solid oklch(78% 0.12 230); outline-offset: 2px; }
-      .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
-      button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 6px; font: 600 13px system-ui, sans-serif; cursor: pointer; }
-      .add { background: oklch(78% 0.12 230); color: oklch(20% 0.05 230); }
-      .cancel { background: transparent; color: oklch(72% 0.02 260); border: 1px solid oklch(40% 0.015 260); }
     </style>
-    <div class="boxes"></div>
-    <form class="card" role="dialog" aria-label="Leave a note">
-      <p class="target"></p>
-      <textarea placeholder="What should change here?" aria-label="Note"></textarea>
-      <div class="row"><button type="button" class="cancel">Cancel</button><button type="submit" class="add">Add note</button></div>
-    </form>`;
+    <div class="boxes"></div>`;
   const boxes = /** @type {HTMLElement} */ (shadow.querySelector(".boxes"));
-  const card = /** @type {HTMLFormElement} */ (shadow.querySelector(".card"));
-  const targetLine = shadow.querySelector(".target");
-  const textarea = /** @type {HTMLTextAreaElement} */ (shadow.querySelector("textarea"));
 
   const send = (message) => parent.postMessage({ ...message, nonce }, chromeOrigin);
   // SVG elements report a lowercase tagName, so every comparison against the lists above goes through this.
@@ -75,6 +60,10 @@
       // separate event loop, so anything that acts on the new state - a click,
       // a test - would be racing delivery.
       send({ type: "annotate-ok", on: data.on });
+    } else if (data?.nonce === nonce && data.type === "compose" && !data.on) {
+      // The chrome closed its note card; drop the selection and, for the keyboard path, hand
+      // focus back to the element the reviewer came from so a Tab lands on the next one.
+      closeTarget(data.refocus === true);
     }
   });
 
@@ -105,7 +94,7 @@
     for (const element of focusable) element.removeAttribute("tabindex");
     focusable = [];
     if (!on) {
-      closeCard();
+      closeTarget(false);
       outlineRects([]);
       return;
     }
@@ -264,29 +253,39 @@
     return `${hit.tag} · ${text}${where ? ` · ${where}` : ""}`;
   }
 
-  function openCard(hit) {
+  // The reviewer pointed at something: hand the chrome a target to compose against - the note fields
+  // as data, a label to show, and the highlight rects to place the card by - and never the note text,
+  // which the chrome alone reads from the reviewer. `open` blocks a second target until the card closes.
+  function selectTarget(hit) {
     open = hit;
-    send({ type: "editing", on: true });
     outlineRects(hit.rects);
-    targetLine.textContent = label(hit);
-    textarea.value = "";
-    const r = hit.rects[hit.rects.length - 1];
-    card.classList.add("open");
-    const top = Math.min(Math.max(8, r.bottom + 8), window.innerHeight - card.offsetHeight - 8);
-    const left = Math.min(Math.max(8, r.left), window.innerWidth - card.offsetWidth - 8);
-    card.style.top = `${top}px`;
-    card.style.left = `${left}px`;
-    textarea.focus();
+    send({
+      type: "target",
+      note: {
+        selector: selectorFor(hit.element),
+        tag: hit.tag,
+        text: hit.text,
+        ...(hit.target && { target: hit.target }),
+      },
+      label: label(hit),
+      rects: [...hit.rects].map((r) => ({
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+        width: r.width,
+        height: r.height,
+      })),
+      structure: pageOutline(),
+    });
   }
 
-  function closeCard() {
+  function closeTarget(refocus) {
     if (!open) return;
     const { element } = open;
     open = null;
-    send({ type: "editing", on: false });
-    card.classList.remove("open");
     outlineRects([]);
-    if (annotate && element.isConnected) element.focus({ preventScroll: true });
+    if (refocus && annotate && element.isConnected) element.focus({ preventScroll: true });
   }
 
   function describe(element) {
@@ -327,34 +326,6 @@
     return lines.join("\n");
   }
 
-  card.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const prompt = textarea.value.trim();
-    if (!open || prompt === "") return;
-    send({
-      type: "queue",
-      prompt: {
-        prompt,
-        selector: selectorFor(open.element),
-        tag: open.tag,
-        text: open.text,
-        ...(open.target && { target: open.target }),
-      },
-      structure: pageOutline(),
-    });
-    closeCard();
-  });
-  textarea.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      card.requestSubmit();
-    }
-  });
-  shadow.querySelector(".cancel").addEventListener("click", closeCard);
-  shadow.addEventListener("keydown", (event) => {
-    if (/** @type {KeyboardEvent} */ (event).key === "Escape") closeCard();
-  });
-
   document.addEventListener(
     "click",
     (event) => {
@@ -364,7 +335,7 @@
       event.preventDefault();
       event.stopPropagation();
       // The click that ends a text drag arrives after the card has opened for the passage.
-      if (!open) openCard(elementHit(element));
+      if (!open) selectTarget(elementHit(element));
     },
     true,
   );
@@ -374,7 +345,7 @@
       if (!annotate || open) return;
       const selection = getSelection();
       const hit = selection.isCollapsed ? null : passageHit(selection.getRangeAt(0));
-      if (hit) openCard(hit);
+      if (hit) selectTarget(hit);
     },
     true,
   );
@@ -387,7 +358,7 @@
       extendPassage(element, event.key === "ArrowRight" ? "forward" : "backward");
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      openCard(currentPassage(element) ?? elementHit(element));
+      selectTarget(currentPassage(element) ?? elementHit(element));
     } else if (event.key === "Escape") {
       getSelection().collapseToStart();
       outline(element);

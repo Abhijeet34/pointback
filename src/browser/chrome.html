@@ -29,6 +29,16 @@
         sandbox="allow-scripts allow-forms allow-popups"
         referrerpolicy="no-referrer"
       ></iframe>
+      <!-- The note card lives here, in the chrome, not in the artifact: the reviewer's instruction
+           is read from this textarea and never accepted from the page under review. -->
+      <form class="card" id="card" role="dialog" aria-label="Leave a note" hidden>
+        <p class="card-target" id="cardTarget"></p>
+        <textarea id="cardText" placeholder="What should change here?" aria-label="Note"></textarea>
+        <div class="card-row">
+          <button class="quiet" id="cardCancel" type="button">Cancel</button>
+          <button class="send-button" id="cardAdd" type="submit">Add note</button>
+        </div>
+      </form>
     </main>
     <aside class="margin" aria-label="Notes">
       <div class="notice" id="notice" role="status" hidden>
