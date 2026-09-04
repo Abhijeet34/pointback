@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { EventStreams } from "../src/events.js";
 import { SessionStore } from "../src/session-store.js";
-import { DEBOUNCE_MS } from "../src/watch.js";
+import { until } from "./helpers/wait.js";
 import { watchAvailable } from "./helpers/watch.js";
 
 function lab() {
@@ -45,7 +45,13 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
   });
   await sleep(150);
   writeFileSync(artifact, "<p>two</p>");
-  await sleep(DEBOUNCE_MS * 4);
+  // Waited for rather than slept past: how fast the platform's file watcher delivers is the
+  // runner's business, and DEBOUNCE_MS * 4 was this assertion depending on it. Either line
+  // ends the wait: where fs.watch cannot run, `reload-off` is the second line the tab sees.
+  await until(() => one.lines.length > 1, {
+    what: "the saved file to reach the tab",
+    timeoutMs: 10_000,
+  });
   assert.deepEqual(
     one.lines.at(-1),
     watching ? { type: "reload", revision: 1 } : { type: "reload-off" },

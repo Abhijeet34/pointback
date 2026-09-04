@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { DEBOUNCE_MS, watchFile } from "../src/watch.js";
+import { until } from "./helpers/wait.js";
 import { watchAvailable } from "./helpers/watch.js";
 
 function lab() {
@@ -37,14 +38,31 @@ test("a burst of writes is one change, delivered after the debounce", async () =
     onError: (error) => errors.push(error),
   });
   await armed();
-  const wroteAt = Date.now();
-  for (let i = 0; i < 5; i += 1) writeFileSync(file, `<p>${i}</p>`);
-  await sleep(DEBOUNCE_MS * 4);
+  // One write to settle on, before anything is timed. A fixed sleep does not prove a watcher
+  // is live, and macOS replays recent history into a fresh one: a debounce timer armed by
+  // that replay fires a couple of milliseconds into the burst below, and the change then
+  // looks as though it beat the window. Measured 1 full-suite run in 10 on macOS. Waiting
+  // for a change this test caused, and then clearing, leaves the watcher quiet and armed.
+  writeFileSync(file, "<p>settle</p>");
   if (!watching) {
+    await sleep(DEBOUNCE_MS * 4);
     assertReportedRatherThanQuiet(errors, changes.length);
     stop();
     return;
   }
+  await until(() => changes.length > 0, { what: "the watcher to deliver", timeoutMs: 10_000 });
+  await sleep(DEBOUNCE_MS * 4);
+  changes.length = 0;
+
+  const wroteAt = Date.now();
+  for (let i = 0; i < 5; i += 1) writeFileSync(file, `<p>${i}</p>`);
+  // Waited for, not slept past. How long ReadDirectoryChangesW takes to hand an event to
+  // libuv is the runner's business, and a fixed DEBOUNCE_MS * 4 was this test asserting it.
+  // Then a settling sleep, because the claim is that five writes made ONE change: the
+  // arrival is the positive half and the absence of a second is the negative half, and only
+  // the negative half is a sleep.
+  await until(() => changes.length > 0, { what: "the debounced change", timeoutMs: 10_000 });
+  await sleep(DEBOUNCE_MS * 4);
   assert.equal(changes.length, 1, "five writes inside the window coalesce");
   const latency = changes[0] - wroteAt;
   assert.ok(latency >= DEBOUNCE_MS, `fired ${latency} ms after the write, before the window`);
@@ -65,16 +83,21 @@ test("a rename-replace save and a sibling's change are told apart", async () => 
   const tmp = join(dir, ".plan.html.tmp");
   writeFileSync(tmp, "<p>two</p>");
   renameSync(tmp, file);
-  await sleep(DEBOUNCE_MS * 3);
   if (!watching) {
+    await sleep(DEBOUNCE_MS * 3);
     assertReportedRatherThanQuiet(errors, changes);
     stop();
     return;
   }
-  assert.equal(changes, 1, "the file replaced under the same name still counts");
+  await until(() => changes === 1, {
+    what: "the rename-replace save to count as one change",
+    timeoutMs: 10_000,
+  });
   writeFileSync(file, "<p>three</p>");
-  await sleep(DEBOUNCE_MS * 3);
-  assert.equal(changes, 2, "and plain writes after the replace are still seen");
+  await until(() => changes === 2, {
+    what: "the plain write after the replace",
+    timeoutMs: 10_000,
+  });
   stop();
 });
 

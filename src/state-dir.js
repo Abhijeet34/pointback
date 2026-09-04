@@ -73,6 +73,41 @@ export function stateDir(environment = process.env) {
   return dir;
 }
 
+/**
+ * The errors Windows raises when another process merely has the file open. A replace-rename is
+ * refused while any reader holds the destination, and this daemon's own CLI polls `server.json`
+ * every 50 ms while waiting for the daemon to come up - which is how run 33877405478, attempt 6,
+ * ended with the daemon exiting 1 on `rename` into `server.json` and the CLI reporting a server
+ * that would not start. The collision lasts as long as one read, so it is waited out.
+ */
+const SHARING_ERRORS = new Set(["EPERM", "EACCES", "EBUSY"]);
+const SHARING_ATTEMPTS = 10;
+const SHARING_PAUSE_MS = 25;
+
+/** A synchronous pause, because the write this guards is synchronous and its callers rely on that. */
+function pause(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Runs `action`, retrying only the errors a concurrent reader on Windows can cause and rethrowing
+ * everything else at once: a directory that is genuinely not writable must fail now, not in a
+ * quarter of a second.
+ */
+export function pastSharingViolations(
+  action,
+  { attempts = SHARING_ATTEMPTS, pauseMs = SHARING_PAUSE_MS } = {},
+) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return action();
+    } catch (error) {
+      if (attempt >= attempts || !SHARING_ERRORS.has(error.code)) throw error;
+      pause(pauseMs);
+    }
+  }
+}
+
 /** Writes through a sibling temp file and a rename, so a reader never sees a torn file. */
 export function writeJsonAtomic(file, value) {
   // A new file's protection comes from a different place on each platform: on Windows it is
@@ -83,7 +118,7 @@ export function writeJsonAtomic(file, value) {
   const tmp = join(dirname(file), `.${randomBytes(6).toString("hex")}.tmp`);
   writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: FILE_MODE });
   if (!windows) chmodSync(tmp, FILE_MODE);
-  renameSync(tmp, file);
+  pastSharingViolations(() => renameSync(tmp, file));
 }
 
 /** Parses a JSON file; a missing or unreadable file reads as `fallback` rather than throwing. */

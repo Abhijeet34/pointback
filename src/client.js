@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { openSync } from "node:fs";
+import { openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -58,14 +58,46 @@ export async function ensureServer(stateDir, environment = process.env) {
     windowsHide: true,
   });
   child.unref();
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
+  // Bounded by attempts as well as by the clock. Every turn of this loop can cost a probe's
+  // own `AbortSignal.timeout`, so a budget written only in milliseconds is really a budget in
+  // however many looks the machine can afford - and a busy windows-2025 runner affords few.
+  // The child exiting is the one fact that means "not coming"; everything else means "not yet".
+  const startedAt = Date.now();
+  let probes = 0;
+  for (;;) {
+    probes += 1;
     const info = readServerInfo(stateDir);
     if (info && info.pid === child.pid && (await health(info))?.version === version) return info;
     if (child.exitCode !== null) break;
+    if (probes >= START_PROBES && Date.now() - startedAt >= START_TIMEOUT_MS) break;
     await sleep(50);
   }
-  throw new Error(`server did not start; see ${join(stateDir, "server.log")}`);
+  throw new Error(startFailure(stateDir, child, Date.now() - startedAt, probes));
+}
+
+/** How long, and how many looks, a spawned daemon gets to answer before it is called dead. */
+const START_TIMEOUT_MS = 10_000;
+const START_PROBES = 20;
+
+/**
+ * Says why the daemon is not there, rather than naming a file to go and read. Pointing at
+ * `server.log` is no help wherever the log cannot be reached afterwards, which is every CI
+ * runner: run 33875622583, attempt 19, failed here on windows-2025 and left nothing behind
+ * but the path. The daemon's own last words are what identifies a start failure.
+ */
+function startFailure(stateDir, child, elapsedMs, probes) {
+  const log = join(stateDir, "server.log");
+  let said;
+  try {
+    said = readFileSync(log, "utf8").trim().split(/\r?\n/).slice(-6).join(" | ");
+  } catch {
+    said = "(unreadable)";
+  }
+  const state = child.exitCode === null ? "it is still running" : `it exited ${child.exitCode}`;
+  return (
+    `server did not start: ${state} after ${elapsedMs} ms and ${probes} probes. ` +
+    `${log} says: ${said || "(nothing)"}`
+  );
 }
 
 /**

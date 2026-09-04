@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { env } from "../../src/identity.js";
+import { until } from "./wait.js";
 
 /**
  * A loaded runner is slow to hand a browser its first frame, and 15 s was not enough: on run
@@ -31,6 +32,21 @@ const TERMINATE_MS = 3000;
 const LOAD_MS = 15_000;
 /** The iframe attaches within a paint or two of the page requesting it. */
 const ATTACH_MS = 10_000;
+/**
+ * Two launches, not one. On run 33874545761, attempt 2, chrome.exe on windows-2025 was still
+ * running 45 s after it was spawned, had written no DevToolsActivePort and had printed nothing
+ * at all - 1 of 20 identical runs of this suite, and it took every test in the file with it.
+ * A cold browser launch is an operation that fails outright about that often on that runner,
+ * and the suite gave it exactly one attempt. Lengthening STARTUP_MS would not have helped: the
+ * browser was not slow, it was never coming.
+ */
+const LAUNCH_ATTEMPTS = 2;
+/**
+ * How long the browser's profile directory is worth trying to remove. Windows answers EPERM
+ * while any of Chromium's helper processes still holds a file in it, and the top-level process
+ * exiting is not the same fact.
+ */
+const PROFILE_REMOVE_MS = 30_000;
 
 /**
  * Every path this repository knows a browser by, most specific first, and the one list of
@@ -124,7 +140,38 @@ export async function devToolsUrl(child, executable, profile) {
   );
 }
 
-export async function launchBrowser(executable, { width = 1200, height = 800 } = {}) {
+/**
+ * Removes the browser's profile, answering false for the errors Windows raises while a handle
+ * on it is still open and throwing anything else, which is a real fault worth seeing.
+ */
+function removeProfile(profile) {
+  try {
+    rmSync(profile, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    if (["EPERM", "EBUSY", "ENOTEMPTY"].includes(error.code)) return false;
+    throw error;
+  }
+}
+
+export async function launchBrowser(executable, options = {}) {
+  let failure;
+  for (let attempt = 1; attempt <= LAUNCH_ATTEMPTS; attempt += 1) {
+    try {
+      return await startBrowser(executable, options);
+    } catch (error) {
+      failure = error;
+      if (attempt < LAUNCH_ATTEMPTS) {
+        console.warn(
+          `browser launch attempt ${attempt} of ${LAUNCH_ATTEMPTS} failed: ${error.message}`,
+        );
+      }
+    }
+  }
+  throw failure;
+}
+
+async function startBrowser(executable, { width = 1200, height = 800 } = {}) {
   const profile = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-browser-"));
   const child = spawn(
     executable,
@@ -150,13 +197,25 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
   );
   const discard = async () => {
     await terminate(child);
-    // Retried, because the child exiting is not every handle on this directory being
-    // released: Chromium's helper processes outlive it by a moment and Windows answers
-    // EPERM to a removal while any of them is still holding a file. That threw out of
-    // `after()` and failed the whole file in 2 of 20 consecutive windows-2025 runs
-    // (run 33867055764), with every test in it green. Node's own retry loop covers
-    // exactly this error class; a second removal by hand would not.
-    rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    // The child exiting is not every handle on this directory being released: Chromium's
+    // helper processes outlive it, and Windows answers EPERM to the removal until the last
+    // of them has gone. rmSync's own retries were set at 20 x 100 ms and run 33874545761,
+    // attempt 9, still came back EPERM out of `after()` - failing a file in which every test
+    // had passed. Removing a temporary directory is cleanup, not an assertion: try for a real
+    // budget, then say what was left behind rather than reddening a green file over a handle
+    // the runner had not let go of yet.
+    const gone = await until(() => removeProfile(profile), {
+      what: `the browser profile ${profile} to become removable`,
+      timeoutMs: PROFILE_REMOVE_MS,
+      everyMs: 250,
+      minAttempts: 10,
+    }).catch(() => false);
+    if (!gone) {
+      console.warn(
+        `the browser profile ${profile} was still locked after ${PROFILE_REMOVE_MS} ms; ` +
+          `leaving it for the runner to reclaim`,
+      );
+    }
   };
   let browser;
   try {
@@ -317,15 +376,13 @@ class Page {
     return result.value;
   }
 
-  /** Polls an expression until it is truthy; the returned value is what made it so. */
-  async waitFor(expression, { timeoutMs = 10_000, everyMs = 25 } = {}) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const value = await this.eval(expression);
-      if (value) return value;
-      await sleep(everyMs);
-    }
-    throw new Error(`timed out waiting for ${expression}`);
+  /**
+   * Polls an expression until it is truthy; the returned value is what made it so. Bounded
+   * by attempts as well as by the clock, because each poll is a DevTools round trip and
+   * `until` in helpers/wait.js carries the measurement of what one of those can cost.
+   */
+  waitFor(expression, options = {}) {
+    return until(() => this.eval(expression), { what: expression, ...options });
   }
 
   async click(x, y) {
@@ -370,8 +427,16 @@ class Page {
    * data lands some time after the frame has painted; until it does, a press aimed at the
    * frame is delivered to the page instead and selects nothing. Move the pointer until the
    * frame says it saw it, and every later event routes there too.
+   *
+   * Counted in moves, not only in milliseconds. On run 33874545761, attempt 8, this failed
+   * having dispatched exactly one move in 5000 ms: a single DevTools round trip on that
+   * runner cost about five seconds, so the whole budget bought one look. The wait now makes
+   * at least `attempts` moves whatever they cost, which is what "waited" was meant to mean.
+   *
+   * Returns the moves it took and the milliseconds they cost, so a caller can report what
+   * this ran into on a given runner without asserting the runner's speed.
    */
-  async pointerInto(frame, point, { timeoutMs = 5000 } = {}) {
+  async pointerInto(frame, point, { attempts = 40, timeoutMs = 5000 } = {}) {
     // Armed inside the loop rather than once in front of it. The flag this polls lives in
     // the frame's document, and a document replaced under the wait takes the listener with
     // it: a one-time arming then leaves the poll reading a value nothing will ever set
@@ -390,20 +455,27 @@ class Page {
     // as well is what lets the first move below be the one that lands.
     await frame.eval("globalThis.sawPointer = false");
     await frame.eval(armAndRead);
-    const deadline = Date.now() + timeoutMs;
     let moves = 0;
-    do {
-      moves += 1;
-      await this.send("Input.dispatchMouseEvent", {
-        type: "mouseMoved",
-        x: point.x,
-        y: point.y,
-        button: "none",
-        buttons: 0,
-      });
-      if (await frame.eval(armAndRead)) return;
-      await sleep(25);
-    } while (Date.now() < deadline);
+    const started = Date.now();
+    try {
+      await until(
+        async () => {
+          moves += 1;
+          await this.send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: point.x,
+            y: point.y,
+            button: "none",
+            buttons: 0,
+          });
+          return frame.eval(armAndRead);
+        },
+        { what: "the frame to see the pointer", timeoutMs, everyMs: 25, minAttempts: attempts },
+      );
+      return { moves, ms: Date.now() - started };
+    } catch {
+      // fall through to the diagnosis below, which is worth more than `until`'s own message
+    }
     // Three different things end up here and they need three different fixes, so the
     // message separates them rather than leaving the next reader a coordinate to guess
     // from: the page naming something other than the frame at that point is geometry
@@ -416,7 +488,7 @@ class Page {
     const watching = await frame.eval("typeof globalThis.sawPointer");
     throw new Error(
       `the pointer never reached the frame at ${point.x},${point.y}: ${moves} moves over ` +
-        `${timeoutMs} ms, the page has "${at}" at that point, and the frame's own flag is ` +
+        `${Date.now() - started} ms, the page has "${at}" at that point, and the frame's own flag is ` +
         `${watching}${watching === "undefined" ? " (its document was replaced under the test)" : ""}`,
     );
   }
