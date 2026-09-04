@@ -19,10 +19,13 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The browser suite says on stdout which of the two it did, `browser suite: running against <path>` or `browser suite: SKIPPED`, and CI lifts that line into the job summary.
   A skip needs an explicit `<PREFIX>BROWSER=none`; finding no browser at all fails.
 - The mark is one geometry in two places, `src/browser/icon.svg` for the tab and the same paths inlined in `chrome.html` for the header; `README.md`, "Develop", says how `icon-32.png` is regenerated when the SVG changes. Neither file may contain the product name (`test/identity.test.js`).
-- Windows is a supported platform and three things in this tree exist only because it is.
+- Windows is a supported platform and four things in this tree exist only because it is.
   Never use `new URL(...).pathname` as a filesystem path: it yields `/D:/a/...` there, which is why the daemon never started and why `npm run deps` and the release preflight both exited 0 having checked nothing; `fileURLToPath` is the only correct form.
   Resolve with `realpathSync.native`, never the JavaScript `realpathSync`, anywhere a path is watched or keyed: only the native call expands an 8.3 short name such as `C:\Users\RUNNER~1\...`, and `fs.watch` on an unexpanded one trips a libuv assertion that aborts the whole daemon.
+  Never read a file another process is writing without treating the read's own failure as "not yet": Windows locks `DevToolsActivePort` while Chromium holds it, `readFileSync` answers EBUSY rather than a partial line, and that threw out of the launcher's poll and failed the whole browser suite in 5 of 20 consecutive `windows-2025` runs (run 33864656156).
   In a test, `shasum` does not exist and `npm` is a `.cmd` Node refuses to spawn without `shell: true`.
+- A wait that polls a flag living in another document has to arm that flag as it polls, not once in front of the loop: the document can be replaced under it, and a wait that never looks again reads a value nothing can set until its budget runs out.
+  `pointerInto` in `test/helpers/cdp.js` is the one that had it, and its failure message now separates the three things that reach it - geometry measured too early, an unarmed frame, and input that was never routed - because the coordinate alone identified none of them.
 - The state directory's owner-only protection is a security property with two platform spellings, both in `src/state-dir.js`: POSIX mode bits, and on Windows an ACL reset to one full-control entry for the current user that every file inside inherits.
   `/inheritance:r` alone is not enough, because a directory an administrator creates carries SYSTEM and `BUILTIN\Administrators` as its own explicit entries.
   Assert the property through `test/helpers/private.js`, never `statSync(...).mode` directly, and keep the re-tightening test's `loosen()` call so it cannot pass vacuously.
