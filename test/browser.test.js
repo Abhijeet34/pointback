@@ -3,13 +3,13 @@
 // its anchor and an outline of the page. Runs in a real headless browser through DevTools;
 // no browser means a loud skip, never a silent pass.
 import assert from "node:assert/strict";
-import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
-import { findBrowser, launchBrowser } from "./helpers/cdp.js";
+import { devToolsUrl, findBrowser, launchBrowser } from "./helpers/cdp.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
 
 const executable = findBrowser();
@@ -34,6 +34,25 @@ test("the browser suite has a browser to run against", () => {
     executable || optedOut,
     `no browser found. Install Chrome or set ${envPrefix}BROWSER to its path, or to "none" to opt out of the only end-to-end coverage this repository has.`,
   );
+});
+
+// Windows locks DevToolsActivePort while Chromium holds it, and the read then throws EBUSY
+// instead of returning a partial line. That threw straight out of the launcher's poll and
+// failed every browser test in 5 of 20 consecutive runs on windows-2025 (run 33864656156).
+// A read that cannot happen yet is the same fact as a file that is not there yet, and a
+// directory in the file's place reproduces it on every platform: readFileSync answers EISDIR.
+test("a DevTools port file that cannot be read yet is waited for, not thrown out of", async () => {
+  const profile = mkdtempSync(join(tmpdir(), "pb-port-"));
+  const portFile = join(profile, "DevToolsActivePort");
+  mkdirSync(portFile);
+  const child = { exitCode: null, signalCode: null, stderr: { on() {} } };
+  const resolving = devToolsUrl(child, "a browser that started", profile);
+  setTimeout(() => {
+    rmSync(portFile, { recursive: true });
+    writeFileSync(portFile, "51234\n/devtools/browser/abc\n");
+  }, 300);
+  assert.equal(await resolving, "ws://127.0.0.1:51234/devtools/browser/abc");
+  rmSync(profile, { recursive: true, force: true });
 });
 
 before(async () => {

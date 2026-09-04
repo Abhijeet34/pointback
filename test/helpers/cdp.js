@@ -77,8 +77,19 @@ function terminate(child) {
  * ever called, a browser that would not start exits, and a browser that started but was
  * not detected is still running when the budget ends.
  */
-async function devToolsUrl(child, executable, profile) {
+export async function devToolsUrl(child, executable, profile) {
   const portFile = join(profile, "DevToolsActivePort");
+  let unreadable = "";
+  const read = (file) => {
+    try {
+      return existsSync(file) ? readFileSync(file, "utf8") : "";
+    } catch (error) {
+      // Kept rather than swallowed: if the budget below runs out, this is the difference
+      // between a browser that wrote no port and one whose port nothing could read.
+      unreadable = ` The last read of it failed: ${error.message}.`;
+      return "";
+    }
+  };
   let printed = "";
   // Never detached, unlike the listener this replaces: a piped stderr nobody reads fills
   // its buffer and stalls the browser writing to it, hours after the launch succeeded.
@@ -97,13 +108,19 @@ async function devToolsUrl(child, executable, profile) {
     }
     // Chromium writes this file in one go, but a read that catches it half-written must
     // wait rather than parse a partial port, so both lines are checked before it is used.
-    const [port, path] = (existsSync(portFile) ? readFileSync(portFile, "utf8") : "").split("\n");
+    //
+    // And on Windows the file can be locked while Chromium holds it, which makes the read
+    // throw EBUSY rather than return a partial line. That threw out of this poll and failed
+    // the whole browser suite in 5 of 20 consecutive runs on windows-2025 (run 33864656156).
+    // A locked file is the same fact as an absent one - the port is not readable yet - so it
+    // belongs in the loop, not in a stack trace.
+    const [port, path] = read(portFile).split("\n");
     if (/^\d+$/.test(port ?? "") && path?.startsWith("/")) return `ws://127.0.0.1:${port}${path}`;
     await sleep(STARTUP_POLL_MS);
   }
   throw new Error(
-    `${executable} started but was not detected: it is still running and wrote no DevTools ` +
-      `port to ${portFile} within ${STARTUP_MS} ms. It printed: ${said()}`,
+    `${executable} started but was not detected: it is still running and wrote no readable ` +
+      `DevTools port to ${portFile} within ${STARTUP_MS} ms.${unreadable} It printed: ${said()}`,
   );
 }
 
