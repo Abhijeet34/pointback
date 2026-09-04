@@ -25,7 +25,10 @@ export function isolatedEnv(extra = {}) {
     serverInfo: () => JSON.parse(readFileSync(join(dir, "server.json"), "utf8")),
     async stop() {
       await cli(["stop"], env).catch(() => {});
-      rmSync(dir, { recursive: true, force: true });
+      // `stop` returning is the CLI exiting, not the daemon having let go of its state
+      // directory, and Windows answers EPERM to a removal until it has. Same retry loop
+      // and same reason as the browser profile in helpers/cdp.js.
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     },
   };
 }

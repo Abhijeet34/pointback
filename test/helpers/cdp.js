@@ -77,8 +77,19 @@ function terminate(child) {
  * ever called, a browser that would not start exits, and a browser that started but was
  * not detected is still running when the budget ends.
  */
-async function devToolsUrl(child, executable, profile) {
+export async function devToolsUrl(child, executable, profile) {
   const portFile = join(profile, "DevToolsActivePort");
+  let unreadable = "";
+  const read = (file) => {
+    try {
+      return existsSync(file) ? readFileSync(file, "utf8") : "";
+    } catch (error) {
+      // Kept rather than swallowed: if the budget below runs out, this is the difference
+      // between a browser that wrote no port and one whose port nothing could read.
+      unreadable = ` The last read of it failed: ${error.message}.`;
+      return "";
+    }
+  };
   let printed = "";
   // Never detached, unlike the listener this replaces: a piped stderr nobody reads fills
   // its buffer and stalls the browser writing to it, hours after the launch succeeded.
@@ -97,13 +108,19 @@ async function devToolsUrl(child, executable, profile) {
     }
     // Chromium writes this file in one go, but a read that catches it half-written must
     // wait rather than parse a partial port, so both lines are checked before it is used.
-    const [port, path] = (existsSync(portFile) ? readFileSync(portFile, "utf8") : "").split("\n");
+    //
+    // And on Windows the file can be locked while Chromium holds it, which makes the read
+    // throw EBUSY rather than return a partial line. That threw out of this poll and failed
+    // the whole browser suite in 5 of 20 consecutive runs on windows-2025 (run 33864656156).
+    // A locked file is the same fact as an absent one - the port is not readable yet - so it
+    // belongs in the loop, not in a stack trace.
+    const [port, path] = read(portFile).split("\n");
     if (/^\d+$/.test(port ?? "") && path?.startsWith("/")) return `ws://127.0.0.1:${port}${path}`;
     await sleep(STARTUP_POLL_MS);
   }
   throw new Error(
-    `${executable} started but was not detected: it is still running and wrote no DevTools ` +
-      `port to ${portFile} within ${STARTUP_MS} ms. It printed: ${said()}`,
+    `${executable} started but was not detected: it is still running and wrote no readable ` +
+      `DevTools port to ${portFile} within ${STARTUP_MS} ms.${unreadable} It printed: ${said()}`,
   );
 }
 
@@ -133,7 +150,13 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
   );
   const discard = async () => {
     await terminate(child);
-    rmSync(profile, { recursive: true, force: true });
+    // Retried, because the child exiting is not every handle on this directory being
+    // released: Chromium's helper processes outlive it by a moment and Windows answers
+    // EPERM to a removal while any of them is still holding a file. That threw out of
+    // `after()` and failed the whole file in 2 of 20 consecutive windows-2025 runs
+    // (run 33867055764), with every test in it green. Node's own retry loop covers
+    // exactly this error class; a second removal by hand would not.
+    rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   };
   let browser;
   try {
@@ -349,16 +372,28 @@ class Page {
    * frame says it saw it, and every later event routes there too.
    */
   async pointerInto(frame, point, { timeoutMs = 5000 } = {}) {
-    await frame.eval(`(() => {
-      globalThis.sawPointer = false;
+    // Armed inside the loop rather than once in front of it. The flag this polls lives in
+    // the frame's document, and a document replaced under the wait takes the listener with
+    // it: a one-time arming then leaves the poll reading a value nothing will ever set
+    // again, so the only outcome left is the full budget and a timeout. The guard is per
+    // document, so this registers once per document and never stacks listeners.
+    const armAndRead = `(() => {
       if (!globalThis.watchingPointer) {
         globalThis.watchingPointer = true;
+        globalThis.sawPointer = false;
         document.addEventListener("mousemove", () => { globalThis.sawPointer = true; });
       }
-      return 1;
-    })()`);
+      return globalThis.sawPointer;
+    })()`;
+    // A second call to a point the pointer already reached must verify that point rather
+    // than read the first call's answer, so the flag starts each call false; arming here
+    // as well is what lets the first move below be the one that lands.
+    await frame.eval("globalThis.sawPointer = false");
+    await frame.eval(armAndRead);
     const deadline = Date.now() + timeoutMs;
+    let moves = 0;
     do {
+      moves += 1;
       await this.send("Input.dispatchMouseEvent", {
         type: "mouseMoved",
         x: point.x,
@@ -366,10 +401,24 @@ class Page {
         button: "none",
         buttons: 0,
       });
-      if (await frame.eval("globalThis.sawPointer")) return;
+      if (await frame.eval(armAndRead)) return;
       await sleep(25);
     } while (Date.now() < deadline);
-    throw new Error(`the pointer never reached the frame at ${point.x},${point.y}`);
+    // Three different things end up here and they need three different fixes, so the
+    // message separates them rather than leaving the next reader a coordinate to guess
+    // from: the page naming something other than the frame at that point is geometry
+    // measured too early, the frame having lost the flag set two lines above is a
+    // document replaced under the test, and neither of those is input that was routed
+    // to the page and never handed on.
+    const at = await this.eval(
+      `(() => { const e = document.elementFromPoint(${point.x}, ${point.y}); return e ? e.id || e.tagName : "nothing"; })()`,
+    );
+    const watching = await frame.eval("typeof globalThis.sawPointer");
+    throw new Error(
+      `the pointer never reached the frame at ${point.x},${point.y}: ${moves} moves over ` +
+        `${timeoutMs} ms, the page has "${at}" at that point, and the frame's own flag is ` +
+        `${watching}${watching === "undefined" ? " (its document was replaced under the test)" : ""}`,
+    );
   }
 
   /** A press, a path and a release: what makes the browser build a real text selection. */

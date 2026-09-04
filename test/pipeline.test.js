@@ -103,13 +103,11 @@ test("an ordinary pull request runs Linux only; the release pull request runs al
   );
 });
 
-// The gap this closes was measured rather than assumed: on run 33822348514 the
-// tag v0.1.0 and its GitHub release were created, `cross-platform` then failed on
-// windows-2025, and `artifacts` and `publish` were skipped - so release 382407638
-// stands with no tarball, no SBOM and no attestation. A gate after the tag cannot
-// un-cut a release, so the three platforms are now a condition of the merge that
-// creates it, reaching branch protection through the one required context.
-test("the tag cannot be cut from a tree macOS and Windows have not seen", () => {
+// The first of the two gates, and the one that keeps main releasable: a release
+// pull request whose tree is broken on any platform cannot be merged, so main
+// never carries a bumped CHANGELOG.md for a release that cannot be cut. It
+// reaches branch protection through the one required context.
+test("the release pull request cannot merge from a tree macOS and Windows have not seen", () => {
   const checks = jobsByName(workflows["ci.yml"]).checks;
   assert.ok(checks, "ci.yml has no checks job");
   const needs = checks.match(/^ {4}needs: \[([^\]]*)\]$/m)[1];
@@ -119,6 +117,60 @@ test("the tag cannot be cut from a tree macOS and Windows have not seen", () => 
       .map((job) => job.trim())
       .includes("cross-platform"),
     `the checks aggregate does not depend on cross-platform: ${needs}`,
+  );
+});
+
+// The second gate, and the one that was missing. Gating the release pull
+// request's merge does not gate the tag: the tag is cut by the NEXT run, on main,
+// and there `release-please` was the first job. On run 33859541647 it created
+// v0.1.1 and its release, `cross-platform` then failed on windows-2025, and
+// `artifacts` was skipped - release v0.1.1 stands with no tarball, no SBOM and no
+// attestation, the identical outcome to v0.1.0 and the one the pull-request gate
+// was merged to prevent. A gate one run upstream of the tag is not a gate on it.
+test("nothing may cut a tag until all three platforms have passed in the same run", () => {
+  const jobs = jobsByName(workflows["release.yml"]);
+  const releasePlease = Object.entries(jobs).filter(([, body]) =>
+    /uses: googleapis\/release-please-action@/.test(body),
+  );
+  // The action tags unless `skip-github-release` stops it, so the job that can
+  // cut a tag is found by what it does not say rather than by its name.
+  const tagging = releasePlease.filter(([, body]) => !/skip-github-release: true/.test(body));
+  assert.equal(
+    tagging.length,
+    1,
+    `release.yml must have exactly one job that can cut a tag, found ${tagging.map(([name]) => name).join(", ") || "none"}`,
+  );
+  const [taggingName, taggingBody] = tagging[0];
+  const needs = taggingBody.match(/^ {4}needs: \[?([^\]\n]*)\]?$/m);
+  assert.ok(needs, `${taggingName} cuts the tag and depends on nothing`);
+  assert.ok(
+    needs[1]
+      .split(",")
+      .map((job) => job.trim())
+      .includes("cross-platform"),
+    `${taggingName} cuts the tag without waiting for cross-platform: needs ${needs[1]}`,
+  );
+
+  // A gate that asks first whether this push is a release is the defect again:
+  // that answer belongs to release-please, and a second opinion answering "no"
+  // wrongly skips the matrix, skips the tagging job with it, and drops the
+  // release. So the matrix runs on every push to main, conditioned on nothing.
+  assert.match(jobs["cross-platform"], /^ {4}uses: \.\/\.github\/workflows\/cross-platform\.yml$/m);
+  assert.doesNotMatch(
+    jobs["cross-platform"],
+    /^ {4}if: /m,
+    "the matrix that gates the tag is conditional, so a release can slip past it",
+  );
+
+  // And the half that opens the release pull request has to stay in front of the
+  // gate. A fix that stops the pull request from being opened at all is a
+  // regression, not a fix: nothing would ever reach the tagging job.
+  const opening = releasePlease.filter(([, body]) => /skip-github-release: true/.test(body));
+  assert.equal(opening.length, 1, "no job opens the release pull request without tagging");
+  assert.doesNotMatch(
+    opening[0][1],
+    /^ {4}needs: .*cross-platform/m,
+    `${opening[0][0]} opens the release pull request but waits for the matrix first`,
   );
 });
 
@@ -136,15 +188,23 @@ test("the release pull request's parked checks are approved by the workflow", ()
   // no write on contents, and the job that writes tags cannot approve anything.
   assert.match(jobs["release-pr-checks"], /^ {6}actions: write$/m);
   assert.doesNotMatch(jobs["release-pr-checks"], /^ {6}contents: write$/m);
-  assert.doesNotMatch(jobs["release-please"], /^ {6}actions: write$/m);
+  for (const job of ["release-pr", "release-tag"]) {
+    assert.doesNotMatch(jobs[job], /^ {6}actions: write$/m, job);
+  }
 });
 
 // A dispatch names a ref and runs that ref's copy of the workflow, so the
 // committed one says out loud what `on: push: branches: [main]` already restricts.
 test("the release path refuses to run from anywhere but the default branch", () => {
-  const releasePlease = jobsByName(workflows["release.yml"])["release-please"];
-  assert.ok(releasePlease, "release.yml has no release-please job");
-  assert.match(releasePlease, /^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
+  const jobs = jobsByName(workflows["release.yml"]);
+  assert.ok(jobs["release-pr"], "release.yml has no release-pr job");
+  assert.match(jobs["release-pr"], /^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
+  // Stated once and inherited: a job carrying no `needs:` would run on a dispatch
+  // aimed at any branch, so every other job reaches that guard through one.
+  for (const [name, body] of Object.entries(jobs)) {
+    if (name === "release-pr") continue;
+    assert.match(body, /^ {4}needs: /m, `release.yml job ${name} reaches no branch guard`);
+  }
 });
 
 // npm generates provenance by itself under trusted publishing, and its
