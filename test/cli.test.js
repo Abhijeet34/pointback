@@ -124,6 +124,26 @@ test("stop shuts the server down and reports when none runs", async () => {
   assert.deepEqual((await cli(["stop"], lab.env)).json(), { status: "not-running" });
 });
 
+// "server did not start; see <path>" was the whole of what this said, and a path is no help
+// wherever the log cannot be reached afterwards - which is every CI runner. Run 33875622583,
+// attempt 19, failed exactly here on windows-2025 and left nothing behind but the path, so the
+// one thing that would have identified the start failure is the one thing it did not carry.
+test("a daemon that cannot start is reported by what it said, not by where it wrote it", async () => {
+  const blocked = isolatedEnv();
+  const squatter = createServer(() => {});
+  await new Promise((r) => squatter.listen(0, "127.0.0.1", r));
+  const port = /** @type {import("node:net").AddressInfo} */ (squatter.address()).port;
+  try {
+    const opened = await cli([fixture], { ...blocked.env, POINTBACK_PORT: String(port) });
+    assert.equal(opened.code, 1);
+    assert.match(opened.stderr, /server did not start: it exited \d+ after \d+ ms and \d+ probes/);
+    assert.match(opened.stderr, /EADDRINUSE/, opened.stderr);
+  } finally {
+    squatter.close();
+    await blocked.stop();
+  }
+});
+
 test("a server of another version is replaced", async () => {
   const other = isolatedEnv();
   let shutdownAsked = false;
