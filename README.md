@@ -19,18 +19,18 @@ All three pass it: 125 tests, 124 passing and one skipped, with the browser suit
 
 ## Install
 
-Not on npm yet.
-The name is settled and the licence is Apache-2.0, but the `publish` job stays switched off until the `NPM_PUBLISH_ENABLED` repository variable says otherwise, which `docs/GIT-WORKFLOW.md` explains.
-So install it from a clone:
-
 ```sh
-git clone https://github.com/Abhijeet34/pointback.git
-cd pointback
-npm install --omit=dev     # parse5 is the only direct runtime dependency
-npm link                   # puts `pointback` on your PATH
+npm install -g pointback     # puts `pointback` on your PATH
 ```
 
-Skip `npm link` if you would rather not touch a global prefix, and call `node /path/to/pointback/bin/pointback.js` wherever the examples below say `pointback`.
+Or take it one review at a time, with no global install:
+
+```sh
+npx pointback plan.html
+```
+
+`parse5` is the only runtime dependency and it is pinned to an exact version; `THIRD-PARTY-NOTICES.md` carries its licence.
+To work on pointback rather than with it, clone the repository and read "Develop" below.
 
 ## Quick start
 
@@ -194,8 +194,8 @@ The mark is `src/browser/icon.svg`, a point and the return that carries it back,
 
 ## Security
 
-Report a vulnerability privately through this repository's **Security** tab, under **Report a vulnerability**, and never in a public issue.
-`SECURITY.md` carries the route, what is in scope, and the response times one maintainer will actually meet.
+Report a vulnerability privately through [the repository's Security tab](https://github.com/Abhijeet34/pointback/security/advisories/new), and never in a public issue.
+[`SECURITY.md`](https://github.com/Abhijeet34/pointback/blob/main/SECURITY.md) carries the route, what is in scope, and the response times one maintainer will actually meet.
 
 ## Licence
 
