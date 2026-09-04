@@ -7,6 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { EventStreams } from "../src/events.js";
 import { SessionStore } from "../src/session-store.js";
 import { DEBOUNCE_MS } from "../src/watch.js";
+import { watchAvailable } from "./helpers/watch.js";
 
 function lab() {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-events-"));
@@ -24,7 +25,16 @@ function tab(streams, key) {
   return { lines, detach, types: () => lines.map((line) => line.type) };
 }
 
+/**
+ * The event types a tab may see that are not the subject of the test asking. Where fs.watch
+ * cannot run, every stream carries a `reload-off`; where it can, nothing else is allowed in,
+ * so a stray one still fails the assertion it would otherwise hide.
+ */
+const noise = async () => ((await watchAvailable()) ? [] : ["reload-off"]);
+const only = (types, allowed) => types.filter((type) => !allowed.includes(type));
+
 test("a tab is greeted with the state it must match, and a saved file reloads it", async () => {
+  const watching = await watchAvailable();
   const { artifact, key, streams } = lab();
   const one = tab(streams, key);
   assert.deepEqual(one.lines[0], {
@@ -36,7 +46,13 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
   await sleep(150);
   writeFileSync(artifact, "<p>two</p>");
   await sleep(DEBOUNCE_MS * 4);
-  assert.deepEqual(one.lines.at(-1), { type: "reload", revision: 1 });
+  assert.deepEqual(
+    one.lines.at(-1),
+    watching ? { type: "reload", revision: 1 } : { type: "reload-off" },
+    watching
+      ? "a saved file reloads the tab"
+      : "no watching here, so the tab is told live reload is off rather than left waiting on it",
+  );
   one.detach();
   assert.equal(streams.size, 0);
 });
@@ -74,7 +90,13 @@ test("presence, the end and a reopen all reach the tab; feedback does not", asyn
   store.queue(key, [{ prompt: "x", selector: "p", tag: "p", text: "one" }]);
   store.end(key, "user");
   store.reopen(key);
-  assert.deepEqual(one.types(), ["hello", "presence", "presence", "ended", "reopened"]);
+  assert.deepEqual(only(one.types(), await noise()), [
+    "hello",
+    "presence",
+    "presence",
+    "ended",
+    "reopened",
+  ]);
   one.detach();
 });
 
@@ -84,7 +106,11 @@ test("a vanished file does not throw, and closeAll leaves nothing watching", asy
   await sleep(150);
   rmSync(dir, { recursive: true, force: true });
   await sleep(200);
-  assert.deepEqual(one.types(), ["hello"], "a file that goes away is not a revision");
+  assert.deepEqual(
+    only(one.types(), await noise()),
+    ["hello"],
+    "a file that goes away is not a revision",
+  );
   streams.closeAll();
   assert.equal(streams.size, 0);
   // Detaching after the hub was closed is the ordinary shutdown race, not an error.
