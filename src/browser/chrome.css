@@ -114,8 +114,52 @@ body {
 
 .mount {
   grid-area: mount;
+  position: relative;
   min-height: 0;
   background: var(--paper);
+}
+
+/* The note card floats over the artifact at the spot the reviewer pointed at, but it is a chrome
+   element: the reviewer types the instruction here, where the page under review cannot forge it. */
+.card {
+  position: absolute;
+  width: min(360px, calc(100% - var(--s5)));
+  margin: 0;
+  padding: var(--s3);
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--text);
+  box-shadow: 0 8px 24px oklch(0% 0 0 / 0.35);
+  z-index: var(--z-card);
+}
+.card-target {
+  margin: 0 0 var(--s2);
+  font: 12px var(--mono);
+  color: var(--pencil);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card textarea {
+  width: 100%;
+  min-height: 64px;
+  box-sizing: border-box;
+  padding: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--graphite);
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+.card-row {
+  display: flex;
+  gap: var(--s2);
+  justify-content: flex-end;
+  margin-top: var(--s2);
+}
+.card .send-button {
+  width: auto;
 }
 
 #artifact {
