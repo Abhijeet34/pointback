@@ -388,16 +388,20 @@ class Page {
       if (await frame.eval("globalThis.sawPointer")) return;
       await sleep(25);
     } while (Date.now() < deadline);
-    // Which of the two things went wrong is not something the coordinate alone can
-    // say, and they need different fixes: the page naming an element other than the
-    // frame is geometry measured too early, the page naming the frame is input that
-    // was never routed into it. Asked here rather than reconstructed from a rerun.
+    // Three different things end up here and they need three different fixes, so the
+    // message separates them rather than leaving the next reader a coordinate to guess
+    // from: the page naming something other than the frame at that point is geometry
+    // measured too early, the frame having lost the flag set two lines above is a
+    // document replaced under the test, and neither of those is input that was routed
+    // to the page and never handed on.
     const at = await this.eval(
       `(() => { const e = document.elementFromPoint(${point.x}, ${point.y}); return e ? e.id || e.tagName : "nothing"; })()`,
     );
+    const watching = await frame.eval("typeof globalThis.sawPointer");
     throw new Error(
       `the pointer never reached the frame at ${point.x},${point.y}: ${moves} moves over ` +
-        `${timeoutMs} ms, and the page has "${at}" at that point`,
+        `${timeoutMs} ms, the page has "${at}" at that point, and the frame's own flag is ` +
+        `${watching}${watching === "undefined" ? " (its document was replaced under the test)" : ""}`,
     );
   }
 
