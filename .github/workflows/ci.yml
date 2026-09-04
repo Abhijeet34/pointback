@@ -81,7 +81,7 @@ jobs:
               console.error(`::error::no browser on ${process.env.RUNNER_OS}. Looked for: ${KNOWN_BROWSERS.join(", ")}`);
               process.exit(1);
             }
-            console.error(`resolved this runner's browser to ${found}`);
+            console.error(`resolved the browser for ${process.env.RUNNER_OS} to ${found}`);
             console.log(`${envPrefix}BROWSER=${found}`);
           ' >> "$GITHUB_ENV"
 

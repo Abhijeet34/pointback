@@ -91,6 +91,25 @@ test("no workflow types a browser path of its own", () => {
   }
 });
 
+// A `run: |` body is shell, and the one thing YAML will never tell you is that it stopped
+// being valid shell. An apostrophe inside a single-quoted script closed the quote and failed
+// macos-15 and windows-2025 in under a second on run 33824228199 - on a branch whose whole
+// subject was CI reliability. `bash -n` parses without executing, and every runner this
+// repository uses already hands these bodies to bash.
+test("every multi-line run: block is valid shell", () => {
+  for (const file of workflowNames) {
+    const blocks = [...workflows[file].matchAll(/^( +)run: \|\n((?:\1 .*\n|\n)+)/gm)];
+    assert.ok(blocks.length > 0, `${file}: no run block found, so this test checked nothing`);
+    for (const [, , body] of blocks) {
+      try {
+        execFileSync("bash", ["-n"], { input: body, stdio: ["pipe", "pipe", "pipe"] });
+      } catch (error) {
+        assert.fail(`${file}, run block starting "${body.trim().split("\n")[0]}": ${error.stderr}`);
+      }
+    }
+  }
+});
+
 test("a leaked handle cannot turn a finished suite into a hung job", () => {
   // Measured on Node 24.11.1: `node --test --test-timeout=3000` over a file that leaks a
   // child process runs until something outside kills it, because a per-test timeout does
