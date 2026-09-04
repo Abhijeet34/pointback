@@ -45,14 +45,14 @@ In scope:
 - Escaping the artifact iframe: the page under review reading the review chrome, calling the API, or recovering the per-session token from the URL fragment (`src/browser/`).
 - Reading or writing a file outside the artifact's own directory through the asset route, by traversal, encoding, separator, null byte, or symlink (`src/artifact-path.js`).
 - A note reaching the agent that the reviewer never wrote, or a note attributed to the wrong element.
-- State written outside the `0700` directory, or with a mode other than `0600` (`src/state-dir.js`).
+- State written where another user on the machine can read it: outside the state directory, with a mode other than `0600` in a `0700` directory on POSIX, or on Windows with any ACL entry beyond the current user (`src/state-dir.js`).
 - Any outbound connection opened by the process.
 - Markup in an artifact that changes what the injected review script does (`src/inject.js`).
 - Resource exhaustion that gets past the caps in `src/limits.js` rather than merely reaching them.
 
 Out of scope:
 
-- Anything a process already running as your own user can do. That user can read `~/.pointback/server.json`; the file mode defends against other users on the machine, not against yourself.
+- Anything a process already running as your own user can do. That user can read `~/.pointback/server.json`; the mode bits and the Windows ACL defend against other users on the machine, not against yourself.
 - The text of a reviewer's note. `target` and `structure` are reviewer-supplied content from an untrusted page, and `README.md` says so at the point the JSON is described. An agent that executes them as instructions has a defect of its own. `prompt` itself is typed by the reviewer in the chrome, which the artifact cannot reach; a page that puts words in it is in scope, above.
 - Denial of service by deliberately reaching the documented caps in `src/limits.js` from a local process. Those are ceilings on a shared daemon, not an authorization boundary.
 - Vulnerabilities in your browser, your operating system, or Node itself.
