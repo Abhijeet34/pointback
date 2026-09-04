@@ -70,12 +70,14 @@ export class SessionStore {
    * Makes room at the cap by disposing the least useful session, so a review is a bounded thing that
    * ends rather than an entry that accumulates until the tool wedges. An ended review goes before a
    * live one, and the longest-untouched before a recent one; a session with a poll attached right now
-   * is never disposed, so an agent is never left polling a session that vanished. If every session has
-   * a poll, the cap is real work and the new open is refused.
+   * is never disposed, so an agent is never left polling a session that vanished. A session still
+   * holding undelivered notes (queued or delivered-but-unacked) is never disposed either, so the
+   * at-least-once delivery guarantee holds even under session-cap pressure. If every session is
+   * carrying work, the cap is real work and the new open is refused.
    */
   #evict() {
     const evictable = [...this.#sessions.values()].filter(
-      (s) => (this.#pollsByKey.get(s.key) ?? 0) === 0,
+      (s) => (this.#pollsByKey.get(s.key) ?? 0) === 0 && s.pending.length === 0 && !s.unacked,
     );
     if (evictable.length === 0) throw new HttpError(429, "too many active sessions");
     evictable.sort((a, b) => {

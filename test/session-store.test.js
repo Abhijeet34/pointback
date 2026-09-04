@@ -283,6 +283,34 @@ test("an ended review is disposed before a live one, and a polled session is nev
   assert.equal(await held, null);
 });
 
+test("a session with undelivered notes is never disposed, even when it is the oldest", async () => {
+  const { file, artifact, dir } = lab();
+  const store = new SessionStore(file);
+  const live = store.open(artifact).key;
+  // Deliver a batch to `live` but never acknowledge it, so it sits in `unacked`. This also touches
+  // lastActive, but every session opened below is touched later still, so `live` remains the
+  // least-recently-active session by the time the cap is hit - the case the old filter mishandled.
+  store.queue(live, [prompt("keep me")]);
+  const delivered = await store.waitForFeedback(live, 20);
+  assert.equal(delivered.status, "feedback");
+  const emptyKeys = [];
+  for (let i = 1; i < limits.sessions; i += 1) {
+    const extra = join(dir, `extra-${i}.html`);
+    writeFileSync(extra, "<p></p>");
+    emptyKeys.push(store.open(extra).key);
+  }
+  assert.equal(store.count, limits.sessions);
+  const oneMore = join(dir, "one-more.html");
+  writeFileSync(oneMore, "<p></p>");
+  store.open(oneMore);
+  assert.equal(store.get(live).key, live, "the session holding an unacked batch survived eviction");
+  assert.throws(
+    () => store.get(emptyKeys[0]),
+    (e) => e.status === 404,
+    "the oldest fully-delivered, empty session was disposed instead",
+  );
+});
+
 test("a poller wakes on feedback, times out to waiting, and a losing poller keeps waiting", async () => {
   const { file, artifact } = lab();
   const store = new SessionStore(file);
