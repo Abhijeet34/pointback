@@ -113,19 +113,22 @@ The matrix below is still Linux-only on `pull_request`, because `AGENTS.md` says
 
 The private-repository counterfactual, at the rates measured on 2026-09-03 and recorded in the `lavish-release-devops-r2` design (Linux $0.006, Windows $0.010, macOS $0.062 per minute, every job rounded up to a whole minute):
 
-| Event                         | Jobs                                                  | Billed Linux minutes | If private                        |
-| ----------------------------- | ----------------------------------------------------- | -------------------- | --------------------------------- |
-| Push to a pull request        | `check`, `secret scan`, `dependency review`, `checks` | 2 + 2 + 1 + 1 = 6    | $0.036                            |
-| Merge to `main`               | `check`, `secret scan`, `checks`, `release-please`    | 2 + 2 + 1 + 1 = 6    | $0.036                            |
-| Weekly `cross-platform`       | macOS 3, Windows 3, Linux 2                           | n/a                  | $0.186 + $0.030 + $0.012 = $0.228 |
-| Release (on top of the merge) | `cross-platform`, `artifacts`, `publish`              | n/a                  | $0.228 + $0.006 + $0.006 = $0.240 |
+| Event                         | Jobs                                                                                                 | Billed Linux minutes                       | If private                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------- |
+| Push to a pull request        | `check`, `secret scan`, `dependency review`, `checks`                                                | 2 + 2 + 1 + 1 = 6                          | $0.036                            |
+| Merge to `main`               | `check`, `secret scan`, `checks`, `release-pr`, `release-pr-checks`, `cross-platform`, `release-tag` | 2 + 2 + 1 + 1 + 1 + 1 = 8, plus the matrix | $0.048 + $0.228 = $0.276          |
+| Weekly `cross-platform`       | macOS 3, Windows 3, Linux 2                                                                          | n/a                                        | $0.186 + $0.030 + $0.012 = $0.228 |
+| Release (on top of the merge) | `artifacts`, `publish`                                                                               | n/a                                        | $0.006 + $0.006 = $0.012          |
 
 The per-job minutes are an upper bound, not a measurement: the whole gate runs in 6.7 s locally with dependencies installed, so every job here is dominated by checkout and `npm ci` rather than by its own work, and the arithmetic is dominated by GitHub's per-job rounding.
 Replace them with `started_at` to `completed_at` from the first ten runs.
 
-Against the reference implementation's measured figures in section 5.1 of that design, $0.018 per pull request push and $0.100 per merge on a three-OS matrix: the pull request here costs twice as much because it runs three gates the reference splits across four separate workflows, and the merge costs a third as much because macOS and Windows have moved off the merge path to a weekly schedule and the release path.
-The macOS leg is the whole difference.
-It sat at exactly 60 seconds there, one second from doubling to $0.124, and it was 62 percent of that repository's merge cost on its own.
+The merge row is where the tag gate is paid for.
+macOS and Windows are back on every merge, because the only way to gate the tag without a second opinion about whether a push is a release is to run the matrix on all of them; `release.yml` carries that reasoning above the job.
+Against the reference implementation's measured figures in section 5.1 of that design, $0.018 per pull request push and $0.100 per merge on a three-OS matrix: the pull request here costs twice as much because it runs three gates the reference splits across four separate workflows, and the merge costs about 2.8x as much because it now runs the matrix the reference splits across its own release workflow.
+The macOS leg is the whole difference, there and here.
+It sat at exactly 60 seconds there and was 62 percent of that repository's merge cost on its own.
+None of it is billed while this repository is public.
 
 ## Versioning
 
@@ -166,16 +169,17 @@ Three things stand against it, in the order they take effect:
 Merging any conventional commit to `main` starts `.github/workflows/release.yml`.
 
 ```text
-squash-merge to main
-  ├─ release-please ───── opens or updates "chore(main): release x.y.z"
-  └─ release-pr-checks ── releases that pull request's parked run, so it is checked
-                          (the release pull request accumulates changes; nothing ships)
+any squash-merge to main
+  ├─ release-pr ───────── opens or updates "chore(main): release x.y.z", tags nothing
+  ├─ release-pr-checks ── releases that pull request's parked run, so it is checked
+  └─ cross-platform ───── Linux, macOS and Windows on this exact tree
+       └─ release-tag ─── nothing above it has tagged; this is the only job that can
+            ├─ artifacts ── preflight, npm pack, SBOM, build provenance, upload both
+            └─ publish ──── only if the NPM_PUBLISH_ENABLED repository variable is "true"
 
-the release pull request, green on Linux, macOS and Windows, is merged
-  └─ release-please ── writes CHANGELOG.md and package.json, tags vX.Y.Z, creates the GitHub release
-       ├─ cross-platform ── the tagged tree, on all three, before anything ships
-       ├─ artifacts ─────── preflight, npm pack, SBOM, build provenance, upload both to the release
-       └─ publish ───────── only if the NPM_PUBLISH_ENABLED repository variable is "true"
+on an ordinary merge, release-tag finds no merged release pull request and reports
+created=false, so artifacts and publish skip. On the merge of the release pull
+request it writes CHANGELOG.md and package.json, tags vX.Y.Z and creates the release.
 ```
 
 Merging is the one step a person takes, and it is the one step that should stay theirs.
@@ -207,18 +211,36 @@ Run `33852140477` ran this script under `GITHUB_TOKEN` with `permissions: action
 Pull request 10 went from "no CI checks configured" to `check`, `secret scan` and `dependency review` running on it.
 No credential was stored to do that, and none is stored anywhere on this path.
 
-**The release pull request also runs macOS and Windows, and it is the only pull request that does.**
-Merging it is what creates the tag and the GitHub release, and no gate after the tag can un-cut a release.
-That is not hypothetical.
-On run `33822348514` the `release-please` job created `v0.1.0` and its GitHub release, `cross-platform` then failed on `windows-2025`, and `artifacts` and `publish` were skipped: release `382407638` stands today with `assets: []`, so v0.1.0 has no tarball, no SBOM and no attestation.
-The three platforms are a condition of the merge now instead.
-The `cross-platform` job in `ci.yml` calls the same reusable workflow, guarded on `startsWith(github.head_ref, 'release-please--')` and on the head repository matching this one, and reaches branch protection through `checks` like every other job.
+**Two gates run the three platforms, and they protect different things.**
+
+The first is on the release pull request, and it keeps `main` releasable.
+The `cross-platform` job in `ci.yml` calls the reusable workflow, guarded on `startsWith(github.head_ref, 'release-please--')` and on the head repository matching this one, and reaches branch protection through `checks` like every other job.
 Every other pull request skips it and pays nothing.
 That the guard fires was measured on a throwaway pull request from a `release-please--` branch: run `33853207426` reported seven jobs green - `check`, `secret scan`, `dependency review`, all three `cross-platform` legs, and `checks` - where the same tree on an ordinary branch reports four and skips the matrix.
 
+The second is on the tag, and it is the one that took two empty releases to get right.
+Gating the pull request's merge does not gate the tag, because the tag is not cut by that run.
+It is cut by the next run, on `main`, and there `release-please` was the first job in the file: it tagged and published before any platform had said a word, and the `artifacts` job that attaches the tarball hung off a matrix that had already failed.
+Twice, identically.
+On run `33822348514` the tag `v0.1.0` and release `382407638` were created and `windows-2025` then failed; on run `33859541647`, with the pull-request gate in place and the release pull request green on all seven checks, `v0.1.1` and release `382616199` were created and `windows-2025` failed again.
+Both releases stand with `assets: []`: no tarball, no SBOM, no attestation.
+
+So `release-please` is split by its own two skip inputs.
+`release-pr` runs it with `skip-github-release: true`, which the action documents as "if set to true, then do not try to tag releases", and that half stays in front of the matrix: gating it would stop the release pull request from ever being opened, which is a worse failure than the one being fixed.
+`release-tag` runs it with `skip-github-pull-request: true`, needs `cross-platform`, and is the only job in the repository that can create a tag.
+
+The matrix that gates it is conditioned on nothing.
+Asking "is this push a release?" first is what would put the defect back: that answer is release-please's to give, and a second opinion answering "no" when the truth is "yes" would skip the matrix, skip `release-tag` with it, and drop the release in silence.
+So every push to `main` pays for macOS and Windows, and `main` gets three-platform coverage on every commit rather than once a week.
+
+Measured in GitHub's own engine, on a stub derived from `release.yml` with the same jobs, the same `needs:` and the same `if:`, every step replaced by an `echo` and the matrix by one whose `windows-2025` leg fails on demand.
+With that leg red, run `33863831974`: `release-pr` success, `release-pr-checks` success, `release-tag` **skipped**, `artifacts` skipped, `publish` skipped.
+With all three green, run `33864417184`: `release-tag` success, `artifacts` success, `publish` skipped on the repository variable.
+The real path is proven only by the next real release, and what that would show is `release-tag` starting after three green legs and `artifacts` attaching a tarball and an SBOM to the tag it made.
+
 A gate that runs after the thing it was meant to prevent is decoration.
 
-The `artifacts` job checks the tag out rather than `main`, so the tarball is packed from the tagged tree, and the `cross-platform` job it depends on runs on the release commit, which the preflight proves is the commit the tag names.
+The `artifacts` job checks the tag out rather than `main`, so the tarball is packed from the tagged tree, and the `cross-platform` job upstream of it ran on the release commit, which the preflight proves is the commit the tag names.
 The SBOM comes from GitHub's dependency-graph export (`gh api repos/OWNER/REPO/dependency-graph/sbom`), which describes the manifests from the same data the pull request dependency review reads.
 `actions/attest-build-provenance` signs the tarball, so the release asset is verifiable with `gh attestation verify` whether or not it was ever published to npm.
 
@@ -353,8 +375,8 @@ gh-axi variable set NPM_PUBLISH_ENABLED --body true -R "$REPO"
   Moving the repository under an organization would make a GitHub App bypass actor legal and let `creation` come back; nothing else would.
 
 - **The tag is created before `artifacts` runs, and nothing can take it back.**
-  The merge that creates it is now gated on all three platforms, so the tree is proven; what is not gated is the four steps after the tag, and a failure in any of them leaves a real release carrying no assets.
-  That is what release `382407638` is: v0.1.0, `assets: []`, from run `33822348514`.
+  Both the merge and the tag are gated on all three platforms now, so the tree is proven twice; what is not gated is the four steps after the tag, and a failure in any of them leaves a real release carrying no assets.
+  That is what releases `382407638` and `382616199` are: v0.1.0 and v0.1.1, both `assets: []`, from runs `33822348514` and `33859541647`.
   A draft release promoted by `artifacts` would close it, and was not taken here because GitHub withholds the tag itself until a draft release is published, which `scripts/release-preflight.js` resolves and compares.
 
 - **Approving the release pull request's checks is not reviewing them.**
