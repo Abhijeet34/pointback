@@ -1,6 +1,6 @@
 {
   "name": "pointback",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Point at a rendered HTML page; the pointing comes back to your agent as an instruction.",
   "keywords": [
     "ai-agents",
