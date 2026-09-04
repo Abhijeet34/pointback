@@ -1,6 +1,6 @@
 {
   "name": "pointback",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Point at a rendered HTML page; the pointing comes back to your agent as an instruction.",
   "type": "module",
   "license": "Apache-2.0",
