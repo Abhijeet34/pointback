@@ -451,7 +451,17 @@ test(
 
     await page.eval("document.getElementById('annotate').click()");
     await page.waitFor("document.body.dataset.annotate === '1'");
-    await page.click(rect.left + 40, rect.top + rect.height - 34);
+    const tailBox = JSON.parse(
+      await artifact.eval(
+        "JSON.stringify(document.getElementById('tail').getBoundingClientRect())",
+      ),
+    );
+    const tailPoint = {
+      x: rect.left + tailBox.left + tailBox.width / 2,
+      y: rect.top + tailBox.top + tailBox.height / 2,
+    };
+    await page.pointerInto(artifact, tailPoint);
+    await page.click(tailPoint.x, tailPoint.y);
     await page.waitFor(
       "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
     );
