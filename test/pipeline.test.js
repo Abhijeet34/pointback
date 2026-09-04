@@ -23,6 +23,19 @@ const directives = (text) =>
     .filter((line) => !/^\s*#/.test(line))
     .join("\n");
 
+// A job under `jobs:` starts at a 2-space key. Splitting there and keying by name, after
+// `directives` has stripped comment lines, is what lets a test read one job's own body
+// instead of matching text that could sit anywhere in the file, including a comment or an
+// unrelated job.
+function jobsByName(text) {
+  return Object.fromEntries(
+    directives(text)
+      .split(/(?=^ {2}[a-zA-Z_-]+:$)/m)
+      .filter((block) => /^ {2}[a-zA-Z_-]+:$/m.test(block))
+      .map((block) => [block.match(/^ {2}([a-zA-Z_-]+):$/m)[1], block]),
+  );
+}
+
 // Both workflows indent a step's `- name:` at 6 spaces, its `run: |` at 8, and the body at
 // 10; extracting by name (rather than by position) is what lets a test run the real step
 // body instead of matching its source text.
@@ -77,6 +90,9 @@ test("an ordinary pull request runs Linux only; the release pull request runs al
   );
   assert.ok(guard, "ci.yml calls cross-platform.yml without a guarded `if:` above the `uses:`");
   assert.match(guard[1], /startsWith\(github\.head_ref, 'release-please--'\)/);
+  // A fork can name its branch release-please--anything; only the same-repository
+  // clause below keeps that fork's pull request from spending the matrix too.
+  assert.match(guard[1], /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
 });
 
 // The gap this closes was measured rather than assumed: on run 33822348514 the
@@ -86,7 +102,9 @@ test("an ordinary pull request runs Linux only; the release pull request runs al
 // un-cut a release, so the three platforms are now a condition of the merge that
 // creates it, reaching branch protection through the one required context.
 test("the tag cannot be cut from a tree macOS and Windows have not seen", () => {
-  const needs = workflows["ci.yml"].match(/^ {4}needs: \[([^\]]*)\]$/m)[1];
+  const checks = jobsByName(workflows["ci.yml"]).checks;
+  assert.ok(checks, "ci.yml has no checks job");
+  const needs = checks.match(/^ {4}needs: \[([^\]]*)\]$/m)[1];
   assert.ok(
     needs
       .split(",")
@@ -103,17 +121,11 @@ test("the tag cannot be cut from a tree macOS and Windows have not seen", () => 
 // made by the workflow rather than by a person - the reason a release needs
 // neither a click nor a stored credential.
 test("the release pull request's parked checks are approved by the workflow", () => {
-  const release = workflows["release.yml"];
-  assert.match(release, /^ {2}release-pr-checks:$/m);
-  assert.match(release, /run: node scripts\/approve-release-checks\.js$/m);
+  const jobs = jobsByName(workflows["release.yml"]);
+  assert.ok(jobs["release-pr-checks"], "release.yml has no release-pr-checks job");
+  assert.match(jobs["release-pr-checks"], /run: node scripts\/approve-release-checks\.js$/m);
   // Least privilege, asked of the file: the one job that may approve a run holds
   // no write on contents, and the job that writes tags cannot approve anything.
-  const jobs = Object.fromEntries(
-    release
-      .split(/(?=^ {2}[a-z-]+:$)/m)
-      .filter((block) => /^ {2}[a-z-]+:$/m.test(block))
-      .map((block) => [block.match(/^ {2}([a-z-]+):$/m)[1], block]),
-  );
   assert.match(jobs["release-pr-checks"], /^ {6}actions: write$/m);
   assert.doesNotMatch(jobs["release-pr-checks"], /^ {6}contents: write$/m);
   assert.doesNotMatch(jobs["release-please"], /^ {6}actions: write$/m);
@@ -122,7 +134,9 @@ test("the release pull request's parked checks are approved by the workflow", ()
 // A dispatch names a ref and runs that ref's copy of the workflow, so the
 // committed one says out loud what `on: push: branches: [main]` already restricts.
 test("the release path refuses to run from anywhere but the default branch", () => {
-  assert.match(workflows["release.yml"], /^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
+  const releasePlease = jobsByName(workflows["release.yml"])["release-please"];
+  assert.ok(releasePlease, "release.yml has no release-please job");
+  assert.match(releasePlease, /^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
 });
 
 // npm generates provenance by itself under trusted publishing, and its

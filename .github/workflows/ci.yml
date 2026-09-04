@@ -266,7 +266,10 @@ jobs:
   # it. Every other pull request skips this job, and pays nothing.
   cross-platform:
     name: cross-platform
-    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--')
+    # Same-repository clause: without it a fork could open a pull request from a
+    # branch it names release-please--anything and spend the macOS/Windows matrix
+    # for free. scripts/approve-release-checks.js narrows on the identical fact.
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--') && github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/cross-platform.yml
 
   # The single required context. Everything above reaches branch protection
