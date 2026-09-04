@@ -179,20 +179,22 @@ test("the page outline is bounded, replaced with each batch, and delivered with 
     status: "feedback",
     prompts: [{ uid: 1, at: store.get(key).chat[0].at, ...prompt() }],
     structure: "main\n  #title",
+    receipt: 1,
   });
 
+  // Each later poll acknowledges the batch before it, so the next one is delivered rather than resent.
   store.queue(key, [prompt()], "main\n  #other");
-  assert.equal((await store.waitForFeedback(key, 20)).structure, "main\n  #other");
+  assert.equal((await store.waitForFeedback(key, 20, undefined, 1)).structure, "main\n  #other");
   store.queue(key, [prompt()]);
   assert.equal(
-    (await store.waitForFeedback(key, 20)).structure,
+    (await store.waitForFeedback(key, 20, undefined, 2)).structure,
     "main\n  #other",
     "a batch that outlines nothing keeps the last outline rather than clearing it",
   );
 
   // Send-and-end carries a last batch, so it carries the outline that batch was written against.
   store.end(key, "user", [prompt()], "main\n  #last");
-  const final = await store.waitForFeedback(key, 20);
+  const final = await store.waitForFeedback(key, 20, undefined, 3);
   assert.equal(final.structure, "main\n  #last");
   assert.equal(final.session_ended, true);
   store.reopen(key);
@@ -245,12 +247,35 @@ test("a poller wakes on feedback, times out to waiting, and a losing poller keep
   const first = store.waitForFeedback(key, 5000);
   const second = store.waitForFeedback(key, 100);
   store.queue(key, [prompt()]);
-  assert.equal((await first).prompts.length, 1);
+  const delivered = await first;
+  assert.equal(delivered.prompts.length, 1);
   assert.deepEqual(await second, { status: "waiting" });
+  // A poll that has acknowledged the batch and is then aborted resolves null, with nothing to lose.
   const aborted = new AbortController();
-  const third = store.waitForFeedback(key, 5000, aborted.signal);
+  const third = store.waitForFeedback(key, 5000, aborted.signal, delivered.receipt);
   aborted.abort();
   assert.equal(await third, null);
+});
+
+test("a batch whose delivery is lost is redelivered by uid until the agent acknowledges it", async () => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  store.queue(key, [prompt("keep me")], "main\n  #t");
+  const first = await store.waitForFeedback(key, 20);
+  assert.equal(first.status, "feedback");
+  assert.equal(first.receipt, 1);
+  assert.equal(store.get(key).pending.length, 0, "the batch leaves the queue when it is taken");
+  // The response never reached the agent, so a fresh poll that has acknowledged nothing gets it again.
+  const again = await store.waitForFeedback(key, 20);
+  assert.deepEqual(
+    again.prompts.map((p) => p.uid),
+    [1],
+    "redelivery keeps the uid, so an agent that sees a batch twice can tell it is a repeat",
+  );
+  assert.equal(again.structure, "main\n  #t");
+  // Once the agent acknowledges receipt, the batch is cleared and a later poll waits for new notes.
+  assert.deepEqual(await store.waitForFeedback(key, 10, undefined, 1), { status: "waiting" });
 });
 
 test("presence follows the polls: waiting, listening, working, and back after the bound", async (t) => {
@@ -267,13 +292,14 @@ test("presence follows the polls: waiting, listening, working, and back after th
   assert.equal(store.presence(key).state, "working");
   assert.match(store.presence(key).since, /^\d{4}-/);
   assert.equal(store.status(key).presence.state, "working");
-  // A second poll while working is the agent coming back: listening again, then waiting on timeout.
-  await store.waitForFeedback(key, 10);
+  // A second poll while working is the agent coming back, acknowledging the batch it took: listening
+  // again, then waiting on timeout.
+  await store.waitForFeedback(key, 10, undefined, 1);
   assert.deepEqual(store.presence(key), { state: "waiting" });
   // Feedback taken at once (no attach) still counts as working, and working ages out on its own.
   store.queue(key, [prompt()]);
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  await store.waitForFeedback(key, 10);
+  await store.waitForFeedback(key, 10, undefined, 1);
   assert.equal(store.presence(key).state, "working");
   t.mock.timers.tick(limits.workingMaxMs);
   assert.deepEqual(store.presence(key), { state: "waiting" });
@@ -318,7 +344,11 @@ test("ending queues the last prompts in the same step, wakes a waiting poll, and
   assert.equal(final.prompts[0].prompt, "last");
   assert.equal(final.session_ended, true);
   assert.equal(final.ended_by, "user");
-  assert.deepEqual(await store.waitForFeedback(key, 5000), { status: "ended", ended_by: "user" });
+  // Acknowledging the final batch clears it, so the next poll sees only the ended notice.
+  assert.deepEqual(await store.waitForFeedback(key, 5000, undefined, final.receipt), {
+    status: "ended",
+    ended_by: "user",
+  });
   assert.equal(store.presence(key).state, "waiting", "an ended session has no working agent");
   assert.equal(new SessionStore(file).status(key).ended.by, "user");
 

@@ -5,7 +5,7 @@ import { api, ensureServer, openBrowser, readServerInfo, shouldOpenBrowser } fro
 import { env, name, version } from "./identity.js";
 import { limits } from "./limits.js";
 import { serve } from "./server.js";
-import { stateDir } from "./state-dir.js";
+import { readPollCursor, stateDir, writePollCursor } from "./state-dir.js";
 
 const usage = `${name} ${version}
 
@@ -87,9 +87,16 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
 
   const timeout =
     values["timeout-ms"] === undefined ? "" : `&timeoutMs=${Number(values["timeout-ms"])}`;
-  const query = `file=${encodeURIComponent(resolve(file))}${timeout}`;
+  // Acknowledge the last batch this client received so the server stops holding it for redelivery.
+  // Delivery is at-least-once: a poll whose response is lost redelivers, so a note is never dropped.
+  const absolute = resolve(file);
+  const cursor = readPollCursor(dir, absolute);
+  const ack = cursor === undefined ? "" : `&ack=${cursor}`;
+  const query = `file=${encodeURIComponent(absolute)}${timeout}${ack}`;
   print(stderr, `waiting for feedback on ${file}...`);
   const result = await api(server, "GET", `/api/poll?${query}`);
+  const receipt = result.receipt;
+  delete result.receipt;
   if (result.status === "feedback") {
     result.next_step =
       "Each prompt is the reviewer's instruction about the element at `selector`. " +
@@ -106,7 +113,10 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   if (result.status === "ended") {
     result.next_step = "The review is over. Do not poll this file again unless the user asks.";
   }
-  return print(stdout, JSON.stringify(result));
+  print(stdout, JSON.stringify(result));
+  // Record the cursor only after the batch is on stdout: a crash before this redelivers, never drops.
+  if (result.status === "feedback" && typeof receipt === "number")
+    writePollCursor(dir, absolute, receipt);
 }
 
 function print(stream, text) {

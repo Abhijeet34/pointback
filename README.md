@@ -72,6 +72,11 @@ Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (d
 
 A final batch arrives as `feedback` with `session_ended: true`, so the last notes are never lost to the end of the session.
 
+Delivery is at-least-once.
+A batch stays on the queue until the poll that took it succeeds, and `pointback poll` acknowledges each batch on the next poll, so a poll whose response never arrived (a dropped connection, a killed poller) redelivers the identical batch rather than dropping it.
+A redelivered batch carries the same `uid` values it did the first time, which increase within a session, so an agent that tracks the highest `uid` it has applied can tell a repeat from a new note.
+There is no packet loss: the queue is never emptied for a response the agent did not receive.
+
 Each note in `prompts` looks like this:
 
 ```json

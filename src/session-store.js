@@ -177,7 +177,7 @@ export class SessionStore {
     this.#events.emit(key, { type: "reopened" });
   }
 
-  /** Hands every waiting prompt to the agent exactly once. */
+  /** Drains the queue, clearing it as the batch leaves. Delivery goes through #answer, not this. */
   take(key) {
     const session = this.get(key);
     const prompts = session.pending;
@@ -186,17 +186,50 @@ export class SessionStore {
     return prompts;
   }
 
-  /** The poll's answer when one exists now: feedback, or the ended notice; null means keep waiting. */
-  #answer(key) {
+  /**
+   * The poll's answer when one exists now: feedback, or the ended notice; null means keep waiting.
+   *
+   * Delivery is at-least-once. A batch handed to a poll moves from `pending` to `unacked` and stays
+   * there until a later poll's `ack` cursor reaches its high uid, so a poll whose response never
+   * reached the agent redelivers the identical batch - same uids - rather than dropping it. The old
+   * code cleared the queue the moment the answer was composed, which lost a batch whenever the
+   * response did not arrive; a poll that took a batch and hit a dead socket is exactly that case.
+   */
+  #answer(key, ack, redeliver) {
     const session = this.get(key);
-    const prompts = this.take(key);
+    // A poll whose cursor has reached the outstanding batch confirms it arrived; only then is it
+    // cleared. A missing or stale cursor leaves the batch to be redelivered unchanged.
+    if (session.unacked && ack !== undefined && ack >= session.unacked.receipt) {
+      delete session.unacked;
+      this.#persist();
+    }
     const ended = session.endedAt ? { ended_by: session.endedBy } : null;
-    if (prompts.length > 0) {
-      const structure = session.structure ?? "";
+    // One batch is in flight at a time. A fresh poll (redeliver) re-sends the outstanding batch, so a
+    // poll whose response was lost gets the identical notes - same uids, idempotent - not a drop. A
+    // poll woken while another already holds that batch does not, so two pollers never split one
+    // batch, and a newer batch waits behind the outstanding one, keeping the order the reviewer set.
+    if (session.unacked) {
+      if (!redeliver) return ended && { status: "ended", ...ended };
+      const { prompts, structure, receipt } = session.unacked;
       return {
         status: "feedback",
         prompts,
         structure,
+        receipt,
+        ...(ended && { session_ended: true, ...ended }),
+      };
+    }
+    if (session.pending.length > 0) {
+      const prompts = session.pending;
+      session.pending = [];
+      const receipt = prompts[prompts.length - 1].uid;
+      session.unacked = { prompts, structure: session.structure ?? "", receipt };
+      this.#persist();
+      return {
+        status: "feedback",
+        prompts,
+        structure: session.unacked.structure,
+        receipt,
         ...(ended && { session_ended: true, ...ended }),
       };
     }
@@ -204,8 +237,9 @@ export class SessionStore {
   }
 
   /** Resolves with the poll's answer, `waiting` at the timeout, or null when the caller went away. */
-  waitForFeedback(key, timeoutMs, signal) {
-    const immediate = this.#answer(key);
+  waitForFeedback(key, timeoutMs, signal, ack) {
+    // A fresh poll may redeliver the outstanding batch; a poll woken by an event may not.
+    const immediate = this.#answer(key, ack, true);
     if (immediate) {
       if (immediate.status === "feedback") this.#setWorking(key);
       return Promise.resolve(immediate);
@@ -226,7 +260,7 @@ export class SessionStore {
       // Two pollers race for one batch; the one that finds nothing keeps waiting.
       const onEvent = (event) => {
         if (event.type !== "feedback" && event.type !== "ended") return;
-        const answer = this.#answer(key);
+        const answer = this.#answer(key, ack, false);
         if (answer) finish(answer);
       };
       const onAbort = () => finish(null);

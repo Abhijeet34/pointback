@@ -174,9 +174,10 @@ async function api(req, res, url, ctx) {
     if (!file) throw new HttpError(400, "file required");
     const key = ctx.store.keyFor(file);
     const timeoutMs = pollTimeout(url.searchParams.get("timeoutMs"));
+    const ack = pollAck(url.searchParams.get("ack"));
     const controller = new AbortController();
     req.on("close", () => controller.abort());
-    const answer = await ctx.store.waitForFeedback(key, timeoutMs, controller.signal);
+    const answer = await ctx.store.waitForFeedback(key, timeoutMs, controller.signal, ack);
     if (answer === null) return;
     return sendJson(res, 200, answer);
   }
@@ -233,6 +234,15 @@ function pollTimeout(raw) {
   if (!Number.isInteger(value) || value < 0)
     throw new HttpError(400, "timeoutMs must be a non-negative integer");
   return Math.min(value, limits.pollTimeoutMaxMs);
+}
+
+/** The cursor a poll acknowledges: the highest note uid the agent has already received. */
+function pollAck(raw) {
+  if (raw === null) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0)
+    throw new HttpError(400, "ack must be a non-negative integer");
+  return value;
 }
 
 function serveArtifact(res, store, match) {
