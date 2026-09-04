@@ -2,6 +2,7 @@
 // listed low to high; an import within the same layer or upward fails, as does any cycle.
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const LAYERS = [
   ["identity.js", "limits.js"],
@@ -51,8 +52,10 @@ function cycles(graph) {
   return found;
 }
 
-if (resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
-  const problems = checkTree(new URL("../src/", import.meta.url).pathname);
+// fileURLToPath, never URL.pathname: on Windows the latter is "/D:/...", so this guard was
+// false and `npm run deps` checked nothing at all while still exiting 0.
+if (resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const problems = checkTree(fileURLToPath(new URL("../src/", import.meta.url)));
   for (const problem of problems) console.error(problem);
   console.log(
     problems.length === 0

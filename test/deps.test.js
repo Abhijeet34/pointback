@@ -3,10 +3,11 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { LAYERS, checkTree } from "../scripts/check-deps.js";
 
-const src = new URL("../src/", import.meta.url).pathname;
+const src = fileURLToPath(new URL("../src/", import.meta.url));
 
 test("the real tree has a stated direction and no cycles", () => {
   assert.deepEqual(checkTree(src), []);

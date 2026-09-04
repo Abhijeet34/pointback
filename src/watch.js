@@ -1,4 +1,4 @@
-import { statSync, watch } from "node:fs";
+import { realpathSync, statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 
 // A save is rarely one write: editors write a temp file and rename it over the original, or
@@ -16,6 +16,10 @@ export function watchFile(
   { debounceMs = DEBOUNCE_MS, onError = (/** @type {Error} */ _error) => {} } = {},
 ) {
   const name = basename(file);
+  // The real, long-form directory, never the caller's spelling of it: given an 8.3 short path
+  // such as C:\Users\RUNNER~1\AppData\Local\Temp, Windows reports each event under the long
+  // name, libuv asserts that the two match, and a failed assertion aborts the whole daemon.
+  const dir = realpathSync.native(dirname(file));
   let last = signature(file);
   let timer;
   // macOS replays recent history into a new watcher, so an event alone proves nothing; only a
@@ -26,7 +30,7 @@ export function watchFile(
     last = now;
     onChange();
   };
-  const watcher = watch(dirname(file), { persistent: false }, (_event, changed) => {
+  const watcher = watch(dir, { persistent: false }, (_event, changed) => {
     // A platform that reports no filename reports every entry; then every event may be ours.
     if (changed && changed !== name) return;
     clearTimeout(timer);
