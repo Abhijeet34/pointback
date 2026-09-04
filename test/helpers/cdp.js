@@ -366,14 +366,24 @@ class Page {
    * frame says it saw it, and every later event routes there too.
    */
   async pointerInto(frame, point, { timeoutMs = 5000 } = {}) {
-    await frame.eval(`(() => {
-      globalThis.sawPointer = false;
+    // Armed inside the loop rather than once in front of it. The flag this polls lives in
+    // the frame's document, and a document replaced under the wait takes the listener with
+    // it: a one-time arming then leaves the poll reading a value nothing will ever set
+    // again, so the only outcome left is the full budget and a timeout. The guard is per
+    // document, so this registers once per document and never stacks listeners.
+    const armAndRead = `(() => {
       if (!globalThis.watchingPointer) {
         globalThis.watchingPointer = true;
+        globalThis.sawPointer = false;
         document.addEventListener("mousemove", () => { globalThis.sawPointer = true; });
       }
-      return 1;
-    })()`);
+      return globalThis.sawPointer;
+    })()`;
+    // A second call to a point the pointer already reached must verify that point rather
+    // than read the first call's answer, so the flag starts each call false; arming here
+    // as well is what lets the first move below be the one that lands.
+    await frame.eval("globalThis.sawPointer = false");
+    await frame.eval(armAndRead);
     const deadline = Date.now() + timeoutMs;
     let moves = 0;
     do {
@@ -385,7 +395,7 @@ class Page {
         button: "none",
         buttons: 0,
       });
-      if (await frame.eval("globalThis.sawPointer")) return;
+      if (await frame.eval(armAndRead)) return;
       await sleep(25);
     } while (Date.now() < deadline);
     // Three different things end up here and they need three different fixes, so the

@@ -328,6 +328,54 @@ test(
   },
 );
 
+// The pointer wait polls a flag that lives in the frame's document, and a document
+// replaced under it arrives carrying neither the flag nor the listener that sets it.
+// Armed once in front of the loop, the wait never looks again: it goes on reading a
+// value nothing can set and the only outcome left is the full budget and a timeout.
+//
+// What that swap looks like from the wait's side is a frame it believes it has already
+// armed and has not, followed by the real document turning up; that is what the frame
+// below is put into, and it needs no race with a real reload to be exact about it.
+test(
+  "a frame the pointer wait has not really armed is armed again, not waited out",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const page = await browser.page(opened.session.url);
+    const attaching = page.frame();
+    await page.waitFor("document.body.dataset.revision === '0'");
+    const artifact = await attaching;
+    await artifact.waitFor("document.readyState === 'complete'");
+    const frameBox = JSON.parse(
+      await page.eval(
+        "JSON.stringify(document.getElementById('artifact').getBoundingClientRect())",
+      ),
+    );
+    const title = JSON.parse(
+      await artifact.eval(
+        "JSON.stringify(document.getElementById('title').getBoundingClientRect())",
+      ),
+    );
+
+    await artifact.eval(`(() => {
+      // The guard says this document is armed; no listener backs it, so nothing the
+      // pointer does can be seen. 200 ms later the guard goes, which is the document
+      // the wait is actually pointing at finally arriving.
+      globalThis.watchingPointer = true;
+      setTimeout(() => delete globalThis.watchingPointer, 200);
+      return 1;
+    })()`);
+
+    const started = Date.now();
+    await page.pointerInto(artifact, {
+      x: frameBox.left + title.left + 5,
+      y: frameBox.top + title.top + title.height / 2,
+    });
+    const took = Date.now() - started;
+    assert.ok(took < 4000, `the wait spent ${took} ms, so it never armed the frame again`);
+    await page.close();
+  },
+);
+
 test(
   "a stale link tells the reviewer what to do instead of a blank page",
   { skip: !executable && "no browser found" },
