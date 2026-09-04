@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { envPrefix } from "../src/identity.js";
+import { limits } from "../src/limits.js";
 import { findBrowser, launchBrowser } from "./helpers/cdp.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
 
@@ -257,9 +258,13 @@ test(
 
     // The agent has the batch and has not answered: the reviewer sees that, with the clock running.
     await page.waitFor("document.getElementById('presence').dataset.state === 'working'");
-    assert.match(
+    assert.equal(
       await page.eval("document.getElementById('presenceText').textContent"),
-      /^Working \d+:\d\d$/,
+      "Agent working",
+    );
+    assert.match(
+      await page.eval("document.getElementById('presenceSince').textContent"),
+      /^\d+:\d\d$/,
     );
     assert.equal(
       await page.eval("document.getElementById('send').textContent"),
@@ -387,6 +392,47 @@ test(
   },
 );
 
+test(
+  "a presence change leaves a reviewer who scrolled up in the notes where they were",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // Enough notes to overflow the margin at 800x600, queued in one request under the cap.
+    const { port, token } = lab.serverInfo();
+    const key = new URL(opened.session.url).pathname.split("/").pop();
+    const prompts = Array.from({ length: limits.promptsPerRequest }, (_, i) => ({
+      prompt: `Note ${i + 1}`,
+      selector: "#p1",
+      tag: "p",
+      text: "Move the queue worker",
+    }));
+    const res = await fetch(`http://127.0.0.1:${port}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ prompts }),
+    });
+    assert.equal(res.status, 200, await res.text());
+    assert.equal(
+      (await cli(["poll", fixture, "--timeout-ms", "0"], lab.env)).json().status,
+      "feedback",
+    );
+    const page = await browser.page(opened.session.url);
+    await page.waitFor("document.body.dataset.ready === '1'");
+    const marks = "document.getElementById('marks')";
+    assert.ok(
+      await page.eval(`${marks}.scrollHeight > ${marks}.clientHeight`),
+      "the notes overflow",
+    );
+    await page.eval(`${marks}.scrollTop = 0`);
+    // An empty poll attaches and detaches at once: two presence events reach the tab.
+    assert.equal(
+      (await cli(["poll", fixture, "--timeout-ms", "0"], lab.env)).json().status,
+      "waiting",
+    );
+    await page.waitFor("document.getElementById('presence').dataset.state === 'waiting'");
+    assert.equal(await page.eval(`${marks}.scrollTop`), 0);
+  },
+);
+
 /**
  * A private copy of the fixture a test can save over, tall enough to scroll and ending in a
  * block deep enough that a click near the foot of the frame can only have landed in it.
@@ -414,6 +460,11 @@ test(
     await page.waitFor("document.body.dataset.ready === '1'");
     assert.equal(await page.eval("document.body.dataset.revision"), "0");
     assert.equal(await page.eval("document.getElementById('presence').dataset.state"), "waiting");
+    // The normal state between two polls is presented as the agent being away, never as a fault.
+    assert.equal(
+      await page.eval("document.getElementById('presenceText').textContent"),
+      "Agent away",
+    );
 
     const rect = JSON.parse(
       await page.eval(

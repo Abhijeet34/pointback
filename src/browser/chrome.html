@@ -3,18 +3,27 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark light" />
+    <meta name="color-scheme" content="dark" />
     <title>Review</title>
-    <link rel="icon" href="data:," />
+    <!-- Chromium and Firefox take the SVG, which follows the tab strip's scheme; Safari takes the PNG. -->
+    <link rel="icon" href="/icon-32.png" sizes="32x32" type="image/png" />
+    <link rel="icon" href="/icon.svg" sizes="any" type="image/svg+xml" />
     <link rel="stylesheet" href="/chrome.css" />
   </head>
   <body>
     <header class="bar">
-      <span class="bar-name" id="appName"></span>
+      <span class="brand">
+        <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M11 7v4H3M7 7 3 11l4 4" fill="none" stroke-width="2" />
+          <circle class="dot" cx="11" cy="4" r="3" />
+        </svg>
+        <span class="bar-name" id="appName"></span>
+      </span>
       <span class="bar-file" id="fileName"></span>
       <span class="presence" id="presence" data-state="waiting">
         <span class="presence-dot" aria-hidden="true"></span>
-        <span id="presenceText"></span>
+        <span id="presenceText" role="status"></span>
+        <span class="presence-since" id="presenceSince"></span>
       </span>
       <button class="switch" id="annotate" type="button" role="switch" aria-checked="false">
         <span class="switch-track" aria-hidden="true"></span>

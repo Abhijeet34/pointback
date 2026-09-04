@@ -187,6 +187,8 @@ A dispatched press, path and release does make a real DOM selection: the test as
 It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROWSER=/path/to/binary`; `POINTBACK_BROWSER=none` skips it loudly.
 
 The product name lives in `package.json` and is derived everywhere else through `src/identity.js`; `test/identity.test.js` fails if it appears anywhere else under `src/`.
+The mark is `src/browser/icon.svg`, a point and the return that carries it back, drawn on a 16px grid so the tab icon stays crisp; it follows the tab strip's light or dark scheme, and the same paths are inlined in `chrome.html` beside the wordmark.
+`src/browser/icon-32.png` is the fallback for browsers that take no SVG tab icon, rendered from the SVG with `rsvg-convert -w 32 -h 32 src/browser/icon.svg -o src/browser/icon-32.png`; regenerate it whenever the SVG changes.
 `docs/GIT-WORKFLOW.md` covers how a change reaches `main`, how a release is cut, and what npm does and does not permit when one has to be withdrawn.
 
 ## Security

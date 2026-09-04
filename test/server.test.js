@@ -100,6 +100,26 @@ test("the chrome page carries a locked-down policy and cannot be framed", async 
   assert.equal(await status("/session/__proto__"), 404);
 });
 
+test("the chrome page names a tab icon, and both forms of it are served as images", async () => {
+  const html = await fetch(`${base}/session/${key}`).then((r) => r.text());
+  assert.match(html, /<link rel="icon" href="\/icon\.svg" sizes="any" type="image\/svg\+xml" \/>/);
+  assert.match(html, /<link rel="icon" href="\/icon-32\.png" sizes="32x32" type="image\/png" \/>/);
+  const svg = await fetch(`${base}/icon.svg`);
+  assert.equal(svg.status, 200);
+  assert.equal(svg.headers.get("content-type"), "image/svg+xml");
+  assert.match(await svg.text(), /prefers-color-scheme: dark/, "the icon follows the tab strip");
+  const png = await fetch(`${base}/icon-32.png`);
+  assert.equal(png.status, 200);
+  assert.equal(png.headers.get("content-type"), "image/png");
+  assert.equal(
+    Buffer.from(await png.arrayBuffer())
+      .subarray(1, 4)
+      .toString(),
+    "PNG",
+  );
+  assert.equal(await status("/__proto__"), 404);
+});
+
 test("the artifact is served injected and sandboxed, its siblings confined, its token required", async () => {
   const res = await fetch(base + artifactUrl);
   assert.equal(res.status, 200);

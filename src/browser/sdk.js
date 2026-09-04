@@ -375,6 +375,12 @@
     let cut = 0;
     for (const element of document.body.querySelectorAll(STRUCTURE)) {
       if (!element.checkVisibility()) continue;
+      // Past the cap only the count is reported, so nothing past it is addressed: on a page of
+      // 4,000 sections, addressing every one cost 4.4 s between Enter and the note appearing.
+      if (chars > MAX_OUTLINE_CHARS) {
+        cut += 1;
+        continue;
+      }
       const parent = element.parentElement?.closest(STRUCTURE) ?? document.body;
       const depth = (depthOf.get(parent) ?? -1) + 1;
       depthOf.set(element, depth);
