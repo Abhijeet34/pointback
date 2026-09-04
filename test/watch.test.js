@@ -38,14 +38,24 @@ test("a burst of writes is one change, delivered after the debounce", async () =
     onError: (error) => errors.push(error),
   });
   await armed();
-  const wroteAt = Date.now();
-  for (let i = 0; i < 5; i += 1) writeFileSync(file, `<p>${i}</p>`);
+  // One write to settle on, before anything is timed. A fixed sleep does not prove a watcher
+  // is live, and macOS replays recent history into a fresh one: a debounce timer armed by
+  // that replay fires a couple of milliseconds into the burst below, and the change then
+  // looks as though it beat the window. Measured 1 full-suite run in 10 on macOS. Waiting
+  // for a change this test caused, and then clearing, leaves the watcher quiet and armed.
+  writeFileSync(file, "<p>settle</p>");
   if (!watching) {
     await sleep(DEBOUNCE_MS * 4);
     assertReportedRatherThanQuiet(errors, changes.length);
     stop();
     return;
   }
+  await until(() => changes.length > 0, { what: "the watcher to deliver", timeoutMs: 10_000 });
+  await sleep(DEBOUNCE_MS * 4);
+  changes.length = 0;
+
+  const wroteAt = Date.now();
+  for (let i = 0; i < 5; i += 1) writeFileSync(file, `<p>${i}</p>`);
   // Waited for, not slept past. How long ReadDirectoryChangesW takes to hand an event to
   // libuv is the runner's business, and a fixed DEBOUNCE_MS * 4 was this test asserting it.
   // Then a settling sleep, because the claim is that five writes made ONE change: the
