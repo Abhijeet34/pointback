@@ -77,6 +77,20 @@ test("every workflow that runs the suite says whether the browser case ran", () 
   }
 });
 
+// One subject wore three faces before this: a path assumed on windows-2025, a launch nobody
+// bounded on Linux, and a launch buried in dbus noise on Linux again. The resolution now
+// lives in `KNOWN_BROWSERS` alone, and a workflow that types a path of its own puts it back
+// to three - a runner image that moves Chrome would again be found out only by a red job.
+test("no workflow types a browser path of its own", () => {
+  for (const file of workflowNames) {
+    assert.doesNotMatch(
+      directives(workflows[file]),
+      /google-chrome|chrome\.exe|Google Chrome/,
+      file,
+    );
+  }
+});
+
 test("a leaked handle cannot turn a finished suite into a hung job", () => {
   // Measured on Node 24.11.1: `node --test --test-timeout=3000` over a file that leaks a
   // child process runs until something outside kills it, because a per-test timeout does

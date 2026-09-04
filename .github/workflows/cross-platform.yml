@@ -39,17 +39,14 @@ jobs:
         include:
           - os: macos-15
             node: "24"
-            browser: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
           - os: windows-2025
             node: "24"
-            browser: C:\Program Files\Google\Chrome\Application\chrome.exe
           # `engines.node` says ">=24" with no upper bound, and nothing else
           # tests the upper half of that claim. Current Node on Linux is the
           # cheapest leg that can, and it belongs here rather than in ci.yml: a
           # Node release nobody asked for should not redden a pull request.
           - os: ubuntu-24.04
             node: "26"
-            browser: /usr/bin/google-chrome
     defaults:
       run:
         # bash on all three, so one script body works everywhere; the Windows
@@ -69,23 +66,32 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # Resolved, never typed here: `KNOWN_BROWSERS` in test/helpers/cdp.js is the one
+      # list of paths this repository knows a browser by, and a matrix column naming a
+      # path of its own meant a runner image that moved Chrome could only be found out
+      # by a red release. Resolving in a named step rather than letting the suite
+      # discover one keeps the loud failure: no browser is this step failing in a
+      # second with the candidates printed, never a skip inside a green job.
+      #
+      # Existence, not `--version`: chrome.exe on Windows has no console to print to and
+      # opens a window instead. What a present-but-broken binary does is now the
+      # launcher's to report - it distinguishes a browser that would not start from one
+      # that started and was not detected, which this step never could.
       - name: Point the browser suite at this runner's Chrome
-        env:
-          BROWSER_PATH: ${{ matrix.browser }}
         run: |
           set -euo pipefail
-          # Existence, not `--version`: chrome.exe on Windows has no console to
-          # print to and opens a window instead, which is the hazard this whole
-          # change is about. A runner image that dropped Chrome fails here.
-          [ -e "$BROWSER_PATH" ] || {
-            echo "::error::no browser at $BROWSER_PATH on ${{ matrix.os }}" >&2
-            exit 1
-          }
-          # The ${...} below belongs to the JavaScript template literal, not to the shell.
+          # The ${...} below belongs to the JavaScript template literals, not to the shell.
           # shellcheck disable=SC2016
           node --input-type=module -e '
             import { envPrefix } from "./src/identity.js";
-            console.log(`${envPrefix}BROWSER=${process.env.BROWSER_PATH}`);
+            import { KNOWN_BROWSERS, findBrowser } from "./test/helpers/cdp.js";
+            const found = findBrowser();
+            if (!found) {
+              console.error(`::error::no browser on ${process.env.RUNNER_OS}. Looked for: ${KNOWN_BROWSERS.join(", ")}`);
+              process.exit(1);
+            }
+            console.error(`resolved this runner's browser to ${found}`);
+            console.log(`${envPrefix}BROWSER=${found}`);
           ' >> "$GITHUB_ENV"
 
       # The same bound as ci.yml, doubled: these runners are slower, and a macOS
