@@ -23,13 +23,18 @@ const directives = (text) =>
     .filter((line) => !/^\s*#/.test(line))
     .join("\n");
 
-// A job under `jobs:` starts at a 2-space key. Splitting there and keying by name, after
-// `directives` has stripped comment lines, is what lets a test read one job's own body
-// instead of matching text that could sit anywhere in the file, including a comment or an
+// A job under `jobs:` starts at a 2-space key, and `on:`'s trigger keys (push,
+// pull_request, ...) sit at that same indent - slicing to the text after the `jobs:`
+// line first is what keeps those out of the split. Keying by name, after `directives`
+// has stripped comment lines, is what lets a test read one job's own body instead of
+// matching text that could sit anywhere in the file, including a comment or an
 // unrelated job.
 function jobsByName(text) {
+  const stripped = directives(text);
+  const jobsBlock = stripped.match(/^jobs:\n([\s\S]*)$/m);
+  assert.ok(jobsBlock, "no top-level jobs: block found");
   return Object.fromEntries(
-    directives(text)
+    jobsBlock[1]
       .split(/(?=^ {2}[a-zA-Z_-]+:$)/m)
       .filter((block) => /^ {2}[a-zA-Z_-]+:$/m.test(block))
       .map((block) => [block.match(/^ {2}([a-zA-Z_-]+):$/m)[1], block]),
