@@ -11,12 +11,40 @@ const windows = process.platform === "win32";
 /** Directories whose Windows ACL this process has already reset; see `restrictDir`. */
 const restrictedDirs = new Set();
 
+/** Runs icacls and returns its output; a non-zero exit throws, which is the point. */
+function icacls(args) {
+  return execFileSync("icacls", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+/**
+ * The principals holding an ACE of the path's own, never one it inherits. icacls prints the
+ * path on the first line and one `PRINCIPAL:(perms)` per line after it, marking an inherited
+ * entry `(I)`; the inherited ones need no removing because `/inheritance:r` drops them all.
+ */
+function explicitPrincipals(path) {
+  const names = [];
+  for (const line of icacls([path]).split(/\r?\n/)) {
+    if (line.trim() === "" || line.startsWith("Successfully processed")) continue;
+    const body = line.startsWith(path) ? line.slice(path.length) : line;
+    const match = body.match(/^\s*(.+?):(\(.*)$/);
+    if (match && !match[2].includes("(I)")) names.push(match[1]);
+  }
+  return names;
+}
+
 /**
  * Makes a directory reachable by nothing but the user running this process, and every file
  * created inside it likewise. POSIX says that in the mode bits. Windows has no such bits, so
- * the inherited entries are dropped and one full-control entry for this user is granted with
- * (OI)(CI), which every file created inside then inherits - including the temp file
- * `writeJsonAtomic` renames into place, because a rename carries the file's own ACL.
+ * every entry is cleared and one full-control entry for this user is granted with (OI)(CI),
+ * which every file created inside then inherits - including the temp file `writeJsonAtomic`
+ * renames into place, because a rename carries the file's own ACL.
+ *
+ * Both halves are load-bearing and neither covers the other: `/inheritance:r` drops what a
+ * permissive parent lends, and the removal pass drops what is written on the directory
+ * itself. A directory created by an administrator carries SYSTEM and BUILTIN\Administrators
+ * as its own explicit entries, not as inherited ones, which is how a first attempt at this
+ * left three principals on a directory it had just been asked to restrict to one. This user
+ * is never in the removal list, so there is no moment where the process cannot reach it.
  *
  * A failure throws rather than warns: the state directory holds the server token, and a
  * directory that could not be restricted is one the token must not be written into.
@@ -27,9 +55,12 @@ function restrictDir(dir, { onceOnly = false } = {}) {
     return;
   }
   if (onceOnly && restrictedDirs.has(dir)) return;
-  execFileSync("icacls", [dir, "/inheritance:r", "/grant:r", `${userInfo().username}:(OI)(CI)F`], {
-    stdio: "pipe",
-  });
+  const me = userInfo().username;
+  const foreign = explicitPrincipals(dir).filter(
+    (p) => p.split("\\").pop().toLowerCase() !== me.toLowerCase(),
+  );
+  if (foreign.length > 0) icacls([dir, ...foreign.flatMap((p) => ["/remove:g", p])]);
+  icacls([dir, "/inheritance:r", "/grant:r", `${me}:(OI)(CI)F`]);
   restrictedDirs.add(dir);
 }
 
