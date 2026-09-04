@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.1](https://github.com/Abhijeet34/pointback/compare/v0.1.0...v0.1.1) (2026-09-04)
+
+
+### Features
+
+* **browser:** give pointback's review chrome a brand identity and presence copy ([#7](https://github.com/Abhijeet34/pointback/issues/7)) ([92835ab](https://github.com/Abhijeet34/pointback/commit/92835ab5ec15c9223bb33981a614a4ab5521bfa7))
+
+
+### Bug Fixes
+
+* **ci:** resolve browsers per-platform and stop silent CI skips ([#9](https://github.com/Abhijeet34/pointback/issues/9)) ([ac65171](https://github.com/Abhijeet34/pointback/commit/ac65171431178941e124b7c9ae651b8661c99011))
+* close three pointback session-integrity gaps ([#11](https://github.com/Abhijeet34/pointback/issues/11)) ([1ee5712](https://github.com/Abhijeet34/pointback/commit/1ee5712e50d635262d1f05a08392eda57a91b500))
+* fix six defects found in a live first-run review ([#8](https://github.com/Abhijeet34/pointback/issues/8)) ([837905a](https://github.com/Abhijeet34/pointback/commit/837905ad9dfdd98ccd89fa69f11b8def46e67a89))
+* **release:** approve the release pull request's parked CI and gate the tag on all three platforms ([#14](https://github.com/Abhijeet34/pointback/issues/14)) ([60b401b](https://github.com/Abhijeet34/pointback/commit/60b401b6015fac80fe5f62e0b4328bad374ab092))
+* **state-dir:** make pointback work on Windows ([#12](https://github.com/Abhijeet34/pointback/issues/12)) ([c009bcc](https://github.com/Abhijeet34/pointback/commit/c009bcc55d9d1badb70d7fef510e0e60973be533))
+
 ## 0.1.0 (2026-09-03)
 
 
