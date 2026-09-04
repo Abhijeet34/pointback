@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/Abhijeet34/pointback/compare/v0.1.2...v0.1.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* close windows rename race and report daemon startup failures ([#20](https://github.com/Abhijeet34/pointback/issues/20)) ([d64c28c](https://github.com/Abhijeet34/pointback/commit/d64c28ccefb9e49cd2ea185507e5017f5c11a436))
+
 ## [0.1.2](https://github.com/Abhijeet34/pointback/compare/v0.1.1...v0.1.2) (2026-09-04)
 
 
