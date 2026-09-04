@@ -75,9 +75,55 @@
   // Layout can still grow after this script runs, which clamps an early scroll short of where
   // the reviewer was; the second pass at load lands it.
   function restoreScroll(to) {
-    const apply = () => window.scrollTo(to.x, to.y);
+    const apply = () => {
+      const element = to.selector ? readingAnchor(to) : null;
+      if (!element) return window.scrollTo(to.x, to.y);
+      const top = element.getBoundingClientRect().top + window.scrollY;
+      window.scrollTo(to.x, Math.max(0, Math.round(top - to.top)));
+    };
     apply();
     whenLoaded(apply);
+  }
+
+  /**
+   * The element the reviewer was reading, found again in a page the agent has rewritten. The
+   * selector is tried first and its text confirms it: a section added above shifts every
+   * `:nth-of-type` down one, so the selector alone would silently name a different element.
+   */
+  function readingAnchor(to) {
+    const bySelector = document.querySelector(to.selector);
+    if (!to.text || (bySelector && visibleText(bySelector) === to.text)) return bySelector;
+    let seen = 0;
+    for (const element of document.body.querySelectorAll("*")) {
+      if (++seen > MAX_FOCUSABLE) break;
+      if (visibleText(element) === to.text) return element;
+    }
+    return bySelector;
+  }
+
+  // Where the reviewer is reading is an element and its offset from the top of the window, not a
+  // pixel count: restoring the count alone moves them off their line the moment the agent adds
+  // anything above it. The place is the deepest element crossing the top edge of the window -
+  // deepest because `main` crosses that edge on every page and starts at the top of every
+  // document, so anchoring to it restores the same offset it was supposed to replace.
+  function readingPlace() {
+    let element = /** @type {Element} */ (document.body);
+    for (let depth = 0; depth < 32; depth += 1) {
+      const child = [...element.children].find((node) => {
+        if (node === host || SKIP.has(tagName(node)) || !node.checkVisibility()) return false;
+        const rect = node.getBoundingClientRect();
+        return rect.height > 0 && rect.bottom > 0;
+      });
+      if (!child) break;
+      element = child;
+    }
+    while (element !== document.body && !visibleText(element)) element = element.parentElement;
+    if (element === document.body) return {};
+    return {
+      selector: selectorFor(element),
+      text: visibleText(element),
+      top: Math.round(element.getBoundingClientRect().top),
+    };
   }
 
   function candidate(node) {
@@ -150,11 +196,26 @@
 
   const selectorFor = (element) => segments(element, document.body).join(" > ") || "body";
 
+  // An anchor quotes the text the markup carries, never the text CSS painted. `innerText` applies
+  // `text-transform`, so a header written `Owner` reached the agent as `OWNER` and matched nothing
+  // in the file it was about to edit. Blocks are still spaced apart, because textContent alone runs
+  // a row's cells together, and anything the reviewer could not see stays out of a note quoting them.
+  function markupText(element) {
+    let text = "";
+    for (const node of element.childNodes) {
+      if (node instanceof Text) text += node.data;
+      else if (node instanceof Element && node !== host && !SKIP.has(tagName(node))) {
+        if (!node.checkVisibility()) continue;
+        text += getComputedStyle(node).display.startsWith("inline")
+          ? markupText(node)
+          : ` ${markupText(node)} `;
+      }
+    }
+    return text;
+  }
+
   function visibleText(element) {
-    // innerText keeps the spaces layout puts between cells and lines; textContent runs them together.
-    return squash(element.innerText ?? element.textContent ?? "")
-      .trim()
-      .slice(0, 200);
+    return squash(markupText(element)).trim().slice(0, 200);
   }
 
   // Row and column names come from the header row and the row's first cell. Any spanned cell
@@ -380,7 +441,7 @@
       scrolling = true;
       requestAnimationFrame(() => {
         scrolling = false;
-        send({ type: "scroll", x: window.scrollX, y: window.scrollY });
+        send({ type: "scroll", x: window.scrollX, y: window.scrollY, ...readingPlace() });
       });
     },
     { passive: true },

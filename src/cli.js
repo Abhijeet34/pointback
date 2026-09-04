@@ -100,6 +100,9 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   if (result.status === "feedback") {
     result.next_step =
       "Each prompt is the reviewer's instruction about the element at `selector`. " +
+      "`text` is what that element held when the note was written: check it still matches " +
+      "before you edit there, because rewriting the page can move `selector` onto a different " +
+      "element with no error. " +
       'A `tag` of "text" means a passage: `target` carries character offsets into that ' +
       "element's text content plus the text quoted on either side, so the passage is findable " +
       'again after a re-render. A `target.type` of "table-cell" names the cell\'s row and column. ' +

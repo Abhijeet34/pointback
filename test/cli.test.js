@@ -93,6 +93,13 @@ test("end closes the review, and only --reopen opens it again", async () => {
   const refused = await cli([fixture], lab.env);
   assert.equal(refused.json().session.status, "user-ended");
   assert.match(refused.json().next_step, /--reopen/);
+
+  // An agent tidying up after the reviewer must not relabel the end as its own: that is what
+  // decides whether a plain open may revive a review the reviewer deliberately closed.
+  const tidied = await cli(["end", fixture], lab.env);
+  assert.deepEqual(tidied.json(), { status: "ended", ended_by: "user", queued: 0 });
+  assert.equal((await cli([fixture], lab.env)).json().session.status, "user-ended");
+
   assert.equal((await cli([fixture, "--reopen"], lab.env)).json().session.status, "opened");
 });
 

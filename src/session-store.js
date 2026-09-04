@@ -159,11 +159,11 @@ export class SessionStore {
     if (session.pending.length + prompts.length > limits.pendingPromptsPerSession) {
       throw new HttpError(429, "too many prompts waiting for the agent");
     }
-    const at = new Date().toISOString();
-    session.lastActive = at;
+    const arrived = Date.now();
+    session.lastActive = new Date(arrived).toISOString();
     const accepted = prompts.map((raw) => {
-      const prompt = validatePrompt(raw);
-      return { uid: session.nextUid++, at, ...prompt };
+      const { at, ...prompt } = validatePrompt(raw);
+      return { uid: session.nextUid++, at: noteTime(at, session, arrived), ...prompt };
     });
     // The outline describes the page these notes were written against, so it is replaced
     // with every batch rather than accumulated: an older one would describe a page that moved.
@@ -195,12 +195,18 @@ export class SessionStore {
   end(key, by, prompts = [], structure) {
     const session = this.get(key);
     const queued = prompts.length === 0 ? 0 : this.#accept(session, prompts, structure);
-    session.endedAt = new Date().toISOString();
-    session.endedBy = by;
+    // Who closed the loop is the first answer, not the last. An agent tidying up after the
+    // reviewer already ended would otherwise relabel it as its own and, since only a user end
+    // refuses a plain reopen, hand itself back a review the reviewer deliberately closed.
+    if (!session.endedAt) {
+      session.endedAt = new Date().toISOString();
+      session.endedBy = by;
+    }
+    const endedBy = session.endedBy;
     this.#clearWorking(key);
     this.#persist();
-    this.#events.emit(key, { type: "ended", by, queued });
-    return { status: "ended", ended_by: by, queued };
+    this.#events.emit(key, { type: "ended", by: endedBy, queued });
+    return { status: "ended", ended_by: endedBy, queued };
   }
 
   /** Reopens an ended review, so a tab still showing the ended notice comes back to life. */
@@ -309,7 +315,7 @@ export class SessionStore {
   #attach(key) {
     const before = this.presence(key).state;
     this.#pollsByKey.set(key, (this.#pollsByKey.get(key) ?? 0) + 1);
-    this.#clearWorking(key);
+    this.#clearWorking(key, false);
     this.#announce(key, before);
   }
 
@@ -323,7 +329,7 @@ export class SessionStore {
   }
 
   #setWorking(key, before = this.presence(key).state) {
-    this.#clearWorking(key);
+    this.#clearWorking(key, false);
     // The final delivery of an ended session has no agent to wait for, so it leaves presence alone.
     if (this.get(key).endedAt) return this.#announce(key, before);
     const timer = setTimeout(() => {
@@ -335,11 +341,16 @@ export class SessionStore {
     this.#announce(key, before);
   }
 
-  #clearWorking(key) {
+  // Leaving working is announced by default: ending a review while the agent was working cleared
+  // it silently, so the tab kept a disabled Send and a timer counting against an agent the server
+  // had stopped waiting for, and only a page reload freed the reviewer. The callers that pass
+  // `false` announce for themselves a line later, having the further state change to name.
+  #clearWorking(key, announce = true) {
     const working = this.#working.get(key);
     if (!working) return;
     clearTimeout(working.timer);
     this.#working.delete(key);
+    if (announce) this.#announce(key, "working");
   }
 
   #announce(key, before) {
@@ -365,8 +376,22 @@ function validatePrompt(raw) {
     text: str(raw, "prompt", "text", 2000),
   };
   if (prompt.prompt.trim() === "") throw new HttpError(400, "prompt.prompt is empty");
+  if (raw.at !== undefined) prompt.at = str(raw, "prompt", "at", 40);
   if (raw.target !== undefined) prompt.target = validateTarget(raw.target);
   return prompt;
+}
+
+/**
+ * When the reviewer wrote the note. The chrome stamps it as the note is added, because one stamp
+ * per batch loses the order and pace of a review that took ten minutes to write. That clock is
+ * the reviewer's own on this machine, so it needs no trust beyond a sanity range: a value from
+ * outside this session's life is unusable and falls back to the moment the batch arrived.
+ */
+function noteTime(at, session, arrived) {
+  const written = Date.parse(at ?? "");
+  const opened = Date.parse(session.createdAt);
+  const usable = Number.isFinite(written) && written >= opened && written <= arrived;
+  return new Date(usable ? written : arrived).toISOString();
 }
 
 /**

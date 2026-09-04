@@ -16,3 +16,13 @@ th {
   border: 1px solid #ccc;
   padding: 6px 10px;
 }
+/* The header is painted in capitals and written in the source as `Owner`. Every anchor and
+   outline assertion against this table is therefore a regression on the difference. */
+th {
+  text-transform: uppercase;
+}
+/* A visible gap between main's own children, so a test can park the top of the window in one:
+   a point there finds `main`, and `main` spans the document. */
+main > * {
+  margin-block: 18px;
+}
