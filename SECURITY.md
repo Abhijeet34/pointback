@@ -53,7 +53,7 @@ In scope:
 Out of scope:
 
 - Anything a process already running as your own user can do. That user can read `~/.pointback/server.json`; the file mode defends against other users on the machine, not against yourself.
-- The text of a reviewer's note. `prompt`, `target` and `structure` are reviewer-supplied content from an untrusted page, and `README.md` says so at the point the JSON is described. An agent that executes them as instructions has a defect of its own. A page that can queue a note without the reviewer writing it is a different thing and is in scope, above.
+- The text of a reviewer's note. `target` and `structure` are reviewer-supplied content from an untrusted page, and `README.md` says so at the point the JSON is described. An agent that executes them as instructions has a defect of its own. `prompt` itself is typed by the reviewer in the chrome, which the artifact cannot reach; a page that puts words in it is in scope, above.
 - Denial of service by deliberately reaching the documented caps in `src/limits.js` from a local process. Those are ceilings on a shared daemon, not an authorization boundary.
 - Vulnerabilities in your browser, your operating system, or Node itself.
 - A dependency advisory with no working path through this code. Report those upstream; do tell us if a version pinned here is the vulnerable one.
