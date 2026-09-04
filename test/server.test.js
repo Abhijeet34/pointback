@@ -8,6 +8,7 @@ import { limits } from "../src/limits.js";
 import { serve } from "../src/server.js";
 import { fixture } from "./helpers/env.js";
 import { assertPrivate } from "./helpers/private.js";
+import { watchAvailable } from "./helpers/watch.js";
 
 let dir, srv, base, headers, key, artifactUrl;
 
@@ -265,11 +266,40 @@ async function eventStream(path) {
         buffer += decoder.decode(value, { stream: true });
       }
     },
+    /**
+     * Reads until an event of `type` arrives and returns the ones that preceded it, so the
+     * caller asserts about the event it named instead of whichever line happened to be next.
+     * The deadline is not patience for a slow machine - supersession is written during the
+     * request that causes it - it is what turns a broken supersession into a named failure
+     * rather than a 60-second suite timeout.
+     */
+    async until(type, timeoutMs = 10_000) {
+      const before = [];
+      const expired = Symbol("expired");
+      const deadline = new Promise((resolve) => setTimeout(resolve, timeoutMs, expired).unref());
+      for (;;) {
+        const event = await Promise.race([this.next(), deadline]);
+        const seen = JSON.stringify(before.map((e) => e.type));
+        if (event === expired) assert.fail(`no ${type} event within ${timeoutMs} ms; saw ${seen}`);
+        if (event === null) assert.fail(`the stream ended before any ${type} event; saw ${seen}`);
+        if (event.type === type) return before;
+        before.push(event);
+      }
+    },
     close: () => controller.abort(),
   };
 }
 
-test("the event stream greets a tab, supersedes the older one and is capped", async () => {
+test("the event stream greets a tab, supersedes the older one and is capped", async (t) => {
+  // Supersession is asserted on both paths, because it has nothing to do with file watching.
+  // What the probe decides is only whether a `reload-off` may share the stream with it.
+  const watching = await watchAvailable();
+  const permitted = watching ? [] : ["reload-off"];
+  t.diagnostic(
+    watching
+      ? "file watching works here: supersession must reach the older tab alone"
+      : "file watching is unavailable here: supersession must reach the older tab past a reload-off",
+  );
   const opened = await post("/api/sessions", { file: fixture });
   const first = await eventStream(`/api/${opened.key}/events`);
   assert.equal(first.contentType, "application/x-ndjson; charset=utf-8");
@@ -281,7 +311,12 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
   });
   const second = await eventStream(`/api/${opened.key}/events`);
   assert.equal((await second.next()).type, "hello");
-  assert.deepEqual(await first.next(), { type: "superseded" });
+  const before = await first.until("superseded");
+  assert.deepEqual(
+    before.map((event) => event.type).filter((type) => !permitted.includes(type)),
+    [],
+    `only ${JSON.stringify(permitted)} may precede supersession on this machine`,
+  );
 
   const rest = [];
   while (rest.length + 2 < limits.eventStreams) {
