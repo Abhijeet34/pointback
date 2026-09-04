@@ -255,6 +255,23 @@ jobs:
           fail-on-scopes: runtime, development
           comment-summary-in-pr: on-failure
 
+  # The one pull request that runs macOS and Windows, and the reason the rule in
+  # AGENTS.md is "a pull request runs Linux runners only" rather than "no pull
+  # request runs anything else". Merging the release pull request is what creates
+  # the tag and the GitHub release, and until this job existed those were made
+  # from a tree no macOS or Windows runner had seen: on run 33822348514 the tag
+  # v0.1.0 and its release were created, `cross-platform` then went red, and the
+  # release stands to this day with no tarball, no SBOM and no attestation
+  # attached. A gate after the tag cannot un-cut the release; this one is before
+  # it. Every other pull request skips this job, and pays nothing.
+  cross-platform:
+    name: cross-platform
+    # Same-repository clause: without it a fork could open a pull request from a
+    # branch it names release-please--anything and spend the macOS/Windows matrix
+    # for free. scripts/approve-release-checks.js narrows on the identical fact.
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--') && github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/cross-platform.yml
+
   # The single required context. Everything above reaches branch protection
   # through this job and nowhere else, so `if: always()` is load-bearing: without
   # it a failed dependency would leave this job skipped, and a skipped required
@@ -262,7 +279,7 @@ jobs:
   checks:
     name: checks
     if: always()
-    needs: [check, secret-scan, dependency-review]
+    needs: [check, secret-scan, dependency-review, cross-platform]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -272,9 +289,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "results: $RESULTS"
-          # 'skipped' is accepted only because two jobs above skip themselves by
-          # event: dependency-review off a pull request, check on the schedule.
-          # No job here `needs:` another, so nothing else can produce it.
+          # 'skipped' is accepted only because three jobs above skip themselves by
+          # event or by branch: dependency-review off a pull request, check on the
+          # schedule, cross-platform off the release pull request. No job here
+          # `needs:` another, so nothing else can produce it.
           for result in $RESULTS; do
             case "$result" in
               success|skipped) ;;

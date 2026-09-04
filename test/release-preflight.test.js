@@ -34,10 +34,24 @@ test("publishing is refused while the package is private, unlicensed or unallowl
     publishing: true,
     pkg: { version: pkg.version, private: true, license: "UNLICENSED" },
   });
-  assert.equal(problems.length, 3);
+  assert.equal(problems.length, 4);
   assert.ok(problems.some((p) => p.includes('"private": true')));
   assert.ok(problems.some((p) => p.includes("license is UNLICENSED")));
   assert.ok(problems.some((p) => p.includes("no files allowlist")));
+  assert.ok(problems.some((p) => p.includes("repository is absent")));
+});
+
+// Trusted publishing generates provenance by itself, and npm requires a public
+// repository field to generate it from. Without this the publish fails at the
+// registry, after the tag and the GitHub release already exist.
+test("publishing is refused without a public GitHub repository to attest against", () => {
+  const without = (repository) =>
+    preflight({ ...good, publishing: true, pkg: { ...pkg, repository } });
+  assert.deepEqual(without(pkg.repository), []);
+  assert.deepEqual(without("https://github.com/owner/name"), []);
+  for (const bad of [undefined, "", { url: "git@github.com:owner/name.git" }, { url: "" }]) {
+    assert.match(without(bad)[0], /npm cannot generate the provenance/);
+  }
 });
 
 test("the real manifest now clears the publish checks it used to fail", () => {

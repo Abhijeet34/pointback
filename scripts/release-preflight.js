@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
  * @param {string} input.tag the tag release-please created
  * @param {string} input.tagCommit the commit that tag resolves to
  * @param {string} input.releaseCommit the commit release-please reported releasing
- * @param {{version: string, private?: boolean, license?: string, files?: string[]}} input.pkg
+ * @param {{version: string, private?: boolean, license?: string, files?: string[], repository?: string | {url?: string}}} input.pkg
  * @param {boolean} input.publishing whether a tarball is about to leave the machine
  * @returns {string[]} one line per problem; empty means the release may proceed
  */
@@ -43,6 +43,19 @@ export function preflight({ tag, tagCommit, releaseCommit, pkg, publishing }) {
     if (!Array.isArray(pkg.files) || pkg.files.length === 0) {
       problems.push(
         "package.json has no files allowlist, so the tarball would carry the whole tree",
+      );
+    }
+    // Trusted publishing generates provenance on its own, and npm's
+    // provenance prerequisites require "a public `repository` that matches
+    // (case-sensitive) where you are publishing with provenance from". Without
+    // the field the publish fails at the registry, after the tag and the
+    // release already exist, which is the most expensive place to find out.
+    const repository =
+      typeof pkg.repository === "string" ? pkg.repository : (pkg.repository?.url ?? "");
+    if (!/^(git\+)?https:\/\/github\.com\//.test(repository)) {
+      problems.push(
+        `package.json repository is ${repository || "absent"}, so npm cannot generate the ` +
+          "provenance that trusted publishing publishes by default",
       );
     }
   }

@@ -23,6 +23,24 @@ const directives = (text) =>
     .filter((line) => !/^\s*#/.test(line))
     .join("\n");
 
+// A job under `jobs:` starts at a 2-space key, and `on:`'s trigger keys (push,
+// pull_request, ...) sit at that same indent - slicing to the text after the `jobs:`
+// line first is what keeps those out of the split. Keying by name, after `directives`
+// has stripped comment lines, is what lets a test read one job's own body instead of
+// matching text that could sit anywhere in the file, including a comment or an
+// unrelated job.
+function jobsByName(text) {
+  const stripped = directives(text);
+  const jobsBlock = stripped.match(/^jobs:\n([\s\S]*)$/m);
+  assert.ok(jobsBlock, "no top-level jobs: block found");
+  return Object.fromEntries(
+    jobsBlock[1]
+      .split(/(?=^ {2}[a-zA-Z_-]+:$)/m)
+      .filter((block) => /^ {2}[a-zA-Z_-]+:$/m.test(block))
+      .map((block) => [block.match(/^ {2}([a-zA-Z_-]+):$/m)[1], block]),
+  );
+}
+
 // Both workflows indent a step's `- name:` at 6 spaces, its `run: |` at 8, and the body at
 // 10; extracting by name (rather than by position) is what lets a test run the real step
 // body instead of matching its source text.
@@ -61,14 +79,80 @@ function runStepBody(body, { env = {} } = {}) {
   }
 }
 
-test("a pull request runs Linux runners only", () => {
+test("an ordinary pull request runs Linux only; the release pull request runs all three", () => {
   // AGENTS.md, "CI runner platforms". ci.yml is the only workflow a pull
-  // request starts, so the rule reduces to two questions.
+  // request starts, so the rule reduces to three questions.
   assert.doesNotMatch(workflows["ci.yml"], /runs-on:.*(macos|windows)/i);
   assert.ok(workflows["ci.yml"].includes("pull_request"));
   assert.doesNotMatch(workflows["cross-platform.yml"], /^\s*pull_request:/m);
   assert.match(workflows["cross-platform.yml"], /^\s*schedule:/m);
   assert.match(workflows["cross-platform.yml"], /^\s*workflow_dispatch:/m);
+  // The one exception, and it is guarded rather than general: merging the
+  // release pull request is what creates the tag, so that pull request pays for
+  // macOS and Windows and every other one skips the job.
+  const guard = workflows["ci.yml"].match(
+    /^ {4}if: (.*)\n {4}uses: \.\/\.github\/workflows\/cross-platform\.yml$/m,
+  );
+  assert.ok(guard, "ci.yml calls cross-platform.yml without a guarded `if:` above the `uses:`");
+  assert.match(guard[1], /startsWith\(github\.head_ref, 'release-please--'\)/);
+  // A fork can name its branch release-please--anything; only the same-repository
+  // clause below keeps that fork's pull request from spending the matrix too.
+  assert.match(
+    guard[1],
+    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+  );
+});
+
+// The gap this closes was measured rather than assumed: on run 33822348514 the
+// tag v0.1.0 and its GitHub release were created, `cross-platform` then failed on
+// windows-2025, and `artifacts` and `publish` were skipped - so release 382407638
+// stands with no tarball, no SBOM and no attestation. A gate after the tag cannot
+// un-cut a release, so the three platforms are now a condition of the merge that
+// creates it, reaching branch protection through the one required context.
+test("the tag cannot be cut from a tree macOS and Windows have not seen", () => {
+  const checks = jobsByName(workflows["ci.yml"]).checks;
+  assert.ok(checks, "ci.yml has no checks job");
+  const needs = checks.match(/^ {4}needs: \[([^\]]*)\]$/m)[1];
+  assert.ok(
+    needs
+      .split(",")
+      .map((job) => job.trim())
+      .includes("cross-platform"),
+    `the checks aggregate does not depend on cross-platform: ${needs}`,
+  );
+});
+
+// The release pull request was the one pull request in this repository that
+// nothing checked: GitHub creates the `pull_request` run of a GITHUB_TOKEN-opened
+// pull request in an approval-required state, and it completes as
+// `action_required` having produced no check runs at all. This is the approval,
+// made by the workflow rather than by a person - the reason a release needs
+// neither a click nor a stored credential.
+test("the release pull request's parked checks are approved by the workflow", () => {
+  const jobs = jobsByName(workflows["release.yml"]);
+  assert.ok(jobs["release-pr-checks"], "release.yml has no release-pr-checks job");
+  assert.match(jobs["release-pr-checks"], /run: node scripts\/approve-release-checks\.js$/m);
+  // Least privilege, asked of the file: the one job that may approve a run holds
+  // no write on contents, and the job that writes tags cannot approve anything.
+  assert.match(jobs["release-pr-checks"], /^ {6}actions: write$/m);
+  assert.doesNotMatch(jobs["release-pr-checks"], /^ {6}contents: write$/m);
+  assert.doesNotMatch(jobs["release-please"], /^ {6}actions: write$/m);
+});
+
+// A dispatch names a ref and runs that ref's copy of the workflow, so the
+// committed one says out loud what `on: push: branches: [main]` already restricts.
+test("the release path refuses to run from anywhere but the default branch", () => {
+  const releasePlease = jobsByName(workflows["release.yml"])["release-please"];
+  assert.ok(releasePlease, "release.yml has no release-please job");
+  assert.match(releasePlease, /^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
+});
+
+// npm generates provenance by itself under trusted publishing, and its
+// prerequisites require "a public `repository` that matches (case-sensitive)
+// where you are publishing with provenance from". Absent, the publish fails at
+// the registry with the tag and the GitHub release already made.
+test("package.json names the public repository provenance is generated from", () => {
+  assert.match(pkg.repository.url, /^git\+https:\/\/github\.com\/[^/]+\/[^/]+\.git$/);
 });
 
 // A step that outlives its own budget fails the step, and the job reports a verdict a
