@@ -31,8 +31,8 @@ The newest release is the supported version and nothing older.
 A project at this size does not backport, and a support matrix that says otherwise would be a promise nobody keeps.
 Fixes land on `main` and ship in the next release, so report against the newest release or against `main`, and say which.
 
-The package is not on npm.
-There is no `npm install pointback`; the only way to run it is from a clone of this repository.
+A report against a copy installed from npm and a report against the `v*` tag of the same version are the same report.
+Name the version either way, and `README.md` carries the install paths.
 
 ## Scope
 
