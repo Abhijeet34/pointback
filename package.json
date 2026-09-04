@@ -4,6 +4,10 @@
   "description": "Point at a rendered HTML page; the pointing comes back to your agent as an instruction.",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Abhijeet34/pointback.git"
+  },
   "bin": {
     "pointback": "bin/pointback.js"
   },

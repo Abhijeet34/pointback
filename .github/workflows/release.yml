@@ -22,6 +22,10 @@ jobs:
     name: release-please
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # A dispatch names a ref, and the workflow that runs is the one on that ref.
+    # This says out loud what `on: push` already restricts, so a dispatch aimed at
+    # a branch cannot run the release path from a tree nobody merged.
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
       pull-requests: write
@@ -35,6 +39,37 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # The release pull request's CI does not start on its own: release-please opens
+  # it with GITHUB_TOKEN, GitHub creates the resulting `pull_request` run in an
+  # approval-required state, and it completes as `action_required` with no check
+  # runs at all. So the one pull request that carries a release was the one pull
+  # request in this repository that nothing checked. This job releases those runs
+  # with the same GITHUB_TOKEN, which is what makes a release unattended without
+  # storing a credential to make it so; scripts/approve-release-checks.js carries
+  # the narrowing, and test/approve-release-checks.test.js demonstrates it.
+  release-pr-checks:
+    name: release-pr-checks
+    needs: release-please
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      # For POST /actions/runs/{id}/approve alone. Nothing else here needs it,
+      # which is why it is not on the job that holds contents: write.
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Approve the release pull request's parked checks
+        run: node scripts/approve-release-checks.js
 
   # The release commit is main's head, which is what this workflow's own
   # checkout ref resolves to, so the tree these runners test is the tree the tag
