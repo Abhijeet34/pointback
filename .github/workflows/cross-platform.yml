@@ -92,4 +92,18 @@ jobs:
       # minute costs about ten Linux ones, so a hang here is the expensive one.
       - name: check
         timeout-minutes: 12
-        run: npm run check
+        run: |
+          set -euo pipefail
+          npm run check 2>&1 | tee "$RUNNER_TEMP/check.log"
+
+      # ci.yml lifts this line into the summary for its one platform; a release
+      # is gated on three, and which of them actually drove a browser is exactly
+      # what a green tick does not carry. Named by platform, and `always()` so a
+      # leg that died before the suite says that rather than nothing.
+      - name: Say whether the browser case ran
+        if: always()
+        run: |
+          set -uo pipefail
+          verdict=$(grep -m1 '^browser suite' "$RUNNER_TEMP/check.log" 2>/dev/null || true)
+          echo "${{ matrix.os }} - ${verdict:-browser suite: no verdict, the run ended before the suite reached it}" \
+            >> "$GITHUB_STEP_SUMMARY"

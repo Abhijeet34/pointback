@@ -36,6 +36,8 @@ macOS and Windows coverage lives in `.github/workflows/cross-platform.yml`, on a
 Do not add a `macos-*` or `windows-*` runner to a job that runs on `pull_request`.
 The step that runs the suite carries its own `timeout-minutes`, always smaller than its job's, and `test/pipeline.test.js` pins that: a step over budget fails and reports a verdict, while a job over `timeout-minutes` is reported `cancelled`, which the `checks` aggregate can only refuse.
 Never add `cancel-in-progress` to a release, publish, or scheduled workflow: cancelling a publish mid-flight causes real damage, and a superseded scheduled run is the only record of its own result.
+`.gitattributes` pins the working tree to LF everywhere, because the Windows runner checks out under `core.autocrlf=true` and `prettier --check` then refuses every text file in the tree; that, not a missing browser, is what failed `windows-2025` on the 0.1.0 release, and `test/pipeline.test.js` pins the file.
+Chrome is present on all three runner images at the paths the `browser:` matrix names, `windows-2025` included, so the existence check there passes and each leg reports in its own job summary which browser it drove.
 
 ## Maintaining this file
 

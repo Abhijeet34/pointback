@@ -55,6 +55,28 @@ test("the step that runs the suite ends itself before its job's backstop does", 
   }
 });
 
+// The Windows runner checks out under git's core.autocrlf=true. Without this file every
+// text file arrives CRLF and `prettier --check` refuses the whole tree - 61 of 61 files
+// on run 33822348514, which is what reddened windows-2025 on the 0.1.0 release while
+// Linux and macOS went green. Deleting the file reddens the release path again silently.
+test("the checkout is LF on every platform, so the formatter sees one tree", () => {
+  assert.match(read(".gitattributes"), /^\* text=auto eol=lf$/m);
+});
+
+// A green tick does not say whether the only end-to-end coverage ran, and a release is
+// gated on three platforms. Every workflow that runs the suite lifts the suite's own
+// verdict line into its job summary, under `always()` so a leg that died before reaching
+// the suite says that rather than nothing at all. AGENTS.md, "Working here".
+test("every workflow that runs the suite says whether the browser case ran", () => {
+  for (const file of ["ci.yml", "cross-platform.yml"]) {
+    const text = workflows[file];
+    assert.match(text, /npm run check 2>&1 \| tee "\$RUNNER_TEMP\/check\.log"/, file);
+    assert.match(text, /name: Say whether the browser case ran\n\s+if: always\(\)/, file);
+    assert.match(text, /grep -m1 '\^browser suite' "\$RUNNER_TEMP\/check\.log"/, file);
+    assert.match(text, />> "\$GITHUB_STEP_SUMMARY"/, file);
+  }
+});
+
 test("a leaked handle cannot turn a finished suite into a hung job", () => {
   // Measured on Node 24.11.1: `node --test --test-timeout=3000` over a file that leaks a
   // child process runs until something outside kills it, because a per-test timeout does
