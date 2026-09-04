@@ -150,7 +150,13 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
   );
   const discard = async () => {
     await terminate(child);
-    rmSync(profile, { recursive: true, force: true });
+    // Retried, because the child exiting is not every handle on this directory being
+    // released: Chromium's helper processes outlive it by a moment and Windows answers
+    // EPERM to a removal while any of them is still holding a file. That threw out of
+    // `after()` and failed the whole file in 2 of 20 consecutive windows-2025 runs
+    // (run 33867055764), with every test in it green. Node's own retry loop covers
+    // exactly this error class; a second removal by hand would not.
+    rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   };
   let browser;
   try {
