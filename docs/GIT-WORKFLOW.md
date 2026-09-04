@@ -214,6 +214,7 @@ On run `33822348514` the `release-please` job created `v0.1.0` and its GitHub re
 The three platforms are a condition of the merge now instead.
 The `cross-platform` job in `ci.yml` calls the same reusable workflow, guarded on `startsWith(github.head_ref, 'release-please--')`, and reaches branch protection through `checks` like every other job.
 Every other pull request skips it and pays nothing.
+That the guard fires was measured on a throwaway pull request from a `release-please--` branch: run `33853207426` reported seven jobs green - `check`, `secret scan`, `dependency review`, all three `cross-platform` legs, and `checks` - where the same tree on an ordinary branch reports four and skips the matrix.
 
 A gate that runs after the thing it was meant to prevent is decoration.
 
