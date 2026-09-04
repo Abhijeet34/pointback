@@ -1,0 +1,81 @@
+name: windows-flake-hunt
+
+# Not part of any gate. A hand-run instrument for one question the required checks
+# cannot answer: what fraction of Windows runs of this suite pass? A flake is proved
+# absent by a count, never by a green tick, and the count needs identical runs on
+# separate runners - which is what the matrix below is.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: How many identical Windows runs of the suite
+        required: false
+        default: "20"
+      os:
+        description: Runner image
+        required: false
+        default: windows-2025
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      attempts: ${{ steps.fan.outputs.attempts }}
+    steps:
+      - id: fan
+        run: |
+          set -euo pipefail
+          n='${{ inputs.runs }}'
+          printf 'attempts=[' >> "$GITHUB_OUTPUT"
+          seq 1 "$n" | paste -sd, - | tr -d '\n' >> "$GITHUB_OUTPUT"
+          printf ']\n' >> "$GITHUB_OUTPUT"
+
+  hunt:
+    needs: plan
+    name: attempt ${{ matrix.attempt }}
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        attempt: ${{ fromJSON(needs.plan.outputs.attempts) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: Point the browser suite at this runner's Chrome
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016
+          node --input-type=module -e '
+            import { envPrefix } from "./src/identity.js";
+            import { KNOWN_BROWSERS, findBrowser } from "./test/helpers/cdp.js";
+            const found = findBrowser();
+            if (!found) {
+              console.error(`::error::no browser on ${process.env.RUNNER_OS}. Looked for: ${KNOWN_BROWSERS.join(", ")}`);
+              process.exit(1);
+            }
+            console.log(`${envPrefix}BROWSER=${found}`);
+          ' >> "$GITHUB_ENV"
+      - name: test
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          npm test 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Name what failed
+        if: always()
+        run: |
+          set -uo pipefail
+          verdict=$(grep -m1 '^browser suite' "$RUNNER_TEMP/test.log" 2>/dev/null || echo 'NO VERDICT')
+          echo "attempt ${{ matrix.attempt }}: $verdict" >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(not ok|✖)' "$RUNNER_TEMP/test.log" 2>/dev/null | head -20 >> "$GITHUB_STEP_SUMMARY" || true
