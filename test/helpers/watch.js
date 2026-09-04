@@ -14,8 +14,13 @@ let probed;
  * Whether file watching works on this machine, answered once per test process by watching a real
  * file with the product's own watcher. Only a write that comes back proves it: the absence of an
  * error proves nothing when the failure arrives on a later tick.
+ *
+ * The deadline is deliberately far past any real delivery - watch.test.js asserts delivery inside
+ * 450 ms on all three platforms - because it is only reached where watching starts, says nothing
+ * and does nothing, and a deadline mistaken for that state would send every caller down the wrong
+ * branch. It costs nothing on a machine that either watches or reports.
  */
-export function watchAvailable(timeoutMs = 3000) {
+export function watchAvailable(timeoutMs = 10_000) {
   return (probed ??= probe(timeoutMs));
 }
 
