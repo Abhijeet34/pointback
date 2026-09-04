@@ -105,16 +105,23 @@ export function serve({ stateDir, port = 0, idleMs = limits.idleShutdownMs, onId
   const listening = new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => {
-      const bound = boundPort();
-      writeJsonAtomic(join(stateDir, "server.json"), {
-        pid: process.pid,
-        port: bound,
-        token,
-        version,
-        startedAt: new Date().toISOString(),
-      });
-      touch();
-      resolve({ port: bound, token, close, server });
+      // Caught, because this callback is libuv's and not the promise's: a throw here - a state
+      // directory that cannot be written, say - would leave `listening` pending forever and take
+      // the process down with a raw object dump instead of the CLI's own one-line error.
+      try {
+        const bound = boundPort();
+        writeJsonAtomic(join(stateDir, "server.json"), {
+          pid: process.pid,
+          port: bound,
+          token,
+          version,
+          startedAt: new Date().toISOString(),
+        });
+        touch();
+        resolve({ port: bound, token, close, server });
+      } catch (error) {
+        reject(error);
+      }
     });
   });
   return listening;
