@@ -405,6 +405,10 @@ window.addEventListener("message", (event) => {
     // what a reload restores, and it arrives from another frame's event loop. Anything acting
     // on it - a reload, a test - would otherwise be guessing that the report had landed.
     document.body.dataset.scroll = String(data.y);
+    // The element the place is anchored to, published for the same reason: a container spanning
+    // the document restores the offset the anchor exists to replace, and only naming it here
+    // lets a test say so rather than infer it from where the page happened to land.
+    document.body.dataset.place = data.selector ?? "";
   }
 });
 

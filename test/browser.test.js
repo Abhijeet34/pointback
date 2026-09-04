@@ -433,11 +433,22 @@ test(
     // The reviewer's place is a place in the page, not a number of pixels: an agent that adds a
     // section above everything they have read must not push their line off the screen. Restoring
     // the scroll offset alone did exactly that, by the height of whatever was inserted.
-    await artifact.eval("document.querySelector('blockquote').scrollIntoView({ block: 'center' })");
+    // The window is parked with its top edge six pixels above a section, inside the margin
+    // between two of main's own children, because a point there resolves to `main` itself -
+    // which spans the document and starts at its top, so an anchor on it restores the very
+    // offset the anchor exists to replace.
+    await artifact.eval(
+      "window.scrollTo(0, document.getElementById('risks').getBoundingClientRect().top + window.scrollY - 6)",
+    );
     await page.waitFor("Number(document.body.dataset.scroll) > 0");
+    const place = await page.eval("document.body.dataset.place");
+    assert.ok(
+      place && !["main", "body"].includes(place),
+      `the place is anchored to ${place || "nothing"}, which spans the whole document`,
+    );
     const wasAt = Number(
       await artifact.eval(
-        "Math.round(document.querySelector('blockquote').getBoundingClientRect().top)",
+        "Math.round(document.getElementById('risks').getBoundingClientRect().top)",
       ),
     );
     writeFileSync(
@@ -452,12 +463,12 @@ test(
     await page.waitFor("document.body.dataset.revision === '1'");
     const nowAt = Number(
       await artifact.eval(
-        "Math.round(document.querySelector('blockquote').getBoundingClientRect().top)",
+        "Math.round(document.getElementById('risks').getBoundingClientRect().top)",
       ),
     );
     assert.ok(
       Math.abs(nowAt - wasAt) <= 4,
-      `the passage the reviewer was reading moved from ${wasAt} px to ${nowAt} px`,
+      `the place the reviewer was reading moved from ${wasAt} px to ${nowAt} px`,
     );
 
     // Read to the bottom, then save: the page must come back at the bottom, not at the top.

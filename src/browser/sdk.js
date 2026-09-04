@@ -103,14 +103,22 @@
 
   // Where the reviewer is reading is an element and its offset from the top of the window, not a
   // pixel count: restoring the count alone moves them off their line the moment the agent adds
-  // anything above it. The element at the top of the viewport is that place.
+  // anything above it. The place is the deepest element crossing the top edge of the window -
+  // deepest because `main` crosses that edge on every page and starts at the top of every
+  // document, so anchoring to it restores the same offset it was supposed to replace.
   function readingPlace() {
-    const at = document.elementFromPoint(Math.max(0, Math.min(innerWidth / 2, innerWidth - 1)), 1);
-    let element = candidate(at);
-    while (element && element !== document.body && !visibleText(element)) {
-      element = element.parentElement;
+    let element = /** @type {Element} */ (document.body);
+    for (let depth = 0; depth < 32; depth += 1) {
+      const child = [...element.children].find((node) => {
+        if (node === host || SKIP.has(tagName(node)) || !node.checkVisibility()) return false;
+        const rect = node.getBoundingClientRect();
+        return rect.height > 0 && rect.bottom > 0;
+      });
+      if (!child) break;
+      element = child;
     }
-    if (!element || element === document.body || !element.isConnected) return {};
+    while (element !== document.body && !visibleText(element)) element = element.parentElement;
+    if (element === document.body) return {};
     return {
       selector: selectorFor(element),
       text: visibleText(element),
