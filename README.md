@@ -15,8 +15,7 @@ One person, one agent, one local file.
 
 Node 24 or newer, and a browser to review in.
 CI runs the suite on `ubuntu-24.04` every pull request, and on `macos-15` and `windows-2025` weekly and on every release.
-Linux and macOS pass it.
-Windows does not: the suite runs there and 20 tests fail, and `docs/GIT-WORKFLOW.md` under "Known gaps" says what breaks.
+All three pass it: 109 tests, 108 passing and one skipped, on each platform, with the browser suite driving real Chrome on each, measured on run 33849623506.
 
 ## Install
 
@@ -162,7 +161,9 @@ The page under review runs in a sandboxed iframe with an opaque origin.
 It cannot read the chrome, cannot call the API, and talks to the chrome only through messages checked by source and origin in both directions.
 The review script is inserted into the artifact as a DOM node through a real HTML parser, so nothing in the page's own markup can swallow or reshape it.
 Sibling assets resolve through a path check that survives encoded traversal, backslashes, unicode lookalikes, null bytes, absolute paths and symlink escape.
-State is written to a temporary file and renamed, `0600` in a `0700` directory.
+State is written to a temporary file and renamed, and nothing but the owning user can read it.
+POSIX says that in the mode bits, `0600` in a `0700` directory.
+Windows has no such bits, so the state directory's ACL is reset to a single full-control entry for the current user and every file written inside inherits it.
 
 A review is a bounded thing that ends, not state that piles up.
 The daemon idles out after `POINTBACK_IDLE_MS` of no activity, and a review tab keeps it alive only while the reviewer is on it: the tab heartbeats while its page is visible and stops when it is hidden, so a review left open and walked away from releases the process rather than pinning it open for good.

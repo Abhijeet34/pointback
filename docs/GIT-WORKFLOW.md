@@ -286,18 +286,6 @@ gh-axi variable set NPM_PUBLISH_ENABLED --body true -R "$REPO"
 
 ## Known gaps
 
-- **`pointback` does not pass its own suite on `windows-2025`.**
-  The matrix has now run, and the first thing it found was that it had never run anything.
-  npm hands a script to `cmd.exe` on Windows and cmd does not strip quotes, so the quoted glob in the `test` script reached `node --test` carrying its quote characters, matched no file, and reported zero tests over a 100 percent coverage report of an empty set, exit 0.
-  Every green `windows-2025` leg this repository has recorded was a statement about nothing.
-  Unquoted, the leg runs 92 tests and 20 of them fail, in three groups.
-  Ten descend from a single bug: the detached server never starts, which reports `error: server did not start` and takes the browser suite, `cli`, `events` and `watch` down with it.
-  Three are file modes: `src/state-dir.js` and `src/session-store.js` assert `0700` and `0600`, Windows reports `0666`, and the owner-only protection this repository designs in therefore does not exist on that platform.
-  That one is a security property rather than a portability inconvenience.
-  The remaining seven are separate defects across the packed tarball's allowlist, the pinned gate digests, the dependency-direction check, the egress trap and the release preflight.
-  Until the product decision is made, leave the leg red: do not drop the platform from the matrix, and do not weaken the mode checks to reach green.
-  A red leg that says what broke is worth more than a green one that ran nothing.
-  Measured on run 33824789277 at `28cc98e`.
 - **The Linux browser leg lifts an AppArmor restriction.**
   Ubuntu 24.04 confines unprivileged user namespaces, which is the mechanism Chrome's own sandbox uses, so `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` runs before the gate.
   That keeps Chrome's sandbox on, where the usual `--no-sandbox` workaround turns it off.

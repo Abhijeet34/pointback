@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { env, name, version } from "./identity.js";
 import { readJson } from "./state-dir.js";
 
-const bin = new URL(`../bin/${name}.js`, import.meta.url).pathname;
+// fileURLToPath, never URL.pathname: on Windows that yields "/C:/...", which spawn cannot run.
+const bin = fileURLToPath(new URL(`../bin/${name}.js`, import.meta.url));
 
 /** The running server's address and token, or null when none is recorded. */
 export function readServerInfo(stateDir) {
@@ -51,6 +53,9 @@ export async function ensureServer(stateDir, environment = process.env) {
     detached: true,
     stdio: ["ignore", log, log],
     env: environment,
+    // Without this a detached console application on Windows opens a console window of its
+    // own and leaves it on the reviewer's desktop for as long as the daemon lives.
+    windowsHide: true,
   });
   child.unref();
   const deadline = Date.now() + 10_000;
@@ -63,7 +68,11 @@ export async function ensureServer(stateDir, environment = process.env) {
   throw new Error(`server did not start; see ${join(stateDir, "server.log")}`);
 }
 
-/** Opens the URL with the platform's own opener, arguments passed as an array so nothing is shell-parsed. */
+/**
+ * Opens the URL with the platform's own opener. Arguments go as an array rather than a
+ * command line; on Windows `start` is a cmd.exe builtin, so cmd parses them again, and the
+ * only URL this is ever called with is one this server built from a port and two hex strings.
+ */
 export function openBrowser(url, platform = process.platform) {
   const [command, args] =
     platform === "darwin"
@@ -71,7 +80,7 @@ export function openBrowser(url, platform = process.platform) {
       : platform === "win32"
         ? ["cmd", ["/c", "start", "", url]]
         : ["xdg-open", [url]];
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
   child.on("error", () => {});
   child.unref();
 }

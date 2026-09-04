@@ -7,6 +7,7 @@ import { after, before, test } from "node:test";
 import { limits } from "../src/limits.js";
 import { serve } from "../src/server.js";
 import { fixture } from "./helpers/env.js";
+import { assertPrivate } from "./helpers/private.js";
 
 let dir, srv, base, headers, key, artifactUrl;
 
@@ -52,7 +53,7 @@ test("server.json records the process, port and token, owner-only", () => {
   assert.equal(info.pid, process.pid);
   assert.equal(info.port, srv.port);
   assert.equal(info.token, srv.token);
-  assert.equal(statSync(join(dir, "server.json")).mode & 0o777, 0o600);
+  assertPrivate(join(dir, "server.json"), 0o600);
 });
 
 test("health is open; every api route needs the token", async () => {

@@ -5,9 +5,14 @@ import { join, relative, resolve, sep } from "node:path";
 export const KEY_PATTERN = /^[0-9a-f]{16}$/;
 export const TOKEN_PATTERN = /^[0-9a-f]{32}$/;
 
-/** Resolves symlinks so two spellings of one file share a session. */
+/**
+ * Resolves symlinks so two spellings of one file share a session. `realpathSync.native` and
+ * not the JavaScript one: on Windows only the native call expands an 8.3 short name, so
+ * C:\Users\RUNNER~1\... and C:\Users\runneradmin\... are one session rather than two, and the
+ * directory watch on the result is a path Windows will report events under.
+ */
 export function canonicalFile(file) {
-  return realpathSync(resolve(file));
+  return realpathSync.native(resolve(file));
 }
 
 /** A lookup key, never a credential: sixteen hex characters of the canonical path's hash. */
@@ -41,8 +46,8 @@ export function resolveAsset(rootDir, requestPath) {
   if (isOutside(rootDir, candidate)) return null;
   let realRoot, realCandidate;
   try {
-    realRoot = realpathSync(rootDir);
-    realCandidate = realpathSync(candidate);
+    realRoot = realpathSync.native(rootDir);
+    realCandidate = realpathSync.native(candidate);
   } catch {
     return null;
   }

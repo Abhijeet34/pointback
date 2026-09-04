@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -388,8 +389,11 @@ test("the secret scan reads the whole history against the canonical config", () 
 
 test("the synced gate matches the digests CI pins", () => {
   const ci = workflows["ci.yml"];
+  // Node's own hash rather than shasum(1), which no Windows runner has.
   const digest = (path) =>
-    execFileSync("shasum", ["-a", "256", path], { cwd: root, encoding: "utf8" }).split(" ")[0];
+    createHash("sha256")
+      .update(readFileSync(new URL(path, root)))
+      .digest("hex");
   assert.match(ci, new RegExp(`CONFIG_SHA256: "${digest(".gitleaks.toml")}"`));
   assert.match(ci, new RegExp(`HOOK_SHA256: "${digest(".githooks/pre-push")}"`));
 });

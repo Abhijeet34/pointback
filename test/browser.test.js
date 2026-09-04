@@ -457,8 +457,11 @@ test(
     const { file, html } = copyOfFixture();
     const session = (await cli([file], lab.env)).json().session;
     const page = await browser.page(session.url);
-    await page.waitFor("document.body.dataset.ready === '1'");
-    assert.equal(await page.eval("document.body.dataset.revision"), "0");
+    // Wait for the revision rather than for `ready`, which is set in the same turn as the `init`
+    // the frame has not answered yet: `shown` comes back only once the sdk's whenLoaded has the
+    // artifact's own load event, so reading the revision straight after `ready` races those hops.
+    // The revision landing implies ready, and this is the idiom the later waits in this test use.
+    await page.waitFor("document.body.dataset.revision === '0'");
     assert.equal(await page.eval("document.getElementById('presence').dataset.state"), "waiting");
     // The normal state between two polls is presented as the agent being away, never as a fault.
     assert.equal(

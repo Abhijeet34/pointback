@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { name, version } from "../src/identity.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
+import { assertPrivate } from "./helpers/private.js";
 
 const lab = isolatedEnv();
 after(() => lab.stop());
@@ -29,9 +30,8 @@ test("open starts a detached server, records a session and returns a token-beari
     `http://127.0.0.1:${info.port}/session/${out.session.url.match(/session\/([0-9a-f]{16})/)[1]}#${info.token}`,
   );
   assert.match(out.next_step, /poll/);
-  assert.equal(statSync(lab.dir).mode & 0o777, 0o700);
-  for (const file of readdirSync(lab.dir))
-    assert.equal(statSync(join(lab.dir, file)).mode & 0o777, 0o600, file);
+  assertPrivate(lab.dir, 0o700);
+  for (const file of readdirSync(lab.dir)) assertPrivate(join(lab.dir, file), 0o600);
   assert.ok(elapsed < 5000, `open took ${elapsed} ms`);
   const again = await cli(["open", fixture, "--no-open"], lab.env);
   assert.equal(again.json().session.url, out.session.url);

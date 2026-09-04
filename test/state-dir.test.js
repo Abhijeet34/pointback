@@ -1,26 +1,21 @@
 import assert from "node:assert/strict";
-import {
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-  chmodSync,
-} from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { readJson, stateDir, writeJsonAtomic } from "../src/state-dir.js";
+import { assertPrivate, loosen, ownerOnly } from "./helpers/private.js";
 
 const scratch = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-state-"));
 
 test("the state directory is private to the user and re-tightened when it already exists", () => {
   const dir = join(scratch(), "state");
   assert.equal(stateDir({ POINTBACK_STATE_DIR: dir }), dir);
-  assert.equal(statSync(dir).mode & 0o777, 0o700);
-  chmodSync(dir, 0o755);
+  assertPrivate(dir, 0o700);
+  loosen(dir);
+  assert.equal(ownerOnly(dir), false, "the loosening this test re-tightens did nothing");
   stateDir({ POINTBACK_STATE_DIR: dir });
-  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  assertPrivate(dir, 0o700);
 });
 
 test("writes are atomic, owner-only, and leave no temp file behind", () => {
@@ -28,7 +23,7 @@ test("writes are atomic, owner-only, and leave no temp file behind", () => {
   const file = join(dir, "state.json");
   writeJsonAtomic(file, { a: 1 });
   writeJsonAtomic(file, { a: 2 });
-  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assertPrivate(file, 0o600);
   assert.deepEqual(readJson(file), { a: 2 });
   assert.deepEqual(readdirSync(dir), ["state.json"]);
 });

@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * @param {object} input
@@ -48,7 +49,9 @@ export function preflight({ tag, tagCommit, releaseCommit, pkg, publishing }) {
   return problems;
 }
 
-if (resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
+// fileURLToPath, never URL.pathname: on Windows the latter is "/D:/...", so this guard was
+// false and the release gate exited 0 without comparing anything.
+if (resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({
     options: {
       tag: { type: "string" },

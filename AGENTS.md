@@ -19,6 +19,13 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The browser suite says on stdout which of the two it did, `browser suite: running against <path>` or `browser suite: SKIPPED`, and CI lifts that line into the job summary.
   A skip needs an explicit `<PREFIX>BROWSER=none`; finding no browser at all fails.
 - The mark is one geometry in two places, `src/browser/icon.svg` for the tab and the same paths inlined in `chrome.html` for the header; `README.md`, "Develop", says how `icon-32.png` is regenerated when the SVG changes. Neither file may contain the product name (`test/identity.test.js`).
+- Windows is a supported platform and three things in this tree exist only because it is.
+  Never use `new URL(...).pathname` as a filesystem path: it yields `/D:/a/...` there, which is why the daemon never started and why `npm run deps` and the release preflight both exited 0 having checked nothing; `fileURLToPath` is the only correct form.
+  Resolve with `realpathSync.native`, never the JavaScript `realpathSync`, anywhere a path is watched or keyed: only the native call expands an 8.3 short name such as `C:\Users\RUNNER~1\...`, and `fs.watch` on an unexpanded one trips a libuv assertion that aborts the whole daemon.
+  In a test, `shasum` does not exist and `npm` is a `.cmd` Node refuses to spawn without `shell: true`.
+- The state directory's owner-only protection is a security property with two platform spellings, both in `src/state-dir.js`: POSIX mode bits, and on Windows an ACL reset to one full-control entry for the current user that every file inside inherits.
+  `/inheritance:r` alone is not enough, because a directory an administrator creates carries SYSTEM and `BUILTIN\Administrators` as its own explicit entries.
+  Assert the property through `test/helpers/private.js`, never `statSync(...).mode` directly, and keep the re-tightening test's `loosen()` call so it cannot pass vacuously.
 - The page outline the SDK sends with every batch is capped in characters at both ends (`MAX_OUTLINE_CHARS` in `src/browser/sdk.js`, `structureChars` in `src/limits.js`) because it lands in an agent's context window on every delivery; `README.md` carries the measured before and after.
 
 ## Delivery
@@ -43,7 +50,7 @@ Never add `cancel-in-progress` to a release, publish, or scheduled workflow: can
 Chrome is present on all three runner images, and both workflows resolve it through `KNOWN_BROWSERS` in `test/helpers/cdp.js` rather than naming a path, so a moved binary is one edit there.
 Never quote a glob in a `package.json` script: npm runs a script through `cmd.exe` on Windows and cmd keeps the quotes, so `'test/*.test.js'` reached `node --test` with its quote characters, matched nothing, and passed `windows-2025` green over zero tests on run 33824393013.
 Each leg reports in its own job summary which browser it drove, and a leg that reports no verdict fails; that is the guard against the same silence going green again.
-The product itself does not pass on Windows: `docs/GIT-WORKFLOW.md`, "Known gaps", carries the 20 failures grouped by cause, and the leg stays red until that product decision is made.
+All three platforms pass the whole suite; keep it that way by reading the two Windows entries under "Working here" before touching a path, a spawn or a file mode.
 
 ## Maintaining this file
 

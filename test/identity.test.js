@@ -48,9 +48,12 @@ test("the product name appears in src only inside identity.js", () => {
 
 test("a packed tarball ships only the allowlisted files", () => {
   const [pack] = JSON.parse(
+    // npm is a .cmd on Windows, which Node refuses to spawn without a shell; the arguments
+    // are constants, so cmd re-parsing them changes nothing.
     execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
       cwd: root,
       encoding: "utf8",
+      shell: process.platform === "win32",
     }),
   );
   const files = pack.files.map((f) => f.path).sort();
