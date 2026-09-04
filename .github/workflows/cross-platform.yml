@@ -106,10 +106,21 @@ jobs:
       # is gated on three, and which of them actually drove a browser is exactly
       # what a green tick does not carry. Named by platform, and `always()` so a
       # leg that died before the suite says that rather than nothing.
+      #
+      # A missing verdict fails the leg. On run 33824393013 windows-2025 ran zero
+      # tests and went green: npm hands a script to cmd.exe there, cmd keeps the
+      # quotes around the glob, and `node --test` matched no file. A silently
+      # skipped browser case reporting green is worse than a red one.
       - name: Say whether the browser case ran
         if: always()
         run: |
           set -uo pipefail
+          rc=0
           verdict=$(grep -m1 '^browser suite' "$RUNNER_TEMP/check.log" 2>/dev/null || true)
-          echo "${{ matrix.os }} - ${verdict:-browser suite: no verdict, the run ended before the suite reached it}" \
-            >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$verdict" ]; then
+            verdict="browser suite: NO VERDICT, this platform never reached the suite"
+            echo "::error::$verdict" >&2
+            rc=1
+          fi
+          echo "${{ matrix.os }} - $verdict" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc

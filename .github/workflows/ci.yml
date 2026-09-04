@@ -97,21 +97,25 @@ jobs:
       # Whether the only end-to-end coverage ran is not something a reader should
       # have to infer from a green tick, so the suite's own verdict line is lifted
       # out of the log and into the summary - including when the step above failed.
+      #
+      # And a missing verdict fails the job rather than noting itself. Reporting alone
+      # was not enough: on run 33824393013 windows-2025 ran zero tests, because npm
+      # hands a script to cmd.exe there and cmd keeps the quotes around the glob, so
+      # `node --test` matched no file, printed a 100% coverage report of an empty set
+      # and exited 0. The job was green over a suite that never ran.
       - name: Say whether the browser case ran
         if: always()
         run: |
           set -uo pipefail
+          rc=0
           verdict=$(grep -m1 '^browser suite' "$RUNNER_TEMP/check.log" 2>/dev/null || true)
-          echo "${verdict:-browser suite: no verdict, the run ended before the suite reached it}" \
-            >> "$GITHUB_STEP_SUMMARY"
-
-  # A local body rather than a call to the shared secret-scan workflow this
-  # gate's upstream publishes. GitHub's reusable-workflow access table permits a
-  # private caller to use a private or a public workflow and a PUBLIC caller
-  # only a public one, so a public repository cannot reach a workflow in a
-  # private one (docs/GIT-WORKFLOW.md records the check and the day it stops
-  # being needed). The two SYNCED files are still canonical and pinned below;
-  # only this body is local.
+          if [ -z "$verdict" ]; then
+            verdict="browser suite: NO VERDICT, this platform never reached the suite"
+            echo "::error::$verdict" >&2
+            rc=1
+          fi
+          echo "${{ runner.os }} - $verdict" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
   secret-scan:
     name: secret scan
     runs-on: ubuntu-24.04

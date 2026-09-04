@@ -67,14 +67,30 @@ test("the checkout is LF on every platform, so the formatter sees one tree", () 
 // gated on three platforms. Every workflow that runs the suite lifts the suite's own
 // verdict line into its job summary, under `always()` so a leg that died before reaching
 // the suite says that rather than nothing at all. AGENTS.md, "Working here".
-test("every workflow that runs the suite says whether the browser case ran", () => {
+//
+// And a missing verdict fails the job. Reporting alone let run 33824393013's windows-2025
+// leg go green having run zero tests, so the absence of that line is now the failure it
+// always was: a silently skipped browser case reporting green is worse than a red one.
+test("a workflow that runs the suite fails when the browser case did not report", () => {
   for (const file of ["ci.yml", "cross-platform.yml"]) {
     const text = workflows[file];
     assert.match(text, /npm run check 2>&1 \| tee "\$RUNNER_TEMP\/check\.log"/, file);
     assert.match(text, /name: Say whether the browser case ran\n\s+if: always\(\)/, file);
     assert.match(text, /grep -m1 '\^browser suite' "\$RUNNER_TEMP\/check\.log"/, file);
     assert.match(text, />> "\$GITHUB_STEP_SUMMARY"/, file);
+    assert.match(text, /NO VERDICT[\s\S]*?rc=1\n[\s\S]*?exit \$rc/, file);
   }
+});
+
+// npm hands a script to cmd.exe on Windows, and cmd does not strip quotes: a quoted
+// 'test/*.test.js' reaches node as a pattern carrying the quote characters, matches no
+// file, and `node --test` reports 0 tests over a 100% coverage report of an empty set and
+// exits 0. Measured twice - windows-2025 green on zero tests on run 33824393013, and the
+// same 0 tests / exit 0 from `node --test "'test/*.test.js'"` on macOS. Unquoted, a POSIX
+// shell expands the glob and cmd hands node a clean pattern to expand itself.
+test("the test script quotes no pattern, so Windows runs the suite too", () => {
+  assert.doesNotMatch(pkg.scripts.test, /['"]/);
+  assert.match(pkg.scripts.test, /(?:^| )test\/\*\.test\.js(?: |$)/);
 });
 
 // One subject wore three faces before this: a path assumed on windows-2025, a launch nobody
