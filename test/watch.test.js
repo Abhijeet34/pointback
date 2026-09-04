@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { DEBOUNCE_MS, watchFile } from "../src/watch.js";
+import { until } from "./helpers/wait.js";
 import { watchAvailable } from "./helpers/watch.js";
 
 function lab() {
@@ -39,12 +40,19 @@ test("a burst of writes is one change, delivered after the debounce", async () =
   await armed();
   const wroteAt = Date.now();
   for (let i = 0; i < 5; i += 1) writeFileSync(file, `<p>${i}</p>`);
-  await sleep(DEBOUNCE_MS * 4);
   if (!watching) {
+    await sleep(DEBOUNCE_MS * 4);
     assertReportedRatherThanQuiet(errors, changes.length);
     stop();
     return;
   }
+  // Waited for, not slept past. How long ReadDirectoryChangesW takes to hand an event to
+  // libuv is the runner's business, and a fixed DEBOUNCE_MS * 4 was this test asserting it.
+  // Then a settling sleep, because the claim is that five writes made ONE change: the
+  // arrival is the positive half and the absence of a second is the negative half, and only
+  // the negative half is a sleep.
+  await until(() => changes.length > 0, { what: "the debounced change", timeoutMs: 10_000 });
+  await sleep(DEBOUNCE_MS * 4);
   assert.equal(changes.length, 1, "five writes inside the window coalesce");
   const latency = changes[0] - wroteAt;
   assert.ok(latency >= DEBOUNCE_MS, `fired ${latency} ms after the write, before the window`);
@@ -65,16 +73,21 @@ test("a rename-replace save and a sibling's change are told apart", async () => 
   const tmp = join(dir, ".plan.html.tmp");
   writeFileSync(tmp, "<p>two</p>");
   renameSync(tmp, file);
-  await sleep(DEBOUNCE_MS * 3);
   if (!watching) {
+    await sleep(DEBOUNCE_MS * 3);
     assertReportedRatherThanQuiet(errors, changes);
     stop();
     return;
   }
-  assert.equal(changes, 1, "the file replaced under the same name still counts");
+  await until(() => changes === 1, {
+    what: "the rename-replace save to count as one change",
+    timeoutMs: 10_000,
+  });
   writeFileSync(file, "<p>three</p>");
-  await sleep(DEBOUNCE_MS * 3);
-  assert.equal(changes, 2, "and plain writes after the replace are still seen");
+  await until(() => changes === 2, {
+    what: "the plain write after the replace",
+    timeoutMs: 10_000,
+  });
   stop();
 });
 

@@ -7,6 +7,7 @@ import { after, before, test } from "node:test";
 import { limits } from "../src/limits.js";
 import { serve } from "../src/server.js";
 import { fixture } from "./helpers/env.js";
+import { until } from "./helpers/wait.js";
 import { assertPrivate } from "./helpers/private.js";
 import { watchAvailable } from "./helpers/watch.js";
 
@@ -394,7 +395,6 @@ test("the reviewer ends the review with the queue attached, and only a reopen re
 });
 
 test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but silent tab does not", async () => {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // With no activity, the daemon idles out and stops answering.
   let idled = false;
   const short = await serve({
@@ -407,17 +407,17 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
     60,
     "the daemon reports its idle window so the tab can pace its heartbeat",
   );
-  await sleep(200);
-  assert.equal(idled, true);
+  await until(() => idled, { what: "the untouched daemon to idle out", timeoutMs: 5000 });
   await assert.rejects(fetch(`http://127.0.0.1:${short.port}/health`));
 
   // A stream stays open the whole time, but only the heartbeat keeps the daemon alive: when the
   // heartbeat stops, the daemon releases even though the tab is still connected - an abandoned tab
   // does not pin the process open, which a stream-keeps-it-alive rule would have let it do.
   let released = false;
+  const idleMs = 150;
   const held = await serve({
     stateDir: mkdtempSync(join(tmpdir(), "pb-held-")),
-    idleMs: 150,
+    idleMs,
     onIdle: () => (released = true),
   });
   const info = { authorization: `Bearer ${held.token}`, "content-type": "application/json" };
@@ -431,13 +431,38 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
     headers: info,
     signal: watching.signal,
   });
-  for (let i = 0; i < 3; i += 1) {
-    await sleep(80);
-    await fetch(`http://127.0.0.1:${held.port}/health`);
+  // Heartbeat back to back for four idle windows, with nothing between one request and the
+  // next. The loop this replaces slept 80 ms between beats against a 150 ms window, so it
+  // needed the runner to deliver a `setTimeout(80)` and a loopback fetch inside 150 ms; when
+  // windows-2025 did not, the daemon idled out mid-loop and the next beat came back
+  // `TypeError: fetch failed, connect ECONNREFUSED` - a crash where an assertion was meant to
+  // be. Removing the sleep leaves the gap at one round trip, and measuring it means a runner
+  // that still cannot manage that says so instead of throwing a connection error.
+  let beats = 0;
+  let widestGapMs = 0;
+  let lastBeatAt = Date.now();
+  const beatUntil = Date.now() + idleMs * 4;
+  while (Date.now() < beatUntil) {
+    const answered = await fetch(`http://127.0.0.1:${held.port}/health`).catch((error) => error);
+    const gap = Date.now() - lastBeatAt;
+    assert.ok(
+      !(answered instanceof Error),
+      `the daemon stopped answering after ${beats} heartbeats; the widest gap between two of ` +
+        `them was ${Math.max(widestGapMs, gap)} ms against a ${idleMs} ms idle window, so the ` +
+        `runner starved this loop rather than the heartbeat failing to count as activity`,
+    );
+    widestGapMs = Math.max(widestGapMs, gap);
+    lastBeatAt = Date.now();
+    beats += 1;
   }
   assert.equal(released, false, "a heartbeat inside the idle window keeps it alive");
-  await sleep(400);
-  assert.equal(released, true, "an open but no-longer-heartbeating tab lets the daemon idle out");
+  assert.ok(beats > 4, `only ${beats} heartbeats fitted four idle windows`);
+
+  // And when the heartbeat stops, the daemon releases even though the stream is still open.
+  await until(() => released, {
+    what: "an open but no-longer-heartbeating tab to let the daemon idle out",
+    timeoutMs: 10_000,
+  });
   watching.abort();
   await held.close();
 });
