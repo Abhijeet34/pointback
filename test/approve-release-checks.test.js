@@ -20,7 +20,10 @@ const releasePr = {
   base: { ref: "main", repo: { default_branch: "main" } },
 };
 
-const parked = { total_count: 1, workflow_runs: [{ id: 33849288493, conclusion: "action_required" }] };
+const parked = {
+  total_count: 1,
+  workflow_runs: [{ id: 33849288493, conclusion: "action_required" }],
+};
 const running = { total_count: 1, workflow_runs: [{ id: 33849288493, conclusion: null }] };
 const none = { total_count: 0, workflow_runs: [] };
 

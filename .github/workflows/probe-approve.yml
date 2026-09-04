@@ -1,0 +1,35 @@
+name: probe
+
+# TEMPORARY. Measures whether the workflow's own GITHUB_TOKEN, holding
+# `actions: write`, may release a parked run - the one unknown in the
+# release-pr-checks design, which GitHub's REST documentation does not answer.
+# Deleted in this same branch once the run id is recorded.
+on:
+  push:
+    branches: ["fm/pointback-release-automation-r6"]
+
+permissions:
+  contents: read
+
+jobs:
+  approve:
+    name: approve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Run the real approval against the real release pull request
+        run: |
+          set -euo pipefail
+          node scripts/approve-release-checks.js

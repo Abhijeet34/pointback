@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
  * @param {string} input.tag the tag release-please created
  * @param {string} input.tagCommit the commit that tag resolves to
  * @param {string} input.releaseCommit the commit release-please reported releasing
- * @param {{version: string, private?: boolean, license?: string, files?: string[], repository?: unknown}} input.pkg
+ * @param {{version: string, private?: boolean, license?: string, files?: string[], repository?: string | {url?: string}}} input.pkg
  * @param {boolean} input.publishing whether a tarball is about to leave the machine
  * @returns {string[]} one line per problem; empty means the release may proceed
  */
