@@ -13,3 +13,14 @@ CHANGELOG.md
 # maintained here. A formatter that reflows either one breaks the digest CI pins.
 .githooks
 .gitleaks.toml
+
+# Community files rendered by the owned repository standard in automation
+# (system-maintenance/github/repo-standard); `repo-standard check` compares them
+# line by line, so a reflow here is drift. The Covenant text is kept verbatim.
+CONTRIBUTING.md
+SECURITY.md
+SUPPORT.md
+CODE_OF_CONDUCT.md
+.github/CODEOWNERS
+.github/ISSUE_TEMPLATE
+.github/PULL_REQUEST_TEMPLATE.md

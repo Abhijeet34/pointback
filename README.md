@@ -192,10 +192,12 @@ The mark is `src/browser/icon.svg`, a point and the return that carries it back,
 `src/browser/icon-32.png` is the fallback for browsers that take no SVG tab icon, rendered from the SVG with `rsvg-convert -w 32 -h 32 src/browser/icon.svg -o src/browser/icon-32.png`; regenerate it whenever the SVG changes.
 `docs/GIT-WORKFLOW.md` covers how a change reaches `main`, how a release is cut, and what npm does and does not permit when one has to be withdrawn.
 
-## Security
+## Contributing, security and support
 
+[`CONTRIBUTING.md`](https://github.com/Abhijeet34/pointback/blob/main/CONTRIBUTING.md) says what a pull request needs, and `AGENTS.md` holds this project's own build and test rules.
 Report a vulnerability privately through [the repository's Security tab](https://github.com/Abhijeet34/pointback/security/advisories/new), and never in a public issue.
-[`SECURITY.md`](https://github.com/Abhijeet34/pointback/blob/main/SECURITY.md) carries the route, what is in scope, and the response times one maintainer will actually meet.
+[`SECURITY.md`](https://github.com/Abhijeet34/pointback/blob/main/SECURITY.md) carries the route and the response times one maintainer will actually meet, and [`docs/THREAT-MODEL.md`](https://github.com/Abhijeet34/pointback/blob/main/docs/THREAT-MODEL.md) says what is in scope.
+[`SUPPORT.md`](https://github.com/Abhijeet34/pointback/blob/main/SUPPORT.md) says where a bug report, a feature request or a question goes, and [`CODE_OF_CONDUCT.md`](https://github.com/Abhijeet34/pointback/blob/main/CODE_OF_CONDUCT.md) applies to every project space.
 
 ## Licence
 
