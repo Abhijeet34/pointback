@@ -545,11 +545,22 @@ test("the synced gate matches the digests CI pins", () => {
 test("the product name is never written into delivery configuration", () => {
   // A rename must not have to reach into CI. src/identity.js derives everything
   // named after the product; these files derive it at run time instead.
+  // .github/ISSUE_TEMPLATE is owned by the repo standard and rendered verbatim
+  // with absolute GitHub URLs that embed the repo name, so it is excluded here.
   let hits = "";
   try {
     hits = execFileSync(
       "git",
-      ["grep", "-l", "-i", name, "--", ".github", "release-please-config.json"],
+      [
+        "grep",
+        "-l",
+        "-i",
+        name,
+        "--",
+        ".github",
+        ":!.github/ISSUE_TEMPLATE",
+        "release-please-config.json",
+      ],
       { cwd: root, encoding: "utf8" },
     ).trim();
   } catch (error) {
