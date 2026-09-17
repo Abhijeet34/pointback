@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -514,32 +513,38 @@ test("no release can attach to a tag that already existed", () => {
   assert.match(workflows["release.yml"], /sha: \$\{\{ steps\.rp\.outputs\.sha \}\}/);
 });
 
+// The one ref taken at a branch: gates' shared workflows are the fleet's single
+// copy of the scanner rules and digests, and following @main is how a repin
+// reaches every caller without an edit here.
+const followsMain = /^Abhijeet34\/gates\/\.github\/workflows\/shared-[a-z-]+\.yml@main$/;
+
 test("every action is pinned to a commit SHA", () => {
   for (const [file, text] of Object.entries(workflows)) {
     for (const [, ref] of text.matchAll(/^\s*(?:- )?uses: ([^\s]+)/gm)) {
       if (ref.startsWith("./")) continue; // a same-repo reusable workflow carries no ref
+      if (followsMain.test(ref)) continue;
       assert.match(ref, /@[0-9a-f]{40}$/, `${file}: ${ref} is not pinned to a SHA`);
     }
   }
 });
 
-test("the secret scan reads the whole history against the canonical config", () => {
+// A local pin is how this repository once stayed on old scanner rules through a
+// fleet repin, so the test refuses one rather than checking its value.
+test("the secret scan is gates' shared workflow and gates the required check", () => {
   const ci = workflows["ci.yml"];
-  assert.match(ci, /fetch-depth: 0/);
-  for (const pin of ["CONFIG_SHA256", "HOOK_SHA256", "GITLEAKS_SHA256"]) {
-    assert.match(ci, new RegExp(`${pin}: "[0-9a-f]{64}"`), `${pin} is not pinned`);
+  const jobs = jobsByName(ci);
+  assert.match(
+    jobs.secrets,
+    /^ {4}uses: Abhijeet34\/gates\/\.github\/workflows\/shared-secret-scan\.yml@main$/m,
+  );
+  assert.match(jobs.checks, /needs: \[[^\]]*\bsecrets\b[^\]]*\]/);
+  for (const [file, text] of Object.entries(workflows)) {
+    assert.doesNotMatch(
+      directives(text),
+      /(CONFIG|HOOK|GITLEAKS)_SHA256/,
+      `${file} pins the secret scan locally instead of following gates`,
+    );
   }
-});
-
-test("the synced gate matches the digests CI pins", () => {
-  const ci = workflows["ci.yml"];
-  // Node's own hash rather than shasum(1), which no Windows runner has.
-  const digest = (path) =>
-    createHash("sha256")
-      .update(readFileSync(new URL(path, root)))
-      .digest("hex");
-  assert.match(ci, new RegExp(`CONFIG_SHA256: "${digest(".gitleaks.toml")}"`));
-  assert.match(ci, new RegExp(`HOOK_SHA256: "${digest(".githooks/pre-push")}"`));
 });
 
 test("the product name is never written into delivery configuration", () => {
