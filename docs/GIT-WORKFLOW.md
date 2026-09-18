@@ -38,7 +38,7 @@ Both are import-ready: GitHub's ruleset import accepts the same JSON that `gh ap
 **Exactly one required status check: `checks`.**
 It is the aggregate job at the bottom of `.github/workflows/ci.yml`, and every other job reaches branch protection through it and nowhere else.
 That indirection is the point.
-A required check is identified by its context name, so requiring `check`, `secret scan` and `dependency review` individually would freeze the job names, and every rename or path-scoping would need a branch-protection edit to match.
+A required check is identified by its context name, so requiring `check`, `secrets / secret scan` and `dependency review` individually would freeze the job names, and every rename or path-scoping would need a branch-protection edit to match.
 It also handles the case that a naive setup gets wrong: a job that skips itself by `if:` reports `skipped`, and a skipped required check is not a failing one, so a required check that can skip blocks nothing.
 `checks` runs on `if: always()` and reads the results of its dependencies itself.
 
@@ -89,7 +89,7 @@ This applies to the web UI and the API as well, which sign with GitHub's own key
 
 The gate is `.githooks/pre-push`, which refuses a push before anything reaches the remote.
 The rules are `.gitleaks.toml`.
-**Both files are copies of one canonical gate maintained in a private upstream repository shared across its siblings, and are never hand-edited here.**
+**Both files are copies of one canonical gate maintained in `Abhijeet34/gates` and shared across its siblings, and are never hand-edited here.**
 A change belongs upstream and reaches this tree as a re-sync.
 The hook is also inert until the clone points at it, which no checkout does for you and which the sync does as its last step:
 
@@ -97,13 +97,12 @@ The hook is also inert until the clone points at it, which no checkout does for 
 git config core.hooksPath .githooks
 ```
 
-CI is the backstop, not the gate: the `secret scan` job in `ci.yml` re-reads the full history weekly, because history does not change between runs but gitleaks' rule set does.
-It pins the SHA-256 of both synced files, so a drifted copy fails the job and the fix is to re-sync from upstream, never to edit the file.
-
-That job is a local body rather than a call to `automation`'s `shared-secret-scan.yml`, which every private sibling uses.
-GitHub's reusable-workflow access table permits a private caller to use a workflow from a private or a public repository and permits a **public** caller only a public one, so a public repository cannot reach a workflow in a private one.
-The day `automation` is public, or this repository is private, replace the job with `uses: Abhijeet34/automation/.github/workflows/shared-secret-scan.yml@main` and delete the copy.
-Until then the two digest pins are the only thing tying this body to the canonical rules, and drift in the body itself is detected by nothing.
+CI is the backstop, not the gate: the `secrets` job in `ci.yml` calls `uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@main`, the same call every sibling makes, and reports as `secrets / secret scan`.
+It re-reads the full history weekly, because history does not change between runs but gitleaks' rule set does.
+The gitleaks version and the SHA-256 of both synced files are pinned in that shared workflow and nowhere in this repository, so a drifted copy fails the job, the fix is to re-sync from upstream, and a repin in `gates` reaches this repository with no edit here.
+`test/pipeline.test.js` refuses a local `CONFIG_SHA256`, `HOOK_SHA256` or `GITLEAKS_SHA256`, because a local pin is exactly how this repository once stayed on the old rules through a fleet repin.
+The call is taken at `@main` rather than a SHA, which is the point of the design; `sha_pinning_required` does not refuse it, measured on sibling repositories with that policy on running the same call green.
+The branch ruleset requires only `checks`, so the job's name is free to change without a branch-protection edit.
 
 ## What a pull request costs
 
@@ -113,12 +112,12 @@ The matrix below is still Linux-only on `pull_request`, because `AGENTS.md` says
 
 The private-repository counterfactual, at the rates measured on 2026-09-03 and recorded in the `lavish-release-devops-r2` design (Linux $0.006, Windows $0.010, macOS $0.062 per minute, every job rounded up to a whole minute):
 
-| Event                         | Jobs                                                                                                 | Billed Linux minutes                       | If private                        |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------- |
-| Push to a pull request        | `check`, `secret scan`, `dependency review`, `checks`                                                | 2 + 2 + 1 + 1 = 6                          | $0.036                            |
-| Merge to `main`               | `check`, `secret scan`, `checks`, `release-pr`, `release-pr-checks`, `cross-platform`, `release-tag` | 2 + 2 + 1 + 1 + 1 + 1 = 8, plus the matrix | $0.048 + $0.228 = $0.276          |
-| Weekly `cross-platform`       | macOS 3, Windows 3, Linux 2                                                                          | n/a                                        | $0.186 + $0.030 + $0.012 = $0.228 |
-| Release (on top of the merge) | `artifacts`, `publish`                                                                               | n/a                                        | $0.006 + $0.006 = $0.012          |
+| Event                         | Jobs                                                                                                           | Billed Linux minutes                       | If private                        |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------- |
+| Push to a pull request        | `check`, `secrets / secret scan`, `dependency review`, `checks`                                                | 2 + 2 + 1 + 1 = 6                          | $0.036                            |
+| Merge to `main`               | `check`, `secrets / secret scan`, `checks`, `release-pr`, `release-pr-checks`, `cross-platform`, `release-tag` | 2 + 2 + 1 + 1 + 1 + 1 = 8, plus the matrix | $0.048 + $0.228 = $0.276          |
+| Weekly `cross-platform`       | macOS 3, Windows 3, Linux 2                                                                                    | n/a                                        | $0.186 + $0.030 + $0.012 = $0.228 |
+| Release (on top of the merge) | `artifacts`, `publish`                                                                                         | n/a                                        | $0.006 + $0.006 = $0.012          |
 
 The per-job minutes are an upper bound, not a measurement: the whole gate runs in 6.7 s locally with dependencies installed, so every job here is dominated by checkout and `npm ci` rather than by its own work, and the arithmetic is dominated by GitHub's per-job rounding.
 Replace them with `started_at` to `completed_at` from the first ten runs.
@@ -368,7 +367,7 @@ gh-axi variable set NPM_PUBLISH_ENABLED --body true -R "$REPO"
   That keeps Chrome's sandbox on, where the usual `--no-sandbox` workaround turns it off.
   If the runner image changes and the step becomes unnecessary, delete it rather than leaving it as folklore.
 - **No watermark-scan backstop.**
-  `automation`'s `shared-watermark-scan.yml` is out of reach for the same visibility reason as the secret scan, and it also requires the caller to carry `watermark-scan.py`, which this tree does not.
+  `gates`' `shared-watermark-scan.yml` requires the caller to carry `watermark-scan.py`, which this tree does not.
   The machine-wide pre-push hook is still the gate; nothing in CI re-checks a commit that bypassed it.
 - **A person can still create a `v*` tag by hand.**
   The `creation` rule is unavailable here for the reason measured in "What protects main", so `scripts/release-preflight.js` is the only thing between a stray tag and a release attached to it.
