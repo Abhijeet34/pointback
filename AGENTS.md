@@ -31,6 +31,8 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 ## Security boundaries
 
 - A note is composed in the chrome, never the artifact; the chrome acts on what the frame proposes only under `gesture`, and pins carry no instruction or reply (`src/browser/chrome.js`).
+  The page reaches the chrome only through the wrapper frame, served under the other loopback name (`pairedHost` in `src/http-guard.js`), whose own activation is the gesture; outside Chromium a key in the chrome also holds the page off for 5 s (`docs/THREAT-MODEL.md`).
+  Read activation in a test through the wrapper's stamp, never a Playwright `evaluate` in a frame, which carries a gesture in Firefox and WebKit.
 - Replies are set as text, never HTML (`replyLine`).
 - Only fonts under the root and the vendored house faces get `Access-Control-Allow-Origin` (`FONT_HEADERS` in `src/http-guard.js`); never widen it.
 - The token in `server.json` goes only to a server that answered `tokenProof` (`src/http-guard.js`).

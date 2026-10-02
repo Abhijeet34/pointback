@@ -288,6 +288,7 @@ It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROW
 
 The CLI opens the reviewer's default browser, which is Safari on an unconfigured Mac, so Chromium alone is not the whole audience.
 `npm run smoke -- webkit firefox` runs the core act in both engines: open the fixture through the CLI, point at the title, write a note, send it, and poll it back.
+It then has a hostile page try to spend the note card's Enter, which exercises the gate those engines rely on (`docs/THREAT-MODEL.md`).
 The `engines` job in `.github/workflows/cross-platform.yml` runs it every Monday, WebKit on `macos-15` and Firefox on `ubuntu-24.04`, and names the engine and its version in the job summary; it skips when `ci.yml` or `release.yml` calls that workflow, so a browser release cannot hold a tag.
 The DevTools harness above cannot reach either engine: WebKit speaks its own inspector protocol and Firefox removed its CDP support in Firefox 141 in favour of WebDriver BiDi.
 Playwright can, through `playwright-core`, one package with no dependencies and no install script; it fetches nothing until `npx playwright-core install webkit firefox` asks it to.
