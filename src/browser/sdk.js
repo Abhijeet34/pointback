@@ -48,6 +48,9 @@
   const PIN = 24;
   // A pin stands GAP clear of the line or box it is beside.
   const GAP = 4;
+  // A row shifted clear of a sibling pin tries this many spots before settling for the one that
+  // covers least, so the search always ends even when the frame is dense with obstacles.
+  const MAX_SHIFT_ATTEMPTS = 200;
   // The widest ring a pin paints around its box, the active one.
   const HALO = 5;
   const MAX_TEXT_NODES = 20000;
@@ -713,6 +716,24 @@
   // of the block; failing all of those, to whichever covers least.
   // A table cell has no room above its words, so its pin stays inside the cell, off the rows around it.
   // Every note on one target is placed as one row `width` wide, so a second pin stands beside the first.
+  const elementFor = (anchor) => {
+    const node = anchor instanceof Range ? anchor.commonAncestorContainer : anchor;
+    return node instanceof Element ? node : node.parentElement;
+  };
+
+  // A box of the target's own, or one holding it, is a spot's ground, not something it covers.
+  const overlapArea = (spot, width, avoid, element) => {
+    let area = 0;
+    for (const { rect, owner } of avoid) {
+      if (owner && (owner === element || owner.contains(element) || element.contains(owner)))
+        continue;
+      const w = Math.min(spot.left + width, rect.right) - Math.max(spot.left, rect.left);
+      const h = Math.min(spot.top + PIN, rect.bottom) - Math.max(spot.top, rect.top);
+      if (w > 0.5 && h > 0.5) area += w * h;
+    }
+    return area;
+  };
+
   function pinSpot(anchor, avoid, bounds, width) {
     let rects;
     if (anchor instanceof Range) rects = [...anchor.getClientRects()];
@@ -731,8 +752,7 @@
     const right = Math.max(...line.map((r) => r.right));
     const lineTop = Math.min(...line.map((r) => r.top));
     const lineBottom = Math.max(...line.map((r) => r.bottom));
-    const node = anchor instanceof Range ? anchor.commonAncestorContainer : anchor;
-    const element = node instanceof Element ? node : node.parentElement;
+    const element = elementFor(anchor);
     const cell = element?.closest("td, th");
     if (cell) {
       // Beside the words rather than above them, so it clears them by its widest ring, 5 px.
@@ -762,21 +782,9 @@
       left: Math.min(Math.max(left, bounds.left), bounds.right - width),
       top: Math.max(top, bounds.top),
     }));
-    // A box of the target's own, or one holding it, is the pin's ground, not something it covers.
-    const covers = (spot) => {
-      let area = 0;
-      for (const { rect, owner } of avoid) {
-        if (owner && (owner === element || owner.contains(element) || element.contains(owner)))
-          continue;
-        const w = Math.min(spot.left + width, rect.right) - Math.max(spot.left, rect.left);
-        const h = Math.min(spot.top + PIN, rect.bottom) - Math.max(spot.top, rect.top);
-        if (w > 0.5 && h > 0.5) area += w * h;
-      }
-      return area;
-    };
     let best = null;
     for (const spot of candidates) {
-      const area = covers(spot);
+      const area = overlapArea(spot, width, avoid, element);
       if (area === 0) return spot;
       if (!best || area < best.area) best = { ...spot, area };
     }
@@ -854,13 +862,29 @@
       // Two rows on one spot stand side by side rather than one hiding the other, and a row with
       // no room left beside it in the frame starts again under it, at its own natural column.
       const right = bounds.right - origin.left - width;
-      while (placed.some((p) => p.x - width < x && x < p.x + p.width && Math.abs(p.y - y) < PIN)) {
+      const element = elementFor(anchor);
+      const areaAt = (cx, cy) =>
+        placed.some((p) => p.x - width < cx && cx < p.x + p.width && Math.abs(p.y - cy) < PIN)
+          ? Infinity
+          : overlapArea({ left: cx + origin.left, top: cy + origin.top }, width, avoid, element);
+      let bestX = x;
+      let bestY = y;
+      let bestArea = areaAt(x, y);
+      for (let attempt = 0; bestArea > 0 && attempt < MAX_SHIFT_ATTEMPTS; attempt++) {
         if (x + PIN + GAP <= right) x += PIN + GAP;
         else {
           x = naturalX;
           y += PIN + GAP;
         }
+        const area = areaAt(x, y);
+        if (area < bestArea) {
+          bestArea = area;
+          bestX = x;
+          bestY = y;
+        }
       }
+      x = bestX;
+      y = bestY;
       placed.push({ x, y, width });
       // A placed row is in the way of the next one, as words are.
       avoid.push({ rect: new DOMRect(x + origin.left, y + origin.top, width, PIN), owner: null });
