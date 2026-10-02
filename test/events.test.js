@@ -113,6 +113,8 @@ test("an open under another root moves an open tab to the page's new address, an
     {
       type: "rerooted",
       artifactUrl: `/artifact/${key}/${store.get(key).assetToken}/${basename(dir)}/plan.html`,
+      // What the page loads from outside the new root, which the tab tells the reviewer.
+      outside: [],
     },
   );
   one.detach();
