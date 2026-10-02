@@ -98,6 +98,18 @@ export const CHROME_HEADERS = {
 };
 
 /**
+ * The frame that holds the page under review: this server's own markup, in an opaque origin of its
+ * own so that no click or key in the chrome counts as a gesture in it. Only the chrome may frame it,
+ * and it loads nothing but its own script and sheet and the page it holds.
+ */
+export const WRAPPER_HEADERS = {
+  ...COMMON_HEADERS,
+  "content-security-policy":
+    "sandbox allow-scripts allow-forms allow-popups; default-src 'none'; script-src 'self'; " +
+    "style-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+};
+
+/**
  * The artifact keeps scripts but loses its origin, so it can neither read the chrome nor
  * call the API. Being opaque-origin, its own asset loads count as cross-origin, which is
  * why these responses must not carry a same-origin resource policy.

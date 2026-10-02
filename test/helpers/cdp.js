@@ -32,6 +32,7 @@ const TERMINATE_MS = 3000;
 const LOAD_MS = 15_000;
 /** The iframe attaches within a paint or two of the page requesting it. */
 const ATTACH_MS = 10_000;
+const ATTACH = { autoAttach: true, waitForDebuggerOnStart: false, flatten: true };
 /**
  * Two launches, not one. On run 33874545761, attempt 2, chrome.exe on windows-2025 was still
  * running 45 s after it was spawned, had written no DevToolsActivePort and had printed nothing
@@ -365,15 +366,21 @@ class Page {
   }
 
   /** Evaluates an expression in the page's own (top) context and returns its JSON value. */
-  async eval(expression) {
+  async eval(expression, contextId) {
     const { result, exceptionDetails } = await this.send("Runtime.evaluate", {
       expression,
       returnByValue: true,
       awaitPromise: true,
+      contextId,
     });
     if (exceptionDetails)
       throw new Error(exceptionDetails.exception?.description ?? "evaluation failed");
     return result.value;
+  }
+
+  /** The DOM root of this page's document, for DOM and CSS domain queries. */
+  async document() {
+    return (await this.send("DOM.getDocument")).root;
   }
 
   /**
@@ -392,34 +399,84 @@ class Page {
   }
 
   /**
-   * The artifact runs in a sandboxed, opaque-origin iframe, which Chromium puts in its own
-   * process: it never appears in this page's frame tree, so a test reads its DOM through
-   * an auto-attached session of its own. Input still goes to the page, in page coordinates.
+   * The page under review. The chrome frames pointback's wrapper, an opaque-origin page of its
+   * own, and the wrapper frames the page; Chromium gives the two sandboxed, same-site documents one
+   * process apart from the chrome's. So the wrapper is an auto-attached target of its own, and the
+   * page is a child frame inside that target, reached by its frame id and the execution context its
+   * document gets; a browser that puts the page in a process of its own makes it a target instead,
+   * and that is found too. Input still goes to the chrome page, in its coordinates.
+   *
+   * Resolves once the page's own document is there, never the frame's initial blank one, and after
+   * a reload with the new document's frame, so a caller asks for it after the navigation it awaits.
    */
   async frame() {
-    const attached = new Promise((resolve, reject) => {
-      const settle = (fn, value) => {
-        clearTimeout(timer);
-        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
-        fn(value);
-      };
-      const listener = (message) => {
-        if (message.method !== "Target.attachedToTarget") return;
-        if (message.params.targetInfo.type !== "iframe") return;
-        settle(resolve, message.params.sessionId);
-      };
-      const timer = setTimeout(
-        () => settle(reject, new Error(`waited ${ATTACH_MS} ms for the artifact iframe to attach`)),
-        ATTACH_MS,
-      );
-      this.browser.listeners.push(listener);
+    if (!this.children) {
+      this.children = new Map();
+      this.contexts = new Map();
+      this.browser.listeners.push((message) => this.#track(message));
+      // Enabled again so the contexts this page already has are announced to the tracker too.
+      await this.send("Runtime.disable");
+      await this.send("Runtime.enable");
+      await this.send("Target.setAutoAttach", ATTACH);
+    }
+    return until(() => this.#findArtifact(), {
+      what: "the page under review to load in its frame",
+      timeoutMs: ATTACH_MS,
     });
-    await this.send("Target.setAutoAttach", {
-      autoAttach: true,
-      waitForDebuggerOnStart: false,
-      flatten: true,
-    });
-    return new Page(this.browser, await attached);
+  }
+
+  /** Every iframe target under this page, and the default execution context of each frame in them. */
+  #track({ method, params, sessionId }) {
+    const ours = sessionId === this.sessionId || this.children.has(sessionId);
+    if (method === "Target.attachedToTarget" && ours && params.targetInfo.type === "iframe") {
+      this.children.set(params.sessionId, sessionId);
+      // A target's own iframes attach only when its own session asks for them.
+      for (const command of ["Runtime.enable", "Page.enable"])
+        this.browser.send(command, {}, params.sessionId).catch(() => {});
+      this.browser.send("Target.setAutoAttach", ATTACH, params.sessionId).catch(() => {});
+    } else if (method === "Target.detachedFromTarget" && ours) {
+      this.children.delete(params.sessionId);
+    } else if (method === "Runtime.executionContextCreated" && ours) {
+      const { id, auxData } = params.context;
+      if (auxData?.isDefault) this.contexts.set(`${sessionId} ${auxData.frameId}`, id);
+    } else if (method === "Runtime.executionContextDestroyed" && ours) {
+      for (const [key, id] of this.contexts) if (id === params.executionContextId) this.contexts.delete(key);
+    } else if (method === "Runtime.executionContextsCleared" && ours) {
+      for (const key of this.contexts.keys()) if (key.startsWith(`${sessionId} `)) this.contexts.delete(key);
+    }
+  }
+
+  async #findArtifact() {
+    const trees = new Map();
+    for (const session of [this.sessionId, ...this.children.keys()]) {
+      const tree = await this.browser
+        .send("Page.getFrameTree", {}, session)
+        .then((answer) => answer.frameTree)
+        .catch(() => null);
+      if (tree) trees.set(session, tree);
+    }
+    const isPage = (url) => /\/artifact\//.test(url);
+    const wrappers = (node) =>
+      node.frame.url.endsWith("/wrapper.html")
+        ? [node]
+        : (node.childFrames ?? []).flatMap((child) => wrappers(child));
+    for (const [session, tree] of trees) {
+      for (const wrapper of wrappers(tree)) {
+        const child = wrapper.childFrames?.[0]?.frame;
+        if (child && isPage(child.url)) {
+          return new ArtifactFrame(this.browser, session, child.id, () =>
+            this.contexts.get(`${session} ${child.id}`),
+          );
+        }
+        // In a process of its own the page is a target under the session that holds the wrapper.
+        for (const [inner, parent] of this.children) {
+          if (parent === session && isPage(trees.get(inner)?.frame.url ?? "")) {
+            return new Page(this.browser, inner);
+          }
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -544,6 +601,46 @@ class Page {
 
   type(text) {
     return this.send("Input.insertText", { text });
+  }
+}
+
+/**
+ * The page under review as a child frame of the wrapper's target: its expressions run in the
+ * default context of its current document, which a reload replaces, and its DOM is the content
+ * document of its frame. Accessibility queries name the frame with `frameId`.
+ */
+class ArtifactFrame extends Page {
+  constructor(browser, sessionId, frameId, context) {
+    super(browser, sessionId);
+    this.frameId = frameId;
+    this.context = context;
+  }
+
+  async eval(expression) {
+    // A navigation replaces the document between finding its context and using it; the context
+    // a reload leaves behind is gone, and the next one is the one to ask.
+    for (let attempt = 1; ; attempt += 1) {
+      const id = await until(() => this.context(), {
+        what: "the page under review to have a document to evaluate in",
+        timeoutMs: ATTACH_MS,
+      });
+      try {
+        return await super.eval(expression, id);
+      } catch (error) {
+        if (attempt >= 5 || !/context/i.test(error.message)) throw error;
+      }
+    }
+  }
+
+  async document() {
+    const { root } = await this.send("DOM.getDocument", { depth: -1, pierce: true });
+    const find = (node) =>
+      node.frameId === this.frameId && node.contentDocument
+        ? node.contentDocument
+        : [...(node.children ?? []), ...(node.contentDocument ? [node.contentDocument] : [])]
+            .map(find)
+            .find(Boolean);
+    return find(root);
   }
 }
 

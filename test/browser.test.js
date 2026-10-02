@@ -1336,7 +1336,9 @@ async function api(session, method, action, body) {
  * the ring it paints, and whether it takes keyboard focus. A pin that paints nothing is not one.
  */
 async function pinsOn(artifact) {
-  const { nodes } = await artifact.send("Accessibility.getFullAXTree");
+  const { nodes } = await artifact.send("Accessibility.getFullAXTree", {
+    frameId: artifact.frameId,
+  });
   const pins = [];
   for (const node of nodes) {
     const name = node.name?.value ?? "";
@@ -2273,9 +2275,8 @@ test(
     );
 
     // A fresh page draws them again from the notes the server keeps.
-    const reattaching = page.frame();
     await page.reload();
-    const reloaded = await reattaching;
+    const reloaded = await page.frame();
     await page.waitFor("document.body.dataset.ready === '1'");
     await pinsBesideTargets(reloaded, names, targets, "after a reload");
 
@@ -3489,7 +3490,7 @@ test(
     await artifact.eval("document.fonts.ready.then(() => true)");
     await artifact.send("DOM.enable");
     await artifact.send("CSS.enable");
-    const { root } = await artifact.send("DOM.getDocument");
+    const root = await artifact.document();
     const painted = async (selector) => {
       const { nodeId } = await artifact.send("DOM.querySelector", {
         nodeId: root.nodeId,

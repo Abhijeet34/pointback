@@ -1,6 +1,5 @@
 // Runs inside the sandboxed artifact: finds the element, passage or cell the reviewer points at and hands the note up.
 (() => {
-  const chromeOrigin = new URL(location.href).origin;
   const SKIP = new Set([
     "HTML",
     "HEAD",
@@ -85,14 +84,17 @@
   let activePin = 0;
   let missingSent = "";
 
-  const send = (message) => parent.postMessage({ ...message, nonce }, chromeOrigin);
+  // The parent is pointback's wrapper frame, whose origin is opaque, so "*" is the only name for it;
+  // it relays this to the chrome stamped with whether the reviewer's own gesture is live.
+  const send = (message) => parent.postMessage({ ...message, nonce }, "*");
   // SVG elements report a lowercase tagName, so every comparison against the lists above goes through this.
   const tagName = (element) => element.tagName.toUpperCase();
   const squash = (text) => text.replace(/\s+/g, " ");
   const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
   window.addEventListener("message", (event) => {
-    if (event.source !== parent || event.origin !== chromeOrigin) return;
+    // The chrome's messages arrive through the wrapper, which is opaque-origin like this page.
+    if (event.source !== parent || event.origin !== "null") return;
     const data = event.data;
     if (data?.type === "init") {
       nonce = data.nonce;

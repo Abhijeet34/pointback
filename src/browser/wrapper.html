@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- The chrome's own scheme, so this frame stays transparent over the mount's paper and the page
+         under review is painted exactly as it was when the chrome framed it directly. -->
+    <meta name="color-scheme" content="dark" />
+    <title>The page under review</title>
+    <link rel="stylesheet" href="/wrapper.css" />
+  </head>
+  <body>
+    <iframe
+      id="page"
+      title="The page under review"
+      sandbox="allow-scripts allow-forms allow-popups"
+      referrerpolicy="no-referrer"
+    ></iframe>
+    <script src="/wrapper.js"></script>
+  </body>
+</html>
