@@ -181,6 +181,7 @@ The page under review runs in a sandboxed iframe with an opaque origin.
 It cannot read the chrome, cannot call the API, and talks to the chrome only through messages checked by source and origin in both directions.
 The review script is inserted into the artifact as a DOM node through a real HTML parser, so nothing in the page's own markup can swallow or reshape it.
 Assets resolve within the review's root through a path check that survives encoded traversal, backslashes, unicode lookalikes, null bytes, absolute paths and symlink escape.
+A font (`.woff2`, `.woff`, `.ttf`, `.otf`) is the one asset served with `Access-Control-Allow-Origin`, because the opaque origin makes every `@font-face` load a CORS request; any other file under the root, and the API, stay unreadable to the page's own script, so a stray `.env` beside the artifact cannot be read and sent out.
 State is written to a temporary file and renamed, and nothing but the owning user can read it.
 POSIX says that in the mode bits, `0600` in a `0700` directory.
 Windows has no such bits, so the state directory's ACL is reset to a single full-control entry for the current user and every file written inside inherits it.

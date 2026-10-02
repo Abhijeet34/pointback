@@ -7,6 +7,7 @@ import {
   ARTIFACT_HEADERS,
   CHALLENGE_PATTERN,
   CHROME_HEADERS,
+  FONT_HEADERS,
   HttpError,
   SERVER_TOKEN_PATTERN,
   STATIC_HEADERS,
@@ -62,6 +63,7 @@ const contentTypes = {
   ".woff": "font/woff",
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
+  ".otf": "font/otf",
   ".txt": "text/plain; charset=utf-8",
   ".md": "text/plain; charset=utf-8",
 };
@@ -347,6 +349,7 @@ function serveArtifact(res, store, match) {
     res.writeHead(200, { ...ARTIFACT_HEADERS, "content-type": contentTypes[".html"] });
     return res.end(injectSdk(readFileSync(file, "utf8"), SDK_PATH));
   }
-  res.writeHead(200, { ...ARTIFACT_HEADERS, "content-type": type });
+  const headers = type.startsWith("font/") ? FONT_HEADERS : ARTIFACT_HEADERS;
+  res.writeHead(200, { ...headers, "content-type": type });
   res.end(readFileSync(file));
 }

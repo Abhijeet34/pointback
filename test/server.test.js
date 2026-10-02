@@ -269,6 +269,49 @@ test("assets outside the file's folder load only from a named root, which holds 
   assert.equal(await status(linked(again, "../components.css")), 404);
 });
 
+// The artifact frame is opaque-origin, so every asset load from it is cross-origin. Only a font may be
+// read that way: CORS on any other file would let a hostile page read it and send it out.
+test("only a font under the root is readable cross-origin, never the page, another file or the api", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-font-"));
+  const site = join(root, "site");
+  mkdirSync(join(site, "fonts"), { recursive: true });
+  const fonts = ["a.woff2", "a.woff", "a.ttf", "a.otf", "B.WOFF2"];
+  const others = ["page.css", "app.js", "data.json", ".env", "logo.png", "logo.svg", "notes.txt"];
+  for (const name of [...fonts, ...others]) writeFileSync(join(site, "fonts", name), "x");
+  writeFileSync(join(root, "outside.woff2"), "x");
+  symlinkSync(join(root, "outside.woff2"), join(site, "fonts", "link.woff2"));
+  // An artifact named like a font is still the page: served as HTML, and never cross-origin.
+  const page = join(site, "page.woff2");
+  writeFileSync(page, "<p>a page with a font's name</p>");
+  const opened = await post("/api/sessions", { file: page });
+  const url = (await get(`/api/${opened.key}/session`)).artifactUrl;
+  const corsOf = async (path) => {
+    const res = await fetch(base + path, { headers: { origin: "null" } });
+    return [res.status, res.headers.get("access-control-allow-origin")];
+  };
+
+  for (const name of fonts)
+    assert.deepEqual(await corsOf(linked(url, `fonts/${name}`)), [200, "*"], name);
+  for (const name of others)
+    assert.deepEqual(await corsOf(linked(url, `fonts/${name}`)), [200, null], name);
+  assert.deepEqual(await corsOf(url), [200, null], "the page itself");
+  assert.equal((await fetch(base + url)).headers.get("content-type"), "text/html; charset=utf-8");
+  for (const path of [linked(url, "fonts/missing.woff2"), linked(url, "fonts/link.woff2")])
+    assert.deepEqual(await corsOf(path), [404, null], path);
+  // Sent raw so the dot segments reach the server's own path check rather than fetch's.
+  for (const path of [`${dirname(url)}/../outside.woff2`, `${dirname(url)}/%2e%2e/outside.woff2`]) {
+    const reply = await raw(path);
+    assert.match(reply, /^HTTP\/1\.1 404/, path);
+    assert.doesNotMatch(reply, /access-control-allow-origin/i, path);
+  }
+  assert.deepEqual(await corsOf(`/api/${opened.key}/session`), [401, null], "the api, untokened");
+  const api = await fetch(`${base}/api/${opened.key}/session`, {
+    headers: { ...headers, origin: "null" },
+  });
+  assert.equal(api.headers.get("access-control-allow-origin"), null, "the api, tokened");
+  assert.deepEqual(await corsOf("/health"), [200, null]);
+});
+
 test("prompts queue, show in the chat, and reach one poller with anchors intact", async () => {
   const waiting = get(`/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=5000`);
   await new Promise((r) => setTimeout(r, 50));
