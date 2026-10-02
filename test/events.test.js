@@ -42,6 +42,7 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
     revision: 0,
     presence: { state: "waiting" },
     ended: null,
+    gone: false,
   });
   await sleep(150);
   writeFileSync(artifact, "<p>two</p>");
@@ -70,7 +71,7 @@ test("a second tab takes the review, and closing it hands the review back", () =
   assert.equal(streams.size, 2);
   assert.deepEqual(one.types(), ["hello", "superseded"], "the first tab is told at once");
   assert.deepEqual(two.types(), ["hello"]);
-  store.bumpRevision(key);
+  store.fileChanged(key);
   assert.deepEqual(one.lines.at(-1), { type: "reload", revision: 1 }, "both tabs stay informed");
   assert.deepEqual(two.lines.at(-1), { type: "reload", revision: 1 });
   two.detach();
@@ -79,6 +80,7 @@ test("a second tab takes the review, and closing it hands the review back", () =
     revision: 1,
     presence: { state: "waiting" },
     ended: null,
+    gone: false,
   });
   // A tab that was never current leaves without disturbing the one that is.
   const three = tab(streams, key);
@@ -106,19 +108,36 @@ test("presence, the end and a reopen all reach the tab; feedback does not", asyn
   one.detach();
 });
 
-test("a vanished file does not throw, and closeAll leaves nothing watching", async () => {
-  const { dir, key, streams } = lab();
+test("a deleted file is gone rather than a revision, its return reloads, and closeAll leaves nothing watching", async () => {
+  const watching = await watchAvailable();
+  const { dir, artifact, key, streams } = lab();
   const one = tab(streams, key);
   await sleep(150);
+  rmSync(artifact);
+  if (watching) {
+    await until(() => one.types().includes("gone"), {
+      what: "the deletion to reach the tab",
+      timeoutMs: 10_000,
+    });
+    writeFileSync(artifact, "<p>back again</p>");
+    await until(() => one.types().includes("reload"), {
+      what: "the file's return to reach the tab",
+      timeoutMs: 10_000,
+    });
+    assert.deepEqual(one.types(), ["hello", "gone", "reload"]);
+  } else {
+    await sleep(200);
+    assert.deepEqual(one.types(), ["hello", "reload-off"], "no watching here, so nothing more");
+  }
+  // A tab connecting while the file is away learns it from its greeting.
+  rmSync(artifact, { force: true });
+  const two = tab(streams, key);
+  assert.equal(two.lines[0].gone, true);
   rmSync(dir, { recursive: true, force: true });
   await sleep(200);
-  assert.deepEqual(
-    only(one.types(), await noise()),
-    ["hello"],
-    "a file that goes away is not a revision",
-  );
   streams.closeAll();
   assert.equal(streams.size, 0);
   // Detaching after the hub was closed is the ordinary shutdown race, not an error.
   one.detach();
+  two.detach();
 });

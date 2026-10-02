@@ -133,20 +133,24 @@ export function readJson(file, fallback = null) {
 const CURSOR_FILE = "poll-cursor.json";
 
 /**
- * The highest note uid this client has received for a file, so the next poll can acknowledge it and
- * the server can stop redelivering. Client-side state: a wrong or missing cursor only costs a safe
- * redelivery, never a lost note, so it need not be durable beyond best effort.
+ * The highest note uid this client has received for a file, and the epoch of the session it came
+ * from, so the next poll can acknowledge it and the server can stop redelivering. Keyed by the
+ * canonical path, so two spellings of one file share a cursor. A session evicted and opened again
+ * restarts its uids under a new epoch, and the server ignores a cursor naming an older one.
+ * Client-side state: a wrong or missing cursor only costs a safe redelivery, never a lost note.
  */
 export function readPollCursor(dir, file) {
   const value = readJson(join(dir, CURSOR_FILE), {})?.[file];
-  return typeof value === "number" ? value : undefined;
+  return typeof value?.uid === "number" && typeof value.epoch === "string"
+    ? { uid: value.uid, epoch: value.epoch }
+    : undefined;
 }
 
-export function writePollCursor(dir, file, uid) {
+export function writePollCursor(dir, file, cursor) {
   const path = join(dir, CURSOR_FILE);
   const all = readJson(path, {});
   const next = { ...(all && typeof all === "object" ? all : {}) };
   // A computed key sets an own property (never the prototype), and `file` is always an absolute path.
-  next[file] = uid;
+  next[file] = { uid: cursor.uid, epoch: cursor.epoch };
   writeJsonAtomic(path, next);
 }

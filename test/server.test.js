@@ -196,7 +196,7 @@ test("prompts queue, show in the chat, and reach one poller with anchors intact"
   // Acknowledging the batch (its high uid) clears it, so the next poll waits instead of redelivering.
   assert.deepEqual(
     await get(
-      `/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=10&ack=${result.prompts[0].uid}`,
+      `/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=10&ack=${result.prompts[0].uid}&epoch=${result.epoch}`,
     ),
     { status: "waiting" },
   );
@@ -217,6 +217,11 @@ test("bad input on the api is a 4xx, not a crash", async () => {
     await status(`/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=-1`, { headers }),
     400,
   );
+  // A uid counts only within the session life that numbered it, so the two travel together.
+  const poll = `/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=0`;
+  assert.equal(await status(`${poll}&ack=1`, { headers }), 400, "an ack without its epoch");
+  assert.equal(await status(`${poll}&epoch=0123456789abcdef`, { headers }), 400, "an epoch alone");
+  assert.equal(await status(`${poll}&ack=1&epoch=nothex`, { headers }), 400, "a malformed epoch");
   assert.equal(await status(`/api/${key}/prompts`, { method: "POST", headers, body: "{" }), 400);
   assert.equal(
     await status(`/api/${key}/prompts`, { method: "POST", headers, body: JSON.stringify({}) }),
@@ -309,6 +314,7 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
     revision: 0,
     presence: { state: "waiting" },
     ended: null,
+    gone: false,
   });
   const second = await eventStream(`/api/${opened.key}/events`);
   assert.equal((await second.next()).type, "hello");
@@ -373,7 +379,7 @@ test("the reviewer ends the review with the queue attached, and only a reopen re
   assert.equal(last.prompts[0].prompt, "One last thing");
   assert.deepEqual(
     await get(
-      `/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=1000&ack=${last.prompts[0].uid}`,
+      `/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=1000&ack=${last.prompts[0].uid}&epoch=${last.epoch}`,
     ),
     { status: "ended", ended_by: "user" },
   );

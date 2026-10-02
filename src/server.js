@@ -18,7 +18,7 @@ import { EventStreams } from "./events.js";
 import { name, version } from "./identity.js";
 import { injectSdk } from "./inject.js";
 import { limits } from "./limits.js";
-import { SessionStore } from "./session-store.js";
+import { EPOCH_PATTERN, SessionStore } from "./session-store.js";
 import { writeJsonAtomic } from "./state-dir.js";
 
 const SDK_PATH = "/sdk.js";
@@ -195,12 +195,12 @@ async function api(req, res, url, ctx) {
     if (!file) throw new HttpError(400, "file required");
     const key = ctx.store.keyFor(file);
     const timeoutMs = pollTimeout(url.searchParams.get("timeoutMs"));
-    const ack = pollAck(url.searchParams.get("ack"));
+    const cursor = pollCursor(url.searchParams);
     const controller = new AbortController();
     req.on("close", () => controller.abort());
-    const answer = await ctx.store.waitForFeedback(key, timeoutMs, controller.signal, ack);
+    const answer = await ctx.store.waitForFeedback(key, timeoutMs, controller.signal, cursor);
     if (answer === null) return;
-    return sendJson(res, 200, answer);
+    return reply(res, answer);
   }
 
   const keyed = pathname.match(/^\/api\/([^/]+)\/(session|prompts|events|end)$/);
@@ -217,7 +217,7 @@ async function api(req, res, url, ctx) {
     const body = await readJsonBody(req);
     if (body.by !== "user" && body.by !== "agent")
       throw new HttpError(400, "by must be user or agent");
-    return sendJson(res, 200, ctx.store.end(key, body.by, body.prompts ?? [], body.structure));
+    return reply(res, ctx.store.end(key, body.by, body.prompts ?? [], body.structure));
   }
   throw new HttpError(405, "method not allowed");
 }
@@ -257,13 +257,30 @@ function pollTimeout(raw) {
   return Math.min(value, limits.pollTimeoutMaxMs);
 }
 
-/** The cursor a poll acknowledges: the highest note uid the agent has already received. */
-function pollAck(raw) {
-  if (raw === null) return undefined;
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value < 0)
+/**
+ * The cursor a poll acknowledges: the highest note uid the agent has already received, and the
+ * epoch of the session that numbered it. The two travel together, because a uid alone cannot say
+ * which life of the session it counts in.
+ */
+function pollCursor(params) {
+  const ack = params.get("ack");
+  const epoch = params.get("epoch");
+  if (ack === null && epoch === null) return undefined;
+  const uid = Number(ack);
+  if (ack === null || !Number.isInteger(uid) || uid < 0)
     throw new HttpError(400, "ack must be a non-negative integer");
-  return value;
+  if (!EPOCH_PATTERN.test(epoch ?? ""))
+    throw new HttpError(400, "ack needs the epoch of the session it was received from");
+  return { uid, epoch };
+}
+
+/**
+ * A review whose file moved or was deleted answers 410 with the same body to a poll and to an end,
+ * so the chrome's end fails visibly and the CLI prints it and exits 1.
+ */
+function reply(res, answer) {
+  if (answer.status !== "gone") return sendJson(res, 200, answer);
+  sendJson(res, 410, { ...answer, error: `${answer.file} was moved or deleted` });
 }
 
 function serveArtifact(res, store, match) {

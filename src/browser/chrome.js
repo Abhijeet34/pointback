@@ -44,6 +44,7 @@ let revision = 0;
 let shownRevision = -1;
 let presence = { state: "waiting" };
 let ended = null;
+let fileGone = false;
 let current = true;
 let liveReload = true;
 let connection = "live";
@@ -97,7 +98,10 @@ function sync(state) {
   revision = state.revision;
   presence = state.presence;
   ended = state.ended;
-  if (revision !== shownRevision) show();
+  // A gone file has no page to load; the last one shown stays up under the notice.
+  fileGone = state.gone === true;
+  if (fileGone) setAnnotate(false);
+  else if (revision !== shownRevision) show();
 }
 
 function show() {
@@ -182,8 +186,13 @@ function apply(event) {
     current = false;
     closeCompose(false);
   } else if (event.type === "reload") {
+    // A reload means the file is there to read, including one that came back after it was gone.
+    fileGone = false;
     revision = event.revision;
     if (current) show();
+  } else if (event.type === "gone") {
+    fileGone = true;
+    setAnnotate(false);
   } else if (event.type === "presence") {
     presence = { state: event.state, since: event.since };
   } else if (event.type === "ended") {
@@ -224,34 +233,40 @@ function render() {
   // Notes the agent's own end left behind stay sendable: they queue for its next check,
   // which is worth more than a tidy disabled button and a queue nobody can do anything with.
   const count = pending.length;
-  sendButton.disabled = count === 0 || working;
-  sendButton.textContent = working
-    ? "Agent is working…"
-    : count === 0
-      ? ended
-        ? "Review ended"
-        : "Send to agent"
-      : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
-  annotateSwitch.disabled = ended !== null;
-  endButton.disabled = ended !== null;
+  sendButton.disabled = count === 0 || working || fileGone;
+  sendButton.textContent = fileGone
+    ? "File is gone"
+    : working
+      ? "Agent is working…"
+      : count === 0
+        ? ended
+          ? "Review ended"
+          : "Send to agent"
+        : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
+  annotateSwitch.disabled = ended !== null || fileGone;
+  endButton.disabled = ended !== null || fileGone;
   // A failure the reviewer needs to see outlives the render that would otherwise write over it.
   setText(
     statusLine,
     problem
       ? problem
-      : ended
+      : fileGone
         ? count === 0
-          ? "Nothing more can be sent from this page."
-          : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
-        : working
-          ? "Your agent is working on your last notes. Send opens again when it comes back."
-          : deferredReload
-            ? "The file changed. This page updates as soon as you finish this note."
-            : chat.length === 0 && count === 0
-              ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
-              : count === 0
-                ? "Every note has been sent."
-                : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
+          ? "Nothing can be sent while the file is gone."
+          : `${count} ${count === 1 ? "note stays" : "notes stay"} here, and Send opens again if the file comes back.`
+        : ended
+          ? count === 0
+            ? "Nothing more can be sent from this page."
+            : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
+          : working
+            ? "Your agent is working on your last notes. Send opens again when it comes back."
+            : deferredReload
+              ? "The file changed. This page updates as soon as you finish this note."
+              : chat.length === 0 && count === 0
+                ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
+                : count === 0
+                  ? "Every note has been sent."
+                  : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
   );
 }
 
@@ -300,20 +315,22 @@ function elapsed(since) {
 
 /** One line at the top of the margin for whatever has taken the page out of its normal state. */
 function renderNotice() {
-  const [text, action] = ended
-    ? [ended.by === "user" ? "You ended this review." : "Your agent ended this review.", false]
-    : !current
-      ? ["Another tab took over this review, so this page has stopped updating.", true]
-      : connection === "gone"
-        ? ["Not connected. Run the command on this file again to get a fresh page.", false]
-        : connection === "lost"
-          ? ["Reconnecting…", false]
-          : !liveReload
-            ? [
-                "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
-                false,
-              ]
-            : [null, false];
+  const [text, action] = fileGone
+    ? ["The file was moved or deleted, so this review cannot go on.", false]
+    : ended
+      ? [ended.by === "user" ? "You ended this review." : "Your agent ended this review.", false]
+      : !current
+        ? ["Another tab took over this review, so this page has stopped updating.", true]
+        : connection === "gone"
+          ? ["Not connected. Run the command on this file again to get a fresh page.", false]
+          : connection === "lost"
+            ? ["Reconnecting…", false]
+            : !liveReload
+              ? [
+                  "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                  false,
+                ]
+              : [null, false];
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
   takeOverButton.hidden = !action;

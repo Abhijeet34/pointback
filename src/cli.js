@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
-import { canonicalFile, sessionKey } from "./artifact-path.js";
+import { canonicalPath, sessionKey } from "./artifact-path.js";
 import { api, ensureServer, openBrowser, readServerInfo, shouldOpenBrowser } from "./client.js";
 import { env, name, version } from "./identity.js";
 import { limits } from "./limits.js";
@@ -79,9 +79,13 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     );
   }
 
+  // One spelling per file, whichever the agent typed, and one that survives the file going away.
+  const canonical = canonicalPath(file);
+
   if (command === "end") {
-    const key = sessionKey(canonicalFile(file));
-    const result = await api(server, "POST", `/api/${key}/end`, { by: "agent" });
+    const key = sessionKey(canonical);
+    const result = await api(server, "POST", `/api/${key}/end`, { by: "agent" }).catch(gone);
+    if (result.status === "gone") return printGone(stdout, file, result);
     return print(stdout, JSON.stringify(result));
   }
 
@@ -89,14 +93,15 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     values["timeout-ms"] === undefined ? "" : `&timeoutMs=${Number(values["timeout-ms"])}`;
   // Acknowledge the last batch this client received so the server stops holding it for redelivery.
   // Delivery is at-least-once: a poll whose response is lost redelivers, so a note is never dropped.
-  const absolute = resolve(file);
-  const cursor = readPollCursor(dir, absolute);
-  const ack = cursor === undefined ? "" : `&ack=${cursor}`;
-  const query = `file=${encodeURIComponent(absolute)}${timeout}${ack}`;
+  const cursor = readPollCursor(dir, canonical);
+  const ack = cursor === undefined ? "" : `&ack=${cursor.uid}&epoch=${cursor.epoch}`;
+  const query = `file=${encodeURIComponent(canonical)}${timeout}${ack}`;
   print(stderr, `waiting for feedback on ${file}...`);
-  const result = await api(server, "GET", `/api/poll?${query}`);
-  const receipt = result.receipt;
+  const result = await api(server, "GET", `/api/poll?${query}`).catch(gone);
+  if (result.status === "gone") return printGone(stdout, file, result);
+  const { receipt, epoch } = result;
   delete result.receipt;
+  delete result.epoch;
   if (result.status === "feedback") {
     result.next_step =
       "Each prompt is the reviewer's instruction about the element at `selector`. " +
@@ -119,7 +124,28 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   print(stdout, JSON.stringify(result));
   // Record the cursor only after the batch is on stdout: a crash before this redelivers, never drops.
   if (result.status === "feedback" && typeof receipt === "number")
-    writePollCursor(dir, absolute, receipt);
+    writePollCursor(dir, canonical, { uid: receipt, epoch });
+}
+
+/** A file moved or deleted under its review is an answer to print; any other refusal is an error. */
+function gone(error) {
+  if (error.answer?.status === "gone") return error.answer;
+  throw error;
+}
+
+/** Printed like every other answer, and a failed exit, because the review cannot go on. */
+function printGone(stdout, file, answer) {
+  print(
+    stdout,
+    JSON.stringify({
+      status: "gone",
+      file: answer.file,
+      next_step:
+        `${file} was moved or deleted, so this review cannot continue. ` +
+        `If it moved, run \`${name} <its new path>\` to review it there; do not poll this path again.`,
+    }),
+  );
+  return 1;
 }
 
 function print(stream, text) {
