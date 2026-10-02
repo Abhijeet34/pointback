@@ -52,7 +52,9 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   if (values.help || positionals.length === 0) return print(stdout, usage);
 
   const [first, ...rest] = positionals;
-  const command = ["open", "poll", "reply", "end", "stop", "server"].includes(first) ? first : "open";
+  const command = ["open", "poll", "reply", "end", "stop", "server"].includes(first)
+    ? first
+    : "open";
   const args = command === first ? rest : positionals;
   const dir = stateDir();
   if (values.root !== undefined && command !== "open")
