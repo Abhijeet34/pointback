@@ -1,9 +1,11 @@
 /* Halderworks scales, identical for every brand: type, space, control sizes and motion, the
-   viewer's text size, and the density, touch and reduced-motion blocks that move them.
+   viewer's text size, and the density, touch and reduced-motion blocks that move them; then
+   the strokes, icon sizes, layout, stacking order and shadows every brand shares. A brand's own
+   faces, radii and icon stroke are in its ramps/tokens/<brand>.tokens.css.
    Load after ramps/roles.css. Type, space and control sizes are in rem, so the text-size setting
-   moves every step, every control and every component's inner space together; page gutters stay
-   px. tools/export.py reads this file into exports/; the comment on each line is the
-   description the exports carry. */
+   moves every step, every control and every component's inner space together; page gutters,
+   breakpoints and containers stay px. tools/export.py reads this file into exports/; the
+   comment on each line is the description the exports carry. */
 
 :root {
   /* ---- type: one ramp in rem; px at the default size M ---- */
@@ -48,6 +50,65 @@
   --hw-duration-base: 200ms;                 /* enter: menu, popover, toast */
   --hw-duration-slow: 320ms;                 /* move: dialog, sheet, disclosure */
   --hw-ease-out: cubic-bezier(0.22, 1, 0.36, 1);  /* every entrance and every move */
+
+  /* ---- shape and stroke: the radius a brand does not choose, and every line weight ---- */
+  --hw-radius-full: 9999px;                  /* avatars and count pills only, where the shape itself carries the meaning */
+  --hw-border-w: 1px;                        /* every border in the system; there is no 2px border */
+  --hw-focus-w: 2px;                         /* the focus ring: the most used real outline-width in the capture, 246 declarations against 75 at 1px */
+  --hw-focus-offset: 2px;                    /* the gap between a control's own edge and its ring, so the ring reads as a ring */
+  --hw-tab-active-w: 2px;                    /* the rule under the selected tab, the one place a 2px line is a state */
+
+  /* ---- icons, in px: an icon is drawn on its own pixel grid ---- */
+  --hw-icon-sm: 14px;                        /* inside a badge or beside 12px label text */
+  --hw-icon: 16px;                           /* the default: the most widely used rendered icon size in the capture, 21 of 44 sites */
+  --hw-icon-lg: 20px;                        /* a toolbar or rail icon that carries its own hit target */
+  --hw-icon-gap: 6px;                        /* icon to its own label, under the 4px grid on purpose: 4px reads as one object, 8px as two */
+
+  /* ---- layout, in px: the viewport decides these, not the text size ---- */
+  --hw-bp-sm: 600px;                         /* phone to small tablet; below it a screen is one column and the rail is a sheet */
+  --hw-bp-md: 768px;                         /* the measured consensus edge: 23 of 44 captured sites declare a 768px min-width */
+  --hw-bp-lg: 1024px;                        /* second most declared, on 18 of 44; the rail becomes permanent here */
+  --hw-bp-xl: 1280px;                        /* declared on 12 of 44; the content column stops growing and the margins take the rest */
+  --hw-bp-2xl: 1600px;                       /* only a wide table or a three-pane shell uses the extra width; prose never does */
+  --hw-gutter-sm: 16px;                      /* page margin below hw-bp-md: 16px on 6 of 12 sites measured at 390px wide */
+  --hw-gutter-md: 24px;                      /* page margin from hw-bp-md to hw-bp-lg */
+  --hw-gutter-lg: 32px;                      /* page margin at hw-bp-lg and above */
+  --hw-column-gap: 24px;                     /* the gutter between grid columns, the fourth most used column-gap in the capture */
+  --hw-columns: 12;                          /* twelve columns above hw-bp-lg, six from hw-bp-md, four below */
+  --hw-container-app: 1440px;                /* the app shell's cap; past it the content pane stops and the window grows around it */
+  --hw-container-page: 1200px;               /* marketing and documentation: the 1100-1300 band holds 20 of 44 captured sites */
+  --hw-container-prose: 720px;               /* a reading column on its own: the median measured prose column at 1440px is 721px */
+  --hw-measure-ui: 56ch;                     /* running text inside product UI */
+  --hw-measure-prose: 68ch;                  /* long-form: the median running-text width across 30 sites is 64ch */
+  --hw-rail: 248px;                          /* the app shell's navigation rail at hw-bp-lg and above */
+  --hw-rail-collapsed: 56px;                 /* the rail reduced to icons, the only collapsed state it has */
+  --hw-panel-w: 352px;                       /* a menu-bar utility panel: 40ch of 13px text plus hw-cell-pad-x each side */
+  --hw-panel-max-h: 464px;                   /* a menu-bar panel's ceiling: a 32px header, 12 compact rows and a 48px footer */
+
+  /* ---- stacking order ---- */
+  --hw-z-base: 0;                            /* page content */
+  --hw-z-sticky: 100;                        /* a sticky table head or a pinned toolbar */
+  --hw-z-rail: 200;                          /* the app shell's rail when it overlays content below hw-bp-lg */
+  --hw-z-dropdown: 300;                      /* menu, select, popover, tooltip */
+  --hw-z-scrim: 400;                         /* the dialog scrim */
+  --hw-z-dialog: 500;                        /* the dialog itself */
+  --hw-z-toast: 600;                         /* toasts, which clear a dialog because they report what the dialog did */
+
+  /* ---- elevation: border first, and a shadow only on what floats ---- */
+  --hw-shadow-overlay: 0 1px 2px rgba(9, 12, 12, 0.06), 0 8px 24px -4px rgba(9, 12, 12, 0.10);  /* menus, popovers and toasts */
+  --hw-shadow-dialog: 0 2px 4px rgba(9, 12, 12, 0.07), 0 24px 56px -12px rgba(9, 12, 12, 0.18);  /* dialogs and sheets, and a menu-bar panel in both themes */
+}
+
+/* In dark a shadow only edges what floats; elevation is carried by surface lightness. */
+[data-theme="dark"] {
+  --hw-shadow-overlay: 0 1px 2px rgba(0, 0, 0, 0.50), 0 8px 24px -4px rgba(0, 0, 0, 0.55);
+  --hw-shadow-dialog: 0 2px 4px rgba(0, 0, 0, 0.55), 0 24px 56px -12px rgba(0, 0, 0, 0.65);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --hw-shadow-overlay: 0 1px 2px rgba(0, 0, 0, 0.50), 0 8px 24px -4px rgba(0, 0, 0, 0.55);
+    --hw-shadow-dialog: 0 2px 4px rgba(0, 0, 0, 0.55), 0 24px 56px -12px rgba(0, 0, 0, 0.65);
+  }
 }
 
 /* The viewer's text size, five steps on the root: 13, 15, 17, 19 and 22px at the browser's

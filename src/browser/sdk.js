@@ -42,9 +42,10 @@
   // One numbered pin per note, drawn from what the chrome sends: where the note points, its number
   // and its state, never its instruction or the agent's reply, which this page must not read. The
   // layer sits in document coordinates, so the pins ride the page's own scroll without a repaint.
-  // Colours are the house's dark roles as literals, since this frame cannot load the chrome's sheets;
-  // every pin and its focus ring carry a dark halo, so they read on a white page and a dark one.
-  const PIN = 20;
+  // The shape is the house pin's at the default text size, and the colours its dark roles, as literals:
+  // this frame cannot load the chrome's sheets. Every pin and its focus ring carry a dark halo, so
+  // they read on a white page and a dark one.
+  const PIN = 24;
   const PIN_STATES = {
     queued: "not sent yet",
     sent: "sent",
@@ -58,13 +59,13 @@
   const pinRoot = pinHost.attachShadow({ mode: "closed" });
   pinRoot.innerHTML = `
     <style>
-      .pin { position: absolute; box-sizing: border-box; width: ${PIN}px; height: ${PIN}px; padding: 0; border: 2px solid transparent; border-radius: 50%; background: oklch(78% 0.12 230); color: oklch(16.5% 0.012 260); font: 600 11px/16px system-ui, sans-serif; font-variant-numeric: tabular-nums; text-align: center; cursor: pointer; box-shadow: 0 0 0 2px oklch(16.5% 0.012 260); }
-      .pin[data-state="queued"] { background: oklch(19.5% 0.012 260); border-color: oklch(78% 0.12 230); color: oklch(78% 0.12 230); }
-      .pin[data-state="done"] { background: oklch(65.5% 0.14 150); }
-      .pin[data-state="question"] { background: oklch(67.8% 0.146 70); }
-      .pin[data-state="declined"] { background: oklch(67% 0.024 260); }
-      .pin[data-active] { box-shadow: 0 0 0 2px oklch(16.5% 0.012 260), 0 0 0 5px oklch(78% 0.12 230); }
-      .pin:focus-visible { outline: 2px solid oklch(98.7% 0.006 260); outline-offset: 2px; box-shadow: 0 0 0 6px oklch(16.5% 0.012 260); }
+      .pin { position: absolute; box-sizing: border-box; display: grid; place-items: center; width: ${PIN}px; height: ${PIN}px; padding: 0; border: 0; border-radius: 50% 50% 50% 2px; background: oklch(0.78 0.12 230); color: oklch(0.165 0.012 260); font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; cursor: pointer; box-shadow: 0 0 0 2px oklch(0.165 0.012 260); }
+      .pin[data-state="queued"] { background: oklch(0.195 0.012 260); color: oklch(0.663 0.12 230); box-shadow: inset 0 0 0 1px oklch(0.78 0.12 230), 0 0 0 2px oklch(0.165 0.012 260); }
+      .pin[data-state="done"] { background: oklch(0.55 0.14 150); color: #fff; }
+      .pin[data-state="question"] { background: oklch(0.573 0.124 70); color: #fff; }
+      .pin[data-state="declined"] { background: oklch(0.566 0.012 260); color: #fff; }
+      .pin[data-active] { box-shadow: 0 0 0 2px oklch(0.165 0.012 260), 0 0 0 5px oklch(0.78 0.12 230); }
+      .pin:focus-visible { outline: 2px solid oklch(0.516 0.102 230); outline-offset: 2px; box-shadow: 0 0 0 6px oklch(0.165 0.012 260); }
     </style>
     <div class="pins"></div>`;
   const pinLayer = /** @type {HTMLElement} */ (pinRoot.querySelector(".pins"));
@@ -438,19 +439,9 @@
     outlineRects(hit ? hit.rects : [element.getBoundingClientRect()]);
   }
 
-  function label(hit) {
-    const cell = hit.target?.type === "table-cell" ? hit.target : {};
-    const where = [cell.row, cell.column].filter(Boolean).join(" › ");
-    const text =
-      hit.tag === "text"
-        ? `“${hit.text}”`
-        : hit.target?.name || hit.text || hit.target?.alt || hit.target?.src || "";
-    return `${hit.tag} · ${text}${where ? ` · ${where}` : ""}`;
-  }
-
   // The reviewer pointed at something: hand the chrome a target to compose against - the note fields
-  // as data, a label to show, and the highlight rects to place the card by - and never the note text,
-  // which the chrome alone reads from the reviewer. `open` blocks a second target until the card closes.
+  // as data and the highlight rects to place the card by - and never the note text, which the chrome
+  // alone reads from the reviewer, nor a label, which the chrome words itself from those fields. `open` blocks a second target until the card closes.
   function selectTarget(hit) {
     open = hit;
     outlineRects(hit.rects);
@@ -462,7 +453,6 @@
         text: hit.text,
         ...(hit.target && { target: hit.target }),
       },
-      label: label(hit),
       rects: [...hit.rects].map((r) => ({
         left: r.left,
         top: r.top,
@@ -709,7 +699,9 @@
         continue;
       }
       let x = Math.min(Math.max(rect.right + 1, 0), width - PIN) - origin.left;
-      const y = Math.max(rect.top - PIN + 4 - origin.top, 0);
+      // The pin's point is its lower left corner, so it stands on the target's top right corner
+      // and clears the line of text it sits beside.
+      const y = Math.max(rect.top - PIN - origin.top, 0);
       // Two notes on one spot stand side by side rather than one hiding the other.
       while (placed.some((p) => Math.abs(p.x - x) < PIN && Math.abs(p.y - y) < PIN)) x += PIN + 4;
       placed.push({ x, y });

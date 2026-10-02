@@ -5,12 +5,13 @@ const key = location.pathname.split("/").pop();
 const token = location.hash.slice(1);
 const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifact"));
 const marks = document.getElementById("marks");
+const marginBody = document.getElementById("marginBody");
 const statusLine = document.getElementById("status");
 const notice = document.getElementById("notice");
 const noticeText = document.getElementById("noticeText");
 const takeOverButton = /** @type {HTMLButtonElement} */ (document.getElementById("takeOver"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
-const annotateSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotate"));
+const annotateSwitch = /** @type {HTMLInputElement} */ (document.getElementById("annotate"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
 const endDialog = /** @type {HTMLDialogElement} */ (document.getElementById("endDialog"));
 const endGo = document.getElementById("endGo");
@@ -123,7 +124,11 @@ async function boot() {
       app = await health();
     } catch {
       // Nothing answers: a daemon between an idle-out and the agent's next command. The review is
-      // still there, so the page waits for it rather than calling its link dead.
+      // still there, so the page waits for it rather than calling its link dead, and the bar and
+      // Send say it is not connected rather than offering what cannot work yet.
+      connection = "lost";
+      renderPresence();
+      setText(sendButton, "Not connected");
       setText(
         statusLine,
         "Not connected. This page opens the review when your agent next runs its command.",
@@ -131,6 +136,7 @@ async function boot() {
       await pause(failures);
     }
   }
+  connection = "live";
   try {
     if (!app.proven) throw new Error("unproven");
     session = await api("GET", `/api/${key}/session`);
@@ -388,7 +394,7 @@ function renderMarks() {
   marks.replaceChildren(...notes.map(({ entry, sent }, index) => mark(entry, sent, index + 1)));
   if (shownNote > notes.length) shownNote = 0;
   const shown = notes.length;
-  if (shown > shownMarks) marks.scrollTop = marks.scrollHeight;
+  if (shown > shownMarks) marginBody.scrollTop = marginBody.scrollHeight;
   shownMarks = shown;
   const editor = /** @type {HTMLTextAreaElement | null} */ (marks.querySelector(".mark-edit-text"));
   if (editor && caret) {
@@ -508,7 +514,7 @@ function renderNotice() {
 
 function mark(entry, sent, n) {
   const li = document.createElement("li");
-  li.className = sent ? "mark sent" : "mark";
+  li.className = sent ? "hw-note mark sent" : "hw-note mark";
   // Only a queued note has an id, so only a queued note can be the one being edited.
   const edited = !sent && editingNote !== null && editingNote.id === entry.id;
   li.classList.toggle("shown", n === shownNote);
@@ -521,28 +527,34 @@ function mark(entry, sent, n) {
   target.type = "button";
   target.className = "mark-target";
   const number = document.createElement("span");
-  number.className = "mark-number";
+  number.className = "hw-pin mark-number";
   number.textContent = String(n);
+  const locator = document.createElement("span");
+  locator.className = "hw-note-locator mark-locator";
   const tag = document.createElement("span");
   tag.className = "mark-tag";
-  tag.textContent = entry.answers === undefined ? entry.tag : "answer";
   const text = document.createElement("span");
   text.className = "mark-text";
-  text.textContent = describe(entry);
-  target.append(number, tag, text);
-  target.setAttribute(
-    "aria-label",
-    `Note ${n}, on ${tag.textContent} ${text.textContent}. Show it on the page`,
-  );
+  // The reviewer reads what was pointed at in words; the tag itself is the agent's, in the note.
+  const answered = allNotes().findIndex(({ entry: other }) => other.uid === entry.answers) + 1;
+  tag.textContent = entry.answers === undefined ? kindOf(entry) : "Answer";
+  text.textContent = entry.answers === undefined ? describe(entry) : `to note ${answered}`;
+  locator.append(tag, text.textContent ? " · " : "", text);
+  locator.title = locator.textContent;
+  target.append(number, locator);
+  target.setAttribute("aria-label", `Note ${n}, on ${locator.textContent}. Show it on the page`);
   target.addEventListener("click", () => revealNote(n));
-  li.append(target);
+  const head = document.createElement("div");
+  head.className = "mark-head";
+  head.append(target);
+  li.append(head);
   if (missingPins.has(n)) li.append(missingLine());
   li.append(edited ? editor(entry, n) : noteText(entry));
   if (entry.reply) li.append(replyLine(entry));
   if (!sent && !edited) {
     const edit = document.createElement("button");
     edit.type = "button";
-    edit.className = "mark-edit";
+    edit.className = "hw-btn hw-btn--quiet hw-btn--sm mark-edit";
     edit.textContent = "Edit";
     edit.setAttribute("aria-label", `Edit note ${n}`);
     edit.addEventListener("click", async () => {
@@ -556,13 +568,13 @@ function mark(entry, sent, n) {
     });
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "mark-remove";
+    remove.className = "hw-btn hw-btn--quiet hw-btn--sm hw-btn--icon mark-remove";
     remove.textContent = "×";
     remove.setAttribute("aria-label", `Remove note ${n}`);
     remove.addEventListener("click", () =>
       changeDrafts("remove the note", "DELETE", `/api/${key}/drafts/${entry.id}`),
     );
-    li.append(edit, remove);
+    head.append(edit, remove);
   }
   return li;
 }
@@ -578,7 +590,7 @@ function showMissing() {
   [...marks.children].forEach((li, index) => {
     const line = li.querySelector(".mark-missing");
     const missing = missingPins.has(index + 1);
-    if (missing && !line) li.querySelector(".mark-target").after(missingLine());
+    if (missing && !line) li.querySelector(".mark-head").after(missingLine());
     else if (!missing && line) line.remove();
   });
 }
@@ -595,7 +607,7 @@ function editor(entry, n) {
   const form = document.createElement("form");
   form.className = "mark-editor";
   const box = document.createElement("textarea");
-  box.className = "mark-edit-text";
+  box.className = "hw-textarea mark-edit-text";
   box.value = editingNote.value;
   box.rows = 3;
   box.setAttribute("aria-label", `Note ${n}`);
@@ -617,12 +629,12 @@ function editor(entry, n) {
   });
   const cancel = document.createElement("button");
   cancel.type = "button";
-  cancel.className = "quiet";
+  cancel.className = "hw-btn hw-btn--quiet hw-btn--sm";
   cancel.textContent = "Cancel";
   cancel.addEventListener("click", stopEditing);
   const save = document.createElement("button");
   save.type = "submit";
-  save.className = "send-button";
+  save.className = "hw-btn hw-btn--accent hw-btn--sm";
   save.textContent = "Save";
   const row = document.createElement("div");
   row.className = "card-row";
@@ -674,7 +686,7 @@ function replyLine(entry) {
   if (unanswered(entry)) {
     const answer = document.createElement("button");
     answer.type = "button";
-    answer.className = "quiet mark-answer";
+    answer.className = "hw-btn hw-btn--sm mark-answer";
     answer.textContent = "Answer";
     answer.addEventListener("click", () => {
       if (composing) return cardText.focus();
@@ -705,16 +717,68 @@ function unanswered(entry) {
   );
 }
 
-// Two notes on one element have to be told apart in the margin, so a passage is quoted
-// and a cell carries the row and column it was named by.
+// What the reviewer pointed at, in their words rather than the page's markup.
+const KINDS = Object.assign(Object.create(null), {
+  text: "Passage",
+  h1: "Heading",
+  h2: "Heading",
+  h3: "Heading",
+  h4: "Heading",
+  h5: "Heading",
+  h6: "Heading",
+  p: "Paragraph",
+  td: "Cell",
+  th: "Cell",
+  tr: "Row",
+  table: "Table",
+  caption: "Caption",
+  ul: "List",
+  ol: "List",
+  dl: "List",
+  li: "List item",
+  dt: "List item",
+  dd: "List item",
+  img: "Picture",
+  picture: "Picture",
+  svg: "Graphic",
+  canvas: "Graphic",
+  video: "Video",
+  figure: "Figure",
+  figcaption: "Caption",
+  blockquote: "Quote",
+  pre: "Code",
+  code: "Code",
+  a: "Link",
+  button: "Button",
+  input: "Field",
+  textarea: "Field",
+  select: "Choice",
+  label: "Label",
+  summary: "Summary",
+  details: "Details",
+  mark: "Highlight",
+  nav: "Navigation",
+  header: "Header",
+  footer: "Footer",
+  form: "Form",
+  dialog: "Dialog",
+});
+
+const kindOf = (note) => KINDS[note.tag] ?? "Element";
+
+// Two notes on one element have to be told apart in the margin, so a passage is quoted and a
+// cell leads with the row and column it was named by, which a one-line locator must not cut.
 function describe(entry) {
   if (entry.tag === "text") return `“${entry.text}”`;
   const cell = entry.target?.type === "table-cell" ? entry.target : null;
   const where = cell ? [cell.row, cell.column].filter(Boolean).join(" › ") : "";
   // A control or a picture is told apart by its name, then its text, alt or source.
   const text = entry.target?.name || entry.text || entry.target?.alt || entry.target?.src || "";
-  return where ? `${text} · ${where}` : text;
+  return [where, text].filter(Boolean).join(" · ");
 }
+
+/** The card's one line: built here from the target's fields, never from words the page supplied. */
+const locatorOf = (note) => [kindOf(note), describe(note)].filter(Boolean).join(" · ");
 
 function post(message) {
   // The artifact has an opaque origin, so "*" is the only target that can name it.
@@ -723,7 +787,7 @@ function post(message) {
 
 function setAnnotate(on) {
   annotate = on;
-  annotateSwitch.setAttribute("aria-checked", String(on));
+  annotateSwitch.checked = on;
   if (!on) closeCompose(false);
   post({ type: "annotate", on });
   render();
@@ -750,6 +814,7 @@ function openCompose(note, label, outline, rects, from) {
   // A half-typed note is worth more than a live reload; the reload lands when the card closes.
   editing = true;
   cardTarget.textContent = label;
+  cardTarget.title = label;
   cardText.value = "";
   card.hidden = false;
   placeCard(rects);
@@ -810,12 +875,8 @@ window.addEventListener("message", (event) => {
     if (!annotate || composing || !gesture()) return;
     // Only what the reviewer pointed at: `answers` is the chrome's to set, from the margin.
     const { selector, tag, text, target } = data.note;
-    openCompose(
-      { selector, tag, text, target },
-      typeof data.label === "string" ? data.label : "",
-      data.structure,
-      data.rects,
-    );
+    const note = { selector, tag, text, target };
+    openCompose(note, locatorOf(note), data.structure, data.rects);
   } else if (data.type === "key") {
     // The review's keys pressed in the page. Like a target, a key is heard only under the
     // reviewer's own press in the frame; the controls it reaches are the ones the bar offers.
