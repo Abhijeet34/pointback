@@ -37,7 +37,9 @@ function sync(checkout) {
   // A pin names a commit anyone can fetch, so uncommitted ramps would pin bytes no commit has.
   const upstreams = Object.values(FILES);
   if (git("status", "--porcelain", "--", ...upstreams).trim()) {
-    throw new Error(`${checkout} has uncommitted changes to a vendored file; commit or stash them first`);
+    throw new Error(
+      `${checkout} has uncommitted changes to a vendored file; commit or stash them first`,
+    );
   }
   const files = {};
   for (const [local, upstream] of Object.entries(FILES)) {

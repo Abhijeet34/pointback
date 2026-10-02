@@ -14,3 +14,15 @@ Licence text: `node_modules/parse5/LICENSE`.
 
 BSD-2-Clause. Copyright (c) Felix Böhm.
 Licence text: `node_modules/entities/LICENSE`.
+
+## Archivo
+
+SIL Open Font License 1.1. Copyright 2020 The Archivo Project Authors (https://github.com/Omnibus-Type/Archivo).
+The chrome's interface face, vendored from the house design system and served by the daemon itself.
+Licence text: `src/browser/house/fonts/archivo/OFL.txt`.
+
+## IBM Plex Mono
+
+SIL Open Font License 1.1. Copyright © 2017 IBM Corp. with Reserved Font Name "Plex".
+The chrome's face for file names, vendored from the house design system and served by the daemon itself.
+Licence text: `src/browser/house/fonts/ibm-plex-mono/OFL.txt`.
