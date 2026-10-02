@@ -712,8 +712,34 @@ test(
       "!document.getElementById('notice').hidden && document.getElementById('noticeText').textContent.includes('took over')",
     );
     await page.waitFor("document.getElementById('notice').hidden");
+    // What paints, not the attribute: a rule that sets display on .notice beats [hidden], and
+    // the "hidden" notice then drew an empty band across the top of the margin on every review.
+    assert.deepEqual(
+      JSON.parse(
+        await page.eval(
+          "(() => { const n = document.getElementById('notice'); return JSON.stringify({ visible: n.checkVisibility(), height: n.getBoundingClientRect().height }); })()",
+        ),
+      ),
+      { visible: false, height: 0 },
+      "a hidden notice paints nothing",
+    );
     await second.close();
     await page.front();
+
+    // How the switch paints while it can still be pressed, to compare with the ended review below.
+    const SWITCH_PAINT = `JSON.stringify((() => {
+      const a = document.getElementById('annotate');
+      const track = a.querySelector('.switch-track');
+      return { color: getComputedStyle(a).color, cursor: getComputedStyle(a).cursor,
+        track: getComputedStyle(track).backgroundColor, thumb: getComputedStyle(track, '::after').backgroundColor,
+        quietDisabled: getComputedStyle(document.getElementById('end')).color };
+    })())`;
+    // Ending turns annotate off, so the live switch is read off too, or the comparison is vacuous.
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor(
+      "document.getElementById('annotate').getAttribute('aria-checked') === 'false'",
+    );
+    const live = JSON.parse(await page.eval(SWITCH_PAINT));
 
     // Ending with a note still queued offers to send it, and the agent gets it as the last batch.
     await page.eval("document.getElementById('end').click()");
@@ -734,6 +760,14 @@ test(
       "document.getElementById('noticeText').textContent === 'You ended this review.'",
     );
     assert.equal(await page.eval("document.getElementById('annotate').disabled"), true);
+    // Disabled must also look it: the label dims like the other disabled controls, the cursor
+    // stops promising a press, and the track and thumb no longer paint as a live switch.
+    const ended = JSON.parse(await page.eval(SWITCH_PAINT));
+    assert.equal(ended.color, ended.quietDisabled, "the ended switch's label dims like End review");
+    assert.notEqual(ended.color, live.color);
+    assert.equal(ended.cursor, "default");
+    assert.notEqual(ended.track, live.track, "the ended switch's track repaints");
+    assert.notEqual(ended.thumb, live.thumb, "the ended switch's thumb repaints");
     assert.equal(await page.eval("document.querySelectorAll('.mark:not(.sent)').length"), 0);
     console.log(
       `browser lifecycle: file save to reloaded page, five saves ${latencies.join("/")} ms, median ${reloadMs} ms`,

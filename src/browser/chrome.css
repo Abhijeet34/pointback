@@ -122,6 +122,21 @@ body {
   background: var(--hw-on-accent);
 }
 
+/* An ended review: the label dims like a disabled quiet control and the switch stops reading
+   as one. After the checked rules, at the same specificity, so it wins in either state. */
+.switch:disabled {
+  color: var(--hw-text-muted);
+  cursor: default;
+}
+
+.switch:disabled .switch-track {
+  background: var(--hw-fill-active);
+}
+
+.switch:disabled .switch-track::after {
+  background: var(--hw-text-muted);
+}
+
 .mount {
   grid-area: mount;
   position: relative;
@@ -363,6 +378,12 @@ body {
   padding: var(--hw-space-12) var(--hw-space-16);
   border-bottom: 1px solid var(--hw-line);
   background: var(--hw-fill);
+}
+
+/* .notice sets display, which outranks the UA's [hidden] rule; without this the hidden notice
+   still paints an empty band at the top of the margin. */
+.notice[hidden] {
+  display: none;
 }
 
 .notice-text {
