@@ -933,7 +933,7 @@ test(
 );
 
 test(
-  "a frame that leaves the review for a missing page says so in words, and Back brings the review back",
+  "a frame that leaves the review for a missing page is covered by a notice in words, and Back brings the review back",
   { skip: !executable && "no browser found" },
   async () => {
     const { file, html } = copyOfFixture();
@@ -950,23 +950,42 @@ test(
     await page.eval("document.getElementById('annotate').click()");
     await page.waitFor("document.body.dataset.annotate === '0'");
     await clickIn(page, artifact, "#away");
-    await page.waitFor("document.getElementById('notice').checkVisibility()");
-    const notice = `JSON.stringify((() => {
+    // What the reviewer sees where they were looking: the frame's whole box is the cover, not the
+    // page it strayed to, and the words and Back are on it.
+    const seen = `JSON.stringify((() => {
+      const box = document.getElementById('artifact').getBoundingClientRect();
+      const points = [[0.5, 0.5], [0.05, 0.05], [0.95, 0.95]].map(([x, y]) => {
+        const hit = document.elementFromPoint(box.left + box.width * x, box.top + box.height * y);
+        return hit?.closest('#cover') ? 'cover' : hit?.id || hit?.tagName;
+      });
       const back = document.getElementById('back');
       return {
-        text: document.getElementById('noticeText').textContent,
+        points,
+        text: document.getElementById('coverText').textContent,
         back: back.checkVisibility() ? back.textContent.trim() : null,
+        focused: document.activeElement === back,
+        notice: document.getElementById('notice').checkVisibility(),
+        status: document.getElementById('status').textContent,
       };
     })())`;
-    assert.deepEqual(JSON.parse(await page.eval(notice)), {
+    await page.waitFor("document.getElementById('cover')?.checkVisibility()");
+    assert.deepEqual(JSON.parse(await page.eval(seen)), {
+      points: ["cover", "cover", "cover"],
       text: "The frame went to a page that is missing or is not plan.html, so nothing on it can be noted.",
       back: "Back to plan.html",
+      focused: true,
+      notice: false,
+      status: "Go back to the page under review to point at it again.",
     });
     // Back loads the page under review again, which announces itself as it did the first time.
     await page.eval("delete document.body.dataset.revision");
     await clickOn(page, "document.getElementById('back')");
     await page.waitFor("document.body.dataset.revision === '0'");
-    await page.waitFor("!document.getElementById('notice').checkVisibility()");
+    assert.deepEqual(JSON.parse(await page.eval(seen)).points, [
+      "artifact",
+      "artifact",
+      "artifact",
+    ]);
     await page.close();
   },
 );
@@ -1709,6 +1728,68 @@ test(
       since: "",
       status: "Your agent has answered every note.",
     });
+    await page.close();
+  },
+);
+
+test(
+  "a file that goes while the agent works stops the bar saying it is working",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Make the title shorter");
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    assert.equal(
+      (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status,
+      "feedback",
+    );
+    await page.waitFor("document.getElementById('presence').dataset.state === 'working'");
+    renameSync(file, `${file}.away`);
+    await page.waitFor("document.getElementById('notice').checkVisibility()");
+    await page.waitFor("document.getElementById('presence').dataset.state !== 'working'");
+    const seen = JSON.parse(await page.eval(AGENT_PAINT));
+    assert.deepEqual(
+      { presence: seen.presence, since: seen.since },
+      { presence: "Agent away", since: "" },
+      "nothing the page can do waits on the agent once the file is gone",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a cell in the column that names the rows is named once, on the card and in the margin",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const named = [];
+    for (const column of [1, 2]) {
+      await pointAt(
+        page,
+        artifact,
+        `main > table > tbody > tr:nth-of-type(2) > td:nth-of-type(${column})`,
+      );
+      named.push(await page.eval("document.getElementById('cardTarget').textContent"));
+      await page.type(`A note on column ${column}`);
+      await page.enter();
+      await page.waitFor(`document.querySelectorAll('.mark:not(.sent)').length === ${column}`);
+    }
+    named.push(
+      ...JSON.parse(
+        await page.eval(
+          "JSON.stringify([...document.querySelectorAll('.mark .mark-target')].map((e) => e.textContent))",
+        ),
+      ),
+    );
+    assert.deepEqual(named, [
+      "Cell · Cutover › Step",
+      "Cell · Cutover › Owner · Sam",
+      "1Cell · Cutover › Step",
+      "2Cell · Cutover › Owner · Sam",
+    ]);
     await page.close();
   },
 );

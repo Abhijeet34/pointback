@@ -681,6 +681,22 @@ test("the agent stops working once it has replied to every note it took, and not
   assert.deepEqual(seen, ["waiting"], "the tab is told the agent is no longer working");
 });
 
+test("a file that goes ends the agent's working state, and tells the tab", async () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  store.queue(key, [prompt()]);
+  await store.waitForFeedback(key, 5000);
+  assert.equal(store.presence(key).state, "working");
+  const seen = [];
+  store.on(key, (event) => seen.push(event.type === "presence" ? event.state : event.type));
+  renameSync(artifact, `${artifact}.away`);
+  store.fileChanged(key);
+  assert.deepEqual(store.presence(key), { state: "waiting" });
+  assert.deepEqual(seen, ["gone", "waiting"]);
+  assert.deepEqual(store.status(key).presence, { state: "waiting" }, "a tab's hello agrees");
+});
+
 test("an agent end never relabels a review the reviewer ended", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);
