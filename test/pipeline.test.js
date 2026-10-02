@@ -86,6 +86,9 @@ test("an ordinary pull request runs Linux only; the release pull request runs al
   assert.doesNotMatch(workflows["cross-platform.yml"], /^\s*pull_request:/m);
   assert.match(workflows["cross-platform.yml"], /^\s*schedule:/m);
   assert.match(workflows["cross-platform.yml"], /^\s*workflow_dispatch:/m);
+  // The WebKit and Firefox smoke pays for macOS weekly and never on a pull request.
+  assert.doesNotMatch(workflows["engines.yml"], /^\s*pull_request:/m);
+  assert.match(workflows["engines.yml"], /^\s*schedule:/m);
   // The one exception, and it is guarded rather than general: merging the
   // release pull request is what creates the tag, so that pull request pays for
   // macOS and Windows and every other one skips the job.
@@ -389,7 +392,7 @@ test("a leaked handle cannot turn a finished suite into a hung job", () => {
 });
 
 test("the release and scheduled paths never cancel a run in flight", () => {
-  for (const file of ["release.yml", "cross-platform.yml"]) {
+  for (const file of ["release.yml", "cross-platform.yml", "engines.yml"]) {
     assert.doesNotMatch(directives(workflows[file]), /cancel-in-progress/, file);
   }
 });

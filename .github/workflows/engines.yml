@@ -1,0 +1,70 @@
+name: engines
+
+# The core act in WebKit and Firefox, weekly. The CLI opens the reviewer's default
+# browser (src/client.js), which is Safari on an unconfigured Mac, and every other
+# workflow drives Chromium only. test/engine-smoke.js is the act; README.md, "Develop",
+# says why Playwright drives it and why only here.
+#
+# Not a gate: a WebKit or Firefox release can break this without any change on main,
+# and that is what the weekly run exists to say. It never runs on a pull request.
+on:
+  schedule:
+    - cron: "53 6 * * 1"
+  workflow_dispatch:
+
+# No `concurrency` block: a superseded scheduled run is the only record of its result.
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ${{ matrix.engine }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      # One engine breaking must not hide the other's verdict.
+      fail-fast: false
+      matrix:
+        include:
+          # macOS, because Playwright builds WebKit there from the same Cocoa port
+          # Safari ships; the Linux build is the GTK/WPE port, a different platform layer.
+          - engine: webkit
+            os: macos-15
+          - engine: firefox
+            os: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install ${{ matrix.engine }}
+        timeout-minutes: 10
+        run: npx playwright-core install --with-deps "${{ matrix.engine }}"
+
+      - name: smoke
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          npm run smoke -- "${{ matrix.engine }}" 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+
+      # The engine and its version, lifted into the summary, so a green tick says what ran.
+      # A missing line fails the leg: no verdict is not a pass.
+      - name: Name the engine that ran
+        if: always()
+        run: |
+          set -uo pipefail
+          rc=0
+          verdict=$(grep -m1 '^engine smoke' "$RUNNER_TEMP/smoke.log" 2>/dev/null || true)
+          if [ -z "$verdict" ]; then
+            verdict="engine smoke: ${{ matrix.engine }} NO VERDICT, the smoke never reported"
+            echo "::error::$verdict" >&2
+            rc=1
+          fi
+          echo "${{ matrix.os }} - $verdict" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
