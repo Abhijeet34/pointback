@@ -121,6 +121,7 @@ export class SessionStore {
     const key = sessionKey(canonical);
     const now = new Date().toISOString();
     let session = this.#sessions.get(key);
+    const rerooted = session !== undefined && session.root !== assets;
     if (!session) {
       if (this.#sessions.size >= limits.sessions) this.#evict();
       session = {
@@ -146,6 +147,10 @@ export class SessionStore {
       session.root = assets;
     }
     this.#persist(session);
+    // A tab already showing the review opens no second one, so it must follow the page to its new
+    // address: the old one no longer resolves, and its next reload would paint a 404.
+    if (rerooted)
+      this.#events.emit(key, { type: "rerooted", artifactUrl: this.status(key).artifactUrl });
     return session;
   }
 

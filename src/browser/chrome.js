@@ -264,6 +264,9 @@ function apply(event) {
     followAnnotate();
     revision = event.revision;
     if (current) show();
+  } else if (event.type === "rerooted") {
+    session.artifactUrl = event.artifactUrl;
+    if (current) show();
   } else if (event.type === "gone") {
     fileGone = true;
     followAnnotate();

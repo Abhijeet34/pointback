@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { EventStreams } from "../src/events.js";
@@ -97,6 +97,22 @@ test("a second tab takes the review, and closing it hands the review back", () =
   one.detach();
   assert.equal(streams.size, 0);
   assert.equal(streams.live(key), false, "the last tab gone, the next open opens one again");
+});
+
+test("an open under another root moves an open tab to the page's new address, and only then", async () => {
+  const { dir, artifact, key, streams, store } = lab();
+  const one = tab(streams, key);
+  store.open(artifact);
+  store.open(artifact, dirname(dir));
+  assert.deepEqual(only(one.types(), await noise()), ["hello", "rerooted"]);
+  assert.deepEqual(
+    one.lines.find((line) => line.type === "rerooted"),
+    {
+      type: "rerooted",
+      artifactUrl: `/artifact/${key}/${store.get(key).assetToken}/${basename(dir)}/plan.html`,
+    },
+  );
+  one.detach();
 });
 
 test("presence, unsent notes, the end and a reopen all reach every tab; feedback does not", async () => {
