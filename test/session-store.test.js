@@ -647,3 +647,41 @@ test("concurrent polls are capped", async () => {
   );
   await Promise.all(polls);
 });
+
+test("a reply lands on its note, survives a restart, reaches every tab, and is validated", () => {
+  const { file, artifact } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  store.queue(key, [prompt("one"), prompt("two")]);
+  const heard = [];
+  store.on(key, (event) => heard.push(event));
+
+  const answered = store.reply(key, 2, { status: "declined", message: "<b>Out</b> of scope" });
+  assert.equal(answered.status, "replied");
+  assert.deepEqual(heard, [{ type: "reply", uid: 2, reply: answered.reply }]);
+  assert.equal(store.bootstrap(key).chat[1].reply.message, "<b>Out</b> of scope");
+  assert.equal(store.status(key).chat[1].reply.status, "declined", "a tab's hello carries it");
+  assert.equal(new SessionStore(file).get(key).chat[1].reply.status, "declined");
+  // A message of nothing but space says nothing, so it is not kept.
+  assert.deepEqual(Object.keys(store.reply(key, 1, { status: "done", message: "  " }).reply), [
+    "status",
+    "at",
+  ]);
+
+  const refused = (uid, body, status, pattern) =>
+    assert.throws(
+      () => store.reply(key, uid, body),
+      (e) => e.status === status && pattern.test(e.message),
+    );
+  refused(3, { status: "done" }, 404, /no note 3/);
+  refused("1", { status: "done" }, 400, /positive integer/);
+  refused(1, { status: "resolved" }, 400, /done, declined, question/);
+  refused(1, null, 400, /must be an object/);
+  refused(1, { status: "question", message: " " }, 400, /needs its text/);
+  refused(1, { status: "done", message: 7 }, 400, /must be a string/);
+  refused(1, { status: "done", message: "x".repeat(limits.replyChars + 1) }, 400, /over 2000/);
+  assert.throws(
+    () => store.addDraft(key, { ...prompt(), answers: 1.5 }),
+    (e) => e.status === 400 && /a note's uid/.test(e.message),
+  );
+});

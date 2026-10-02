@@ -406,3 +406,102 @@ test("a stopped daemon comes back on the address and token an open tab already h
     await own.stop();
   }
 });
+
+// The loop closes on the agent's side: every note can be answered done, declined or with a
+// question, the answer is what the reviewer's tab is sent, and a uid the review never issued is
+// refused rather than stored against nothing.
+test("reply answers a note done, declined or with a question, and refuses a uid it never issued", async () => {
+  const { file } = scratch();
+  const key = keyOf(await cli([file], lab.env));
+  const api = daemon(lab);
+  for (const text of ["one", "two", "three"]) await api.note(key, text);
+  const polled = (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json();
+  assert.deepEqual(
+    polled.prompts.map((p) => p.uid),
+    [1, 2, 3],
+  );
+  assert.equal(
+    polled.reply_with,
+    `${name} reply ${file} <uid> --done | --declined | --question, with --message "..." for a reason or a question; the reviewer reads it on that note.`,
+    "every batch reminds the agent how to answer, so the loop does not rest on a skill file",
+  );
+  assert.match(polled.next_step, /Apply them, reply to each, then run/);
+
+  const replies = [
+    [["1", "--done"], { status: "done" }],
+    [
+      ["2", "--declined", "--message", "The title is the product name"],
+      { status: "declined", message: "The title is the product name" },
+    ],
+    [
+      ["3", "--question", "--message", "Which queue: billing or email?"],
+      { status: "question", message: "Which queue: billing or email?" },
+    ],
+  ];
+  for (const [args, expected] of replies) {
+    const replied = await cli(["reply", file, ...args], lab.env);
+    assert.equal(replied.code, 0, replied.stderr);
+    const out = replied.json();
+    assert.equal(out.status, "replied");
+    assert.equal(out.uid, Number(args[0]));
+    const { at, ...reply } = out.reply;
+    assert.deepEqual(reply, expected);
+    assert.ok(Number.isFinite(Date.parse(at)), "the reply is stamped");
+  }
+  // Stored on the note itself, where the reviewer's tab reads it on every connect.
+  const chat = (await (await api.call("GET", `/api/${key}/session`)).json()).chat;
+  assert.deepEqual(
+    chat.map((entry) => [entry.uid, entry.reply.status, entry.reply.message]),
+    [
+      [1, "done", undefined],
+      [2, "declined", "The title is the product name"],
+      [3, "question", "Which queue: billing or email?"],
+    ],
+  );
+  // A later reply replaces an earlier one: the question, once answered, can become done.
+  assert.equal((await cli(["reply", file, "3", "--done"], lab.env)).json().reply.status, "done");
+
+  const refused = async (args, pattern) => {
+    const result = await cli(["reply", file, ...args], lab.env);
+    assert.equal(result.code, 1, `${args.join(" ")} exits 1`);
+    assert.equal(result.stdout, "", `${args.join(" ")} prints no answer`);
+    assert.match(result.stderr, pattern, args.join(" "));
+  };
+  await refused(["9", "--done"], /^error: no note 9 in this review$/m);
+  await refused(["0", "--done"], /the note's uid/);
+  await refused(["two", "--done"], /the note's uid/);
+  await refused(["--done"], /the note's uid/);
+  await refused(["1"], /exactly one of --done, --declined, --question/);
+  await refused(["1", "--done", "--declined"], /exactly one of/);
+  await refused(["1", "--question"], /a question needs its text/);
+  await refused(
+    ["1", "--declined", "--message", "x".repeat(limits.replyChars + 1)],
+    /over 2000 characters/,
+  );
+  const never = join(scratch().dir, "a.html");
+  const unopened = await cli(["reply", never, "1", "--done"], lab.env);
+  assert.equal(unopened.code, 1);
+  assert.match(unopened.stderr, /no such session/);
+});
+
+test("a note that answers the agent's question names its uid, and only a uid the review issued", async () => {
+  const { file } = scratch();
+  const key = keyOf(await cli([file], lab.env));
+  const api = daemon(lab);
+  await api.note(key, "Shorter");
+  const [asked] = (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json().prompts;
+  await cli(["reply", file, String(asked.uid), "--question", "--message", "How short?"], lab.env);
+
+  const answer = { prompt: "Three words", selector: "#title", tag: "h1", text: "Rollout" };
+  const stray = await api.call("POST", `/api/${key}/drafts`, { draft: { ...answer, answers: 42 } });
+  assert.equal(stray.status, 400);
+  assert.match((await stray.json()).error, /names no note in this review: 42/);
+  const res = await sendNote(lab.serverInfo(), key, { ...answer, answers: asked.uid });
+  assert.equal(res.status, 200, await res.text());
+  const delivered = (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json();
+  assert.deepEqual(
+    delivered.prompts.map(({ prompt, answers }) => ({ prompt, answers })),
+    [{ prompt: "Three words", answers: asked.uid }],
+  );
+  assert.match(delivered.next_step, /`answers` is the reviewer's answer to the question you asked/);
+});

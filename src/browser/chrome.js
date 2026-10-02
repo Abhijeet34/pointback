@@ -337,15 +337,15 @@ function render() {
               ? "The file changed. This page updates as soon as you finish this note."
               : asking
                 ? "Your agent asked you a question. Answer it on its note, then send."
-                : working && count === 0
-                  ? "Your agent is working on your last notes. Anything you send now waits for its next check."
-                  : chat.length === 0 && count === 0
-                    ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
-                    : count === 0
-                      ? replied
-                        ? "Your agent has answered every note."
-                        : "Every note has been sent."
-                      : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
+                : replied && count === 0
+                  ? "Your agent has answered every note."
+                  : working && count === 0
+                    ? "Your agent is working on your last notes. Anything you send now waits for its next check."
+                    : chat.length === 0 && count === 0
+                      ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
+                      : count === 0
+                        ? "Every note has been sent."
+                        : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
   );
 }
 

@@ -84,6 +84,7 @@ test("a second tab takes the review, and closing it hands the review back", () =
     type: "current",
     artifactUrl: `/artifact/${key}/${store.get(key).assetToken}/plan.html`,
     revision: 1,
+    chat: [],
     presence: { state: "waiting" },
     ended: null,
     gone: false,

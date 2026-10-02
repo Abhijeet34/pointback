@@ -451,13 +451,16 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
       : "file watching is unavailable here: supersession must reach the older tab past a reload-off",
   );
   const opened = await post("/api/sessions", { file: fixture });
+  // The fixture's session carries the notes earlier tests sent; the hello carries them too.
+  const { chat } = await get(`/api/${opened.key}/session`);
+  assert.ok(chat.length > 0);
   const first = await eventStream(`/api/${opened.key}/events`);
   assert.equal(first.contentType, "application/x-ndjson; charset=utf-8");
   assert.deepEqual(await first.next(), {
     type: "hello",
     artifactUrl,
     revision: 0,
-    chat: [],
+    chat,
     presence: { state: "waiting" },
     ended: null,
     gone: false,

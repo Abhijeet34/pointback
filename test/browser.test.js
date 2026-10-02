@@ -1281,3 +1281,145 @@ test(
     }
   },
 );
+
+/** Each sent note's reply as the reviewer reads it: the label, the message, and what else is drawn. */
+const REPLIES = `JSON.stringify([...document.querySelectorAll('.mark.sent')].map((mark) => {
+  const line = mark.querySelector('.mark-reply');
+  if (!line) return null;
+  const box = line.getBoundingClientRect();
+  return {
+    label: line.querySelector('.mark-reply-label').textContent,
+    message: [...line.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim(),
+    drawn: [...line.querySelectorAll('*')].map((e) => e.tagName.toLowerCase() + (e.textContent ? ':' + e.textContent : '')),
+    painted: line.checkVisibility() && box.height > 0,
+  };
+}))`;
+/** Requests this page made over the API apart from the event stream, which stays open. */
+const API_REQUESTS =
+  "performance.getEntriesByType('resource').filter((e) => e.name.includes('/api/')).length";
+
+test(
+  "the agent's reply lands on its note in one event, as text, and a question is answered by a note",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Make the title shorter");
+    await noteOn(page, artifact, "#p1", "Say how long each step takes");
+    await noteOn(page, artifact, "#risks h2", "Name the riskiest step");
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 3");
+    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => p.uid),
+      [1, 2, 3],
+    );
+    const reply = async (...args) => {
+      const result = await cli(["reply", file, ...args], lab.env);
+      assert.equal(result.code, 0, result.stderr);
+    };
+
+    // Done on uid 2 reaches the margin over the stream that is already open: no other request.
+    const requests = Number(await page.eval(API_REQUESTS));
+    const replied = Date.now();
+    await reply("2", "--done");
+    await page.waitFor("document.querySelectorAll('.mark-reply').length === 1");
+    const shownMs = Date.now() - replied;
+    assert.deepEqual(JSON.parse(await page.eval(REPLIES)), [
+      null,
+      { label: "Done", message: "", drawn: ["span:Done"], painted: true },
+      null,
+    ]);
+    assert.equal(
+      Number(await page.eval(API_REQUESTS)),
+      requests,
+      "the reply arrived as one event on the stream, not by refetching the session",
+    );
+
+    // The agent's words are text wherever they land: markup in them is shown, never parsed.
+    const reason = "<b>Keep it</b>: the title is the product name";
+    const question = `<img src=x onerror="document.title='forged'">Which queue: billing or email?`;
+    await reply("1", "--declined", "--message", reason);
+    await reply("3", "--question", "--message", question);
+    await page.waitFor("document.querySelectorAll('.mark-reply').length === 3");
+    assert.deepEqual(JSON.parse(await page.eval(REPLIES)), [
+      { label: "Declined", message: reason, drawn: ["span:Declined"], painted: true },
+      { label: "Done", message: "", drawn: ["span:Done"], painted: true },
+      {
+        label: "Question",
+        message: question,
+        drawn: ["span:Question", "button:Answer"],
+        painted: true,
+      },
+    ]);
+    assert.equal(await page.eval("document.querySelectorAll('img, b').length"), 0);
+    assert.notEqual(await page.eval("document.title"), "forged");
+    assert.equal(
+      await page.eval("document.getElementById('status').textContent"),
+      "Your agent asked you a question. Answer it on its note, then send.",
+    );
+
+    // Answering is a note like any other, pointed where the question's note was and naming it.
+    // At 800x600 the notes are a short band under the page, so the reviewer scrolls to it first.
+    const button = JSON.parse(
+      await page.eval(
+        "(() => { const b = document.querySelector('.mark-answer'); b.scrollIntoView({ block: 'nearest' }); return JSON.stringify(b.getBoundingClientRect()); })()",
+      ),
+    );
+    await page.click(button.left + button.width / 2, button.top + button.height / 2);
+    await page.waitFor(
+      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+    );
+    assert.equal(
+      await page.eval("document.getElementById('cardTarget').textContent"),
+      `Answer: ${question}`,
+    );
+    await page.type("The billing queue");
+    await page.enter();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    assert.equal(
+      await page.eval("document.activeElement.id"),
+      "send",
+      "an answer written from the margin hands focus on to Send",
+    );
+    assert.equal(await page.eval("document.querySelectorAll('.mark-answer').length"), 0);
+    assert.equal(
+      await page.eval("document.querySelector('.mark:not(.sent) .mark-tag').textContent"),
+      "answer",
+    );
+    await page.eval("document.getElementById('send').click()");
+    const answered = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    assert.deepEqual(
+      answered.prompts.map(({ uid, prompt, selector, answers }) => ({
+        uid,
+        prompt,
+        selector,
+        answers,
+      })),
+      [{ uid: 4, prompt: "The billing queue", selector: polled.prompts[2].selector, answers: 3 }],
+    );
+
+    await reply("3", "--done", "--message", "Billing it is");
+    await reply("4", "--done");
+    await page.waitFor(
+      "document.getElementById('status').textContent === 'Your agent has answered every note.'",
+    );
+    // A reply is kept with its note, so a fresh page shows every one of them.
+    await page.reload();
+    await page.waitFor("document.body.dataset.ready === '1'");
+    await page.waitFor("document.querySelectorAll('.mark-reply').length === 4");
+    assert.deepEqual(
+      JSON.parse(await page.eval(REPLIES)).map((r) => [r.label, r.message]),
+      [
+        ["Declined", reason],
+        ["Done", ""],
+        ["Done", "Billing it is"],
+        ["Done", ""],
+      ],
+    );
+    console.log(
+      `browser reply: the margin showed Done ${shownMs} ms after the reply command started`,
+    );
+    await page.close();
+  },
+);
