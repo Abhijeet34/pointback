@@ -465,8 +465,9 @@ test(
   async () => {
     const { repo, file } = componentSheet();
     // What paints on the button: the accent and the radius only the two parent-folder sheets give it.
+    // Null until the button is parsed: the frame attaches before its document has loaded.
     const painted =
-      "(() => { const s = getComputedStyle(document.getElementById('agree')); return s.backgroundColor + ' ' + s.borderRadius; })()";
+      "(() => { const b = document.getElementById('agree'); if (!b) return null; const s = getComputedStyle(b); return s.backgroundColor + ' ' + s.borderRadius; })()";
     const styled = "rgb(10, 120, 200) 9px";
     const opened = await cli([file, "--root", repo], lab.env);
     assert.equal(opened.code, 0, opened.stderr);
@@ -477,7 +478,7 @@ test(
     // Opened again without a root, a second tab gets today's default and the sheet unstyled.
     const plain = await browser.page((await cli([file], lab.env)).json().session.url);
     const plainFrame = await plain.frame();
-    await plainFrame.waitFor("document.readyState === 'complete'");
+    await plainFrame.waitFor(`document.readyState === 'complete' && ${painted} !== null`);
     assert.notEqual(await plainFrame.eval(painted), styled, "assets stay in the file's folder");
 
     // The first tab gets the review back when the second goes, and follows the root it now has
@@ -485,7 +486,7 @@ test(
     await plain.close();
     await page.front();
     await artifact.waitFor(
-      `document.readyState === 'complete' && ${painted} !== ${JSON.stringify(styled)}`,
+      `document.readyState === 'complete' && ![null, ${JSON.stringify(styled)}].includes(${painted})`,
     );
     assert.match(await artifact.eval("location.pathname"), /\/[0-9a-f]{32}\/actions\.html$/);
     await page.close();
