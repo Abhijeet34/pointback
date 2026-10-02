@@ -1213,8 +1213,8 @@ test(
  * the slice test asserts; turning it on here when it is not keeps every other test about its own
  * property rather than about that default.
  */
-async function openReview(url) {
-  const page = await browser.page(url);
+async function openReview(url, viewport) {
+  const page = await browser.page(url, viewport);
   const attaching = page.frame();
   await page.waitFor("document.body.dataset.ready === '1'");
   const artifact = await attaching;
@@ -2286,17 +2286,24 @@ const firstLine = (selector) => `JSON.stringify((() => {
   const line = rects.filter((r) => r.top + r.height / 2 > first.top && r.top + r.height / 2 < first.bottom);
   return {
     top: Math.min(...line.map((r) => r.top)),
+    bottom: Math.max(...line.map((r) => r.bottom)),
     right: Math.max(...line.map((r) => r.right)),
     code: element.firstElementChild?.tagName === "CODE" ? element.firstElementChild.getBoundingClientRect().right : null,
   };
 })())`;
 
-/** Asserts a pin stands at the top right of the first line of its target, past any opening code. */
+/**
+ * Asserts a pin stands at the end of the first line of its target, past any opening code: on its
+ * top right corner, or level with it where that corner has words above it.
+ */
 async function pinOnFirstLine(artifact, pin, selector) {
   const line = JSON.parse(await artifact.eval(firstLine(selector)));
   assert.ok(line.code !== null, `${selector} opens with inline code`);
   assert.ok(
-    Math.abs(pin.left - (line.right + 1)) <= 2 && pin.bottom <= line.top + 2,
+    pin.left >= line.right - 1 &&
+      pin.left <= line.right + 6 &&
+      pin.bottom >= line.top - 2 &&
+      pin.top <= line.top + 2,
     `${pin.name} paints at ${JSON.stringify(pin)}; the first line of ${selector} ends at ` +
       `${line.right} and starts at ${line.top}, its opening code chip ends at ${line.code}`,
   );
@@ -2401,6 +2408,155 @@ test(
     await pinOnFirstLine(review.artifact, onInstall, install);
     await review.page.close();
     rmSync(dirname(readme.file), { recursive: true, force: true });
+  },
+);
+
+/**
+ * The words each pin paints over: every text box on the page, from its text nodes, that a pin's
+ * box intersects, named by the element holding it. Measured as the pins are, in the frame's viewport.
+ */
+async function wordsUnderPins(artifact, pins) {
+  const words = JSON.parse(
+    await artifact.eval(`JSON.stringify((() => {
+      const out = [];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.data.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const r of range.getClientRects())
+          if (r.width > 0 && r.height > 0)
+            out.push({ text: node.data.trim().slice(0, 30), in: node.parentElement.tagName.toLowerCase(), left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+      }
+      return out;
+    })())`),
+  );
+  const overlaps = (a, b) =>
+    a.left < b.right - 0.5 &&
+    b.left < a.right - 0.5 &&
+    a.top < b.bottom - 0.5 &&
+    b.top < a.bottom - 0.5;
+  return pins.flatMap((pin) =>
+    words.filter((w) => overlaps(pin, w)).map((w) => `${pin.name} covers <${w.in}> "${w.text}"`),
+  );
+}
+
+/**
+ * Notes every element `selectors` names, and a passage of `passage.length` characters from the
+ * start of `passage.selector` selected by dragging over it, then waits for one pin each.
+ */
+async function pinsOnEach(page, artifact, selectors, passage) {
+  for (const [i, selector] of selectors.entries()) {
+    await noteOn(page, artifact, selector, `Note on ${i + 1}`);
+  }
+  if (passage) {
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+    const line = JSON.parse(
+      await artifact.eval(`(() => {
+        const text = document.querySelector(${JSON.stringify(passage.selector)}).firstChild;
+        text.parentElement.scrollIntoView({ block: "center", behavior: "instant" });
+        const range = document.createRange();
+        range.setStart(text, 0);
+        range.setEnd(text, ${passage.length});
+        return JSON.stringify(range.getClientRects()[0]);
+      })()`),
+    );
+    const y = frameBox.top + line.top + line.height / 2;
+    await page.pointerInto(artifact, { x: frameBox.left + line.left + 1, y });
+    await page.drag(
+      { x: frameBox.left + line.left + 1, y },
+      { x: frameBox.left + line.right - 1, y },
+    );
+    await page.waitFor("document.activeElement.id === 'cardText'");
+    await page.type("Note on the passage");
+    await page.enter();
+    await page.waitFor("document.getElementById('card').hidden");
+    selectors = [...selectors, passage.selector];
+  }
+  await artifact.eval("window.scrollTo({ top: 0, behavior: 'instant' })");
+  return until(
+    async () => {
+      const shown = await pinsOn(artifact);
+      return shown.length === selectors.length ? shown : null;
+    },
+    { what: `${selectors.length} pins` },
+  );
+}
+
+test(
+  "no pin covers a word of the page, on running prose, headings, lists, code, figures and buttons",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const covered = {};
+    for (const viewport of [
+      { width: 800, height: 600 },
+      { width: 1440, height: 900 },
+    ]) {
+      const { file, html } = copyOfFixture();
+      // A button pair, as a decision section ends, with two notes on the first button.
+      writeFileSync(
+        file,
+        html.replace(
+          '<button id="native">',
+          '<p id="pair"><button id="approve">Approve plan</button> <button id="reject">Reject</button></p><button id="native">',
+        ),
+      );
+      const url = (await cli([file], lab.env)).json().session.url;
+      const { page, artifact } = await openReview(url, viewport);
+      const onHtml = await pinsOnEach(page, artifact, [
+        "#title",
+        "#p1",
+        CELL(1),
+        "#risks h2",
+        "#risks > p",
+        "#risks li:nth-of-type(2)",
+        "#rollback h3",
+        "#rollback > p",
+        "#rollback pre",
+        "#rollback blockquote",
+        "figcaption",
+        "#approve",
+        "#approve",
+        "#reject",
+      ]);
+      covered[`html at ${viewport.width}`] = await wordsUnderPins(artifact, onHtml);
+      await page.close();
+
+      // Rendered Markdown holds paragraphs 16 px apart, closer than a pin is tall.
+      const readme = copyOfReadme();
+      const review = await openReview(
+        (await cli([readme.file], lab.env)).json().session.url,
+        viewport,
+      );
+      const onMarkdown = await pinsOnEach(
+        review.page,
+        review.artifact,
+        [
+          "main > p:nth-of-type(1)",
+          "main > p:nth-of-type(2)",
+          "main > p:nth-of-type(3)",
+          "main > p:nth-of-type(4)",
+          "main > p:nth-of-type(5)",
+          "main > p:nth-of-type(6)",
+          "main > h2:nth-of-type(1)",
+          "main > h2:nth-of-type(2)",
+          "main > pre:nth-of-type(1)",
+          "main > ul:nth-of-type(1) > li:nth-of-type(1)",
+          "main > ul:nth-of-type(1) > li:nth-of-type(2)",
+        ],
+        { selector: "main > p:nth-of-type(3)", length: 42 },
+      );
+      covered[`markdown at ${viewport.width}`] = await wordsUnderPins(review.artifact, onMarkdown);
+      await review.page.close();
+      rmSync(dirname(readme.file), { recursive: true, force: true });
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(covered, {
+      "html at 800": [],
+      "markdown at 800": [],
+      "html at 1440": [],
+      "markdown at 1440": [],
+    });
   },
 );
 
