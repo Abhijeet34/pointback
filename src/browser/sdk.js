@@ -60,6 +60,7 @@
   pinRoot.innerHTML = `
     <style>
       .pin { position: absolute; box-sizing: border-box; display: grid; place-items: center; width: ${PIN}px; height: ${PIN}px; padding: 0; border: 0; border-radius: 50% 50% 50% 2px; background: oklch(0.78 0.12 230); color: oklch(0.165 0.012 260); font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; cursor: pointer; box-shadow: 0 0 0 2px oklch(0.165 0.012 260); }
+      .pin[hidden] { display: none; }
       .pin[data-state="queued"] { background: oklch(0.195 0.012 260); color: oklch(0.663 0.12 230); box-shadow: inset 0 0 0 1px oklch(0.78 0.12 230), 0 0 0 2px oklch(0.165 0.012 260); }
       .pin[data-state="done"] { background: oklch(0.55 0.14 150); color: #fff; }
       .pin[data-state="question"] { background: oklch(0.573 0.124 70); color: #fff; }

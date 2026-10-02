@@ -21,7 +21,15 @@ import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { devToolsUrl, findBrowser, launchBrowser } from "./helpers/cdp.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
+import { contrast, decodePng } from "./helpers/png.js";
 import { until } from "./helpers/wait.js";
+
+// Where the artifact's own coordinates start: inside the frame's border, which the inset mount draws.
+const FRAME_BOX = `(() => {
+  const frame = document.getElementById('artifact');
+  const box = frame.getBoundingClientRect();
+  return JSON.stringify({ left: box.left + frame.clientLeft, top: box.top + frame.clientTop });
+})()`;
 
 const executable = findBrowser();
 const optedOut = process.env[`${envPrefix}BROWSER`] === "none";
@@ -105,11 +113,7 @@ test(
     await artifact.waitFor("document.readyState === 'complete'");
     assert.equal(await page.eval("document.getElementById('fileName').textContent"), "plan.html");
 
-    const frameBox = JSON.parse(
-      await page.eval(
-        "JSON.stringify(document.getElementById('artifact').getBoundingClientRect())",
-      ),
-    );
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
     const boxOf = async (expression) =>
       JSON.parse(await artifact.eval(`JSON.stringify((${expression}).getBoundingClientRect())`));
     const pointOf = async (selector) => {
@@ -132,10 +136,7 @@ test(
     // off, the line says how to turn it back on.
     const help = "document.getElementById('status').textContent";
     await page.waitFor("document.body.dataset.annotate === '1'");
-    assert.equal(
-      await page.eval("document.getElementById('annotate').getAttribute('aria-checked')"),
-      "true",
-    );
+    assert.equal(await page.eval("String(document.getElementById('annotate').checked)"), "true");
     assert.match(
       await page.eval(help),
       /^Click or select anything on the page to note it, or Tab to it and press Enter\. H jumps to the next heading, A turns Annotate off, (⌘|Ctrl\+)Enter sends\.$/,
@@ -157,10 +158,7 @@ test(
     const referenceBytes = await artifact.eval(REFERENCE_SNAPSHOT);
 
     await page.eval("document.getElementById('annotate').click()");
-    assert.equal(
-      await page.eval("document.getElementById('annotate').getAttribute('aria-checked')"),
-      "true",
-    );
+    assert.equal(await page.eval("String(document.getElementById('annotate').checked)"), "true");
     // Annotate mode is set by a message into the artifact's own event loop, so a
     // click dispatched before it lands is simply ignored. Measured on a loaded
     // machine: one full-suite run in three failed here before this wait existed.
@@ -330,7 +328,13 @@ test(
     // rule would still pass a source grep, so read the CSSOM the browser built instead.
     assert.deepEqual(
       await page.eval("[...document.styleSheets].map((s) => new URL(s.href).pathname)"),
-      ["/house/brand.tokens.css", "/house/roles.css", "/house/scales.css", "/chrome.css"],
+      [
+        "/house/brand.tokens.css",
+        "/house/roles.css",
+        "/house/scales.css",
+        "/house/components.css",
+        "/chrome.css",
+      ],
     );
     assert.equal(
       await page.eval("[...document.styleSheets].every((s) => s.cssRules.length > 0)"),
@@ -361,7 +365,7 @@ test(
       await page.eval(
         "[...document.querySelectorAll('.mark.sent .mark-tag')].map((e) => e.textContent)",
       ),
-      ["h1", "text", "text", "td"],
+      ["Heading", "Passage", "Passage", "Cell"],
     );
     assert.deepEqual(
       await page.eval(
@@ -371,7 +375,7 @@ test(
         "Rollout plan for the queue worker",
         "“Move the queue”",
         "“Move the queue worker from”",
-        "Priya · Shadow traffic › Owner",
+        "Shadow traffic › Owner · Priya",
       ],
     );
 
@@ -407,11 +411,7 @@ test(
     await page.waitFor("document.body.dataset.revision === '0'");
     const artifact = await attaching;
     await artifact.waitFor("document.readyState === 'complete'");
-    const frameBox = JSON.parse(
-      await page.eval(
-        "JSON.stringify(document.getElementById('artifact').getBoundingClientRect())",
-      ),
-    );
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
     const title = JSON.parse(
       await artifact.eval(
         "JSON.stringify(document.getElementById('title').getBoundingClientRect())",
@@ -699,7 +699,7 @@ test(
     );
     assert.deepEqual(
       await page.eval(
-        "[document.getElementById('annotate').getAttribute('aria-checked'), document.querySelectorAll('.mark.sent').length]",
+        "[String(document.getElementById('annotate').checked), document.querySelectorAll('.mark.sent').length]",
       ),
       ["true", 0],
       "a claimed Annotate or send key without a gesture neither turns Annotate off nor sends the note",
@@ -805,7 +805,7 @@ test(
     );
     const page = await browser.page(opened.session.url);
     await page.waitFor("document.body.dataset.ready === '1'");
-    const marks = "document.getElementById('marks')";
+    const marks = "document.getElementById('marginBody')";
     assert.ok(
       await page.eval(`${marks}.scrollHeight > ${marks}.clientHeight`),
       "the notes overflow",
@@ -875,7 +875,7 @@ test(
     assert.equal(gone.send, "File is gone");
     for (const control of ["annotate", "end"]) {
       assert.notEqual(gone[control], live[control], `${control} no longer paints as pressable`);
-      assert.match(gone[control], / default$/, `${control} stops promising a press`);
+      assert.match(gone[control], / not-allowed$/, `${control} stops promising a press`);
     }
 
     renameSync(away, file);
@@ -904,11 +904,7 @@ test(
       "Agent away",
     );
 
-    const rect = JSON.parse(
-      await page.eval(
-        "JSON.stringify(document.getElementById('artifact').getBoundingClientRect())",
-      ),
-    );
+    const rect = JSON.parse(await page.eval(FRAME_BOX));
     // Both places below are set through the artifact's own session. Synthetic input is the wrong
     // instrument here: a key goes to whichever frame holds focus, and a wheel goes to the frame
     // under the point only once the browser holds that out-of-process frame's hit-test region -
@@ -1035,17 +1031,14 @@ test(
 
     // How the switch paints while it can still be pressed, to compare with the ended review below.
     const SWITCH_PAINT = `JSON.stringify((() => {
-      const a = document.getElementById('annotate');
-      const track = a.querySelector('.switch-track');
-      return { color: getComputedStyle(a).color, cursor: getComputedStyle(a).cursor,
+      const track = document.getElementById('annotate');
+      return { color: getComputedStyle(track.parentElement).color, cursor: getComputedStyle(track).cursor,
         track: getComputedStyle(track).backgroundColor, thumb: getComputedStyle(track, '::after').backgroundColor,
         quietDisabled: getComputedStyle(document.getElementById('end')).color };
     })())`;
     // Ending turns annotate off, so the live switch is read off too, or the comparison is vacuous.
     await page.eval("document.getElementById('annotate').click()");
-    await page.waitFor(
-      "document.getElementById('annotate').getAttribute('aria-checked') === 'false'",
-    );
+    await page.waitFor("String(document.getElementById('annotate').checked) === 'false'");
     const live = JSON.parse(await page.eval(SWITCH_PAINT));
 
     // Ending with a note still queued offers to send it, and the agent gets it as the last batch.
@@ -1072,7 +1065,7 @@ test(
     const ended = JSON.parse(await page.eval(SWITCH_PAINT));
     assert.equal(ended.color, ended.quietDisabled, "the ended switch's label dims like End review");
     assert.notEqual(ended.color, live.color);
-    assert.equal(ended.cursor, "default");
+    assert.equal(ended.cursor, "not-allowed");
     assert.notEqual(ended.track, live.track, "the ended switch's track repaints");
     assert.notEqual(ended.thumb, live.thumb, "the ended switch's thumb repaints");
     assert.equal(await page.eval("document.querySelectorAll('.mark:not(.sent)').length"), 0);
@@ -1094,7 +1087,7 @@ async function openReview(url) {
   const artifact = await attaching;
   await artifact.waitFor("document.readyState === 'complete'");
   await page.eval(
-    "document.getElementById('annotate').getAttribute('aria-checked') === 'true' || document.getElementById('annotate').click()",
+    "String(document.getElementById('annotate').checked) === 'true' || document.getElementById('annotate').click()",
   );
   await page.waitFor("document.body.dataset.annotate === '1'");
   return { page, artifact };
@@ -1120,9 +1113,7 @@ async function pointAt(page, artifact, selector) {
 
 /** A real click on an element of the artifact, in from its left edge, after scrolling it into view. */
 async function clickIn(page, artifact, selector, at) {
-  const frameBox = JSON.parse(
-    await page.eval("JSON.stringify(document.getElementById('artifact').getBoundingClientRect())"),
-  );
+  const frameBox = JSON.parse(await page.eval(FRAME_BOX));
   const box = JSON.parse(
     await artifact.eval(`(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
@@ -1266,7 +1257,7 @@ test(
       const offline = JSON.parse(await page.eval(SEND_PAINT));
       assert.deepEqual(
         offline,
-        { presence: "Not connected", send: "Not connected", disabled: true, cursor: "default" },
+        { presence: "Not connected", send: "Not connected", disabled: true, cursor: "not-allowed" },
         "a page that cannot reach the daemon says so, and offers no Send that cannot work",
       );
       assert.match(
@@ -1510,7 +1501,7 @@ test(
     assert.equal(await page.eval("document.querySelectorAll('.mark-answer').length"), 0);
     assert.equal(
       await page.eval("document.querySelector('.mark:not(.sent) .mark-tag').textContent"),
-      "answer",
+      "Answer",
     );
     await page.eval("document.getElementById('send').click()");
     const answered = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
@@ -1604,6 +1595,20 @@ test(
 
     await usable("on opening", ["#annotate", "#end", "#send"]);
     await page.waitFor("document.body.dataset.annotate === '1'");
+    // Which file this is stays on screen, whole, and no control breaks its label across lines.
+    assert.deepEqual(
+      JSON.parse(
+        await page.eval(`JSON.stringify((() => {
+          const name = document.getElementById('fileName');
+          const lines = (e) => { const r = document.createRange(); r.selectNodeContents(e);
+            return new Set([...r.getClientRects()].map((b) => Math.round(b.top))).size; };
+          return { file: name.textContent, shown: name.getBoundingClientRect().width >= name.scrollWidth && name.scrollWidth > 0,
+            end: lines(document.getElementById('end')), annotate: lines(document.getElementById('annotate').parentElement) };
+        })())`),
+      ),
+      { file: "plan.html", shown: true, end: 1, annotate: 1 },
+      "the bar at phone width",
+    );
 
     await pointAt(page, artifact, "#title");
     await usable("with the note card open", ["#cardText", "#cardAdd"]);
@@ -1624,6 +1629,11 @@ test(
       polled.prompts.map(({ prompt, selector }) => ({ prompt, selector })),
       [{ prompt: note, selector: "#title" }],
     );
+    // A question waits on the reviewer, so its Answer has to be one press away in the band.
+    const { uid } = polled.prompts[0];
+    await cli(["reply", file, String(uid), "--question", "--message", "Which digest?"], lab.env);
+    await page.waitFor("document.querySelector('.mark-answer') !== null");
+    await usable("with a question to answer", [".mark-answer", "#send"]);
     await page.close();
     rmSync(dirname(file), { recursive: true, force: true });
   },
@@ -1760,11 +1770,7 @@ test(
     await artifact.eval(
       `document.getElementById("slo").scrollIntoView({ block: "center", behavior: "instant" })`,
     );
-    const frameBox = JSON.parse(
-      await page.eval(
-        "JSON.stringify(document.getElementById('artifact').getBoundingClientRect())",
-      ),
-    );
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
     const pin = (await pinsOn(artifact))[1];
     const point = {
       x: frameBox.left + (pin.left + pin.right) / 2,
@@ -1954,13 +1960,13 @@ test(
     await note("img", "Make this trend larger", { x: 50, y: 20 });
     await note("#heat", "Label the heat map", { x: 150, y: 30 });
     assert.deepEqual(noted, [
-      "button · Upgrade plan",
-      "input · Invoice email",
-      "a · terms of service",
-      "select · Plan",
-      "svg · Requests per day",
-      "img · Weekly trend",
-      "canvas · ",
+      "Button · Upgrade plan",
+      "Field · Invoice email",
+      "Link · terms of service",
+      "Choice · Plan",
+      "Graphic · Requests per day",
+      "Picture · Weekly trend",
+      "Graphic",
     ]);
     assert.deepEqual(
       JSON.parse(await artifact.eval(outcome)),
@@ -2158,10 +2164,7 @@ test(
     const a = () => page.key("a", { code: "KeyA", keyCode: 65, text: "a" });
     await a();
     await page.waitFor("document.body.dataset.annotate === '0'");
-    assert.equal(
-      await page.eval("document.getElementById('annotate').getAttribute('aria-checked')"),
-      "false",
-    );
+    assert.equal(await page.eval("String(document.getElementById('annotate').checked)"), "false");
     await a();
     await page.waitFor("document.body.dataset.annotate === '1'");
 
@@ -2190,5 +2193,185 @@ test(
       ["Say who can roll back"],
     );
     await page.close();
+  },
+);
+
+/** A private copy of the dark fixture, so each case reviews a session of its own. */
+function copyOfDark() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-dark-"));
+  const file = join(dir, "run.html");
+  copyFileSync(join(dirname(fixture), "dark.html"), file);
+  return file;
+}
+
+/** The fixture's own ground, rgb(13, 15, 16), give or take the rasteriser's rounding. */
+const onGround = ([r, g, b]) => r <= 20 && g <= 22 && b <= 23;
+
+test(
+  "on a dark page the frame and the note card keep an edge, at least 3:1 in screenshot pixels",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const file = copyOfDark();
+    const session = (await cli([file], lab.env)).json().session;
+    const page = await browser.page(session.url, { width: 1440, height: 900 });
+    const attaching = page.frame();
+    await page.waitFor("document.body.dataset.ready === '1'");
+    const artifact = await attaching;
+    await artifact.waitFor("document.readyState === 'complete'");
+    await page.waitFor("document.body.dataset.annotate === '1'");
+    await pointAt(page, artifact, "#cell");
+    const box = (selector) =>
+      page
+        .eval(
+          `JSON.stringify(document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect())`,
+        )
+        .then(JSON.parse);
+    const [frame, card] = [await box("#artifact"), await box("#card")];
+    const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+    const shot = decodePng(Buffer.from(data, "base64"));
+    // An edge is the step across a boundary: the brightest of the two pixels the 1px line can
+    // land on, against the page's own ground a few pixels outside it. Rows where the page's text
+    // or rules run past the boundary are not ground, so they are left out rather than averaged.
+    const edges = (rows, outsideX, lineX) =>
+      rows
+        .map((y) => [shot.pixel(outsideX, y), ...lineX.map((x) => shot.pixel(x, y))])
+        .filter(([outside]) => onGround(outside))
+        .map(([outside, ...line]) => Math.max(...line.map((pixel) => contrast(pixel, outside))));
+    const span = (from, to) =>
+      Array.from({ length: 12 }, (_, i) => Math.round(from + ((to - from) * (i + 1)) / 13));
+    const cardLeft = Math.floor(card.left);
+    const cardEdge = edges(span(card.top, card.bottom), cardLeft - 3, [cardLeft, cardLeft + 1]);
+    const frameLeft = Math.floor(frame.left);
+    const frameEdge = edges(span(frame.top, frame.bottom), frameLeft + 4, [
+      frameLeft,
+      frameLeft + 1,
+    ]);
+    assert.ok(cardEdge.length >= 3, `the card's left edge crosses the page's ground: ${cardEdge}`);
+    assert.ok(
+      frameEdge.length >= 3,
+      `the frame's left edge crosses the page's ground: ${frameEdge}`,
+    );
+    console.log(
+      `dark artifact edges: card ${Math.min(...cardEdge).toFixed(2)}:1, frame ${Math.min(...frameEdge).toFixed(2)}:1`,
+    );
+    assert.ok(Math.min(...cardEdge) >= 3, `the note card's edge on a dark page: ${cardEdge}`);
+    assert.ok(Math.min(...frameEdge) >= 3, `the page's frame on a dark page: ${frameEdge}`);
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "the chrome's text grows with the house text size",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const file = copyOfDark();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    await noteOn(page, artifact, "#title", "Name the run");
+    const SIZES = `JSON.stringify(["#fileName", "#presenceText", "#end", "#status", "#send",
+      ".mark-text", ".mark-note", "#cardText"].map((s) => {
+        const e = document.querySelector(s);
+        return [s, parseFloat(getComputedStyle(e).fontSize), e.getBoundingClientRect().height];
+      }))`;
+    const at = JSON.parse(await page.eval(SIZES));
+    await page.eval("document.documentElement.dataset.textSize = 'xl'");
+    const xl = JSON.parse(await page.eval(SIZES));
+    // The house root is 15px at M and 19px at XL: every step of its rem ramp moves by 19/15.
+    for (const [i, [selector, size]] of at.entries()) {
+      const ratio = xl[i][1] / size;
+      assert.ok(ratio > 1.2 && ratio < 1.32, `${selector}: ${size}px at M, ${xl[i][1]}px at XL`);
+    }
+    const send = at.findIndex(([selector]) => selector === "#send");
+    assert.ok(xl[send][2] > at[send][2] * 1.2, "Send's box grows with its label");
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+// Every tag the page's markup could lend a label; none of them is a word the reviewer chose.
+const TAG_NAMES = new Set(
+  "a answer button canvas div h1 h2 h3 h4 h5 h6 img input li mark ol p select span svg table td text th tr ul".split(
+    " ",
+  ),
+);
+
+test(
+  "the margin and the card name what was pointed at in words, while the agent still gets the tag",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const file = copyOfDark();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    const labels = [];
+    for (const selector of ["#title", "#cell", "#found", "#chart"]) {
+      await pointAt(page, artifact, selector);
+      labels.push(await page.eval("document.getElementById('cardTarget').textContent"));
+      await page.type(`A note on ${selector}`);
+      await page.enter();
+      await page.waitFor(
+        `document.querySelectorAll('.mark:not(.sent)').length === ${labels.length}`,
+      );
+    }
+    await page.eval("document.getElementById('send').click()");
+    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => p.tag),
+      ["h1", "td", "mark", "svg"],
+      "the agent's note keeps the element's tag",
+    );
+    const { uid } = polled.prompts[1];
+    await cli(["reply", file, String(uid), "--question", "--message", "Which ground?"], lab.env);
+    await clickOn(page, "document.querySelector('.mark-answer')");
+    await page.waitFor("document.activeElement.id === 'cardText'");
+    await page.type("The neutral one");
+    await page.enter();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    const margin = JSON.parse(
+      await page.eval(
+        "JSON.stringify([...document.querySelectorAll('.mark .mark-target')].map((e) => e.textContent))",
+      ),
+    );
+    assert.deepEqual(margin, [
+      "1Heading · Nightly run, 2 October",
+      "2Cell · house › neutral › Measured against the neutral ground · hue 260, chroma 0.012",
+      "3Highlight · two roles under their floor",
+      "4Graphic · Throughput by hour",
+      "5Answer · to note 2",
+    ]);
+    for (const label of [...labels, ...margin]) {
+      const tags = label.split(/[\s·›,]+/).filter((word) => TAG_NAMES.has(word));
+      assert.deepEqual(tags, [], `"${label}" speaks HTML`);
+    }
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "at 800x600 a notice in the margin never pushes Send off the screen",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const file = copyOfDark();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    await noteOn(page, artifact, "#title", "Name the run");
+    await noteOn(page, artifact, "#cell", "Say which ground");
+    // A second tab takes the review over, which raises the margin's tallest notice in the first.
+    const second = await browser.page(session.url);
+    await second.waitFor("document.body.dataset.ready === '1'");
+    await page.front();
+    await page.waitFor("!document.getElementById('notice').hidden");
+    const seen = JSON.parse(await page.eval(reachability(["#send", "#takeOver"])));
+    assert.deepEqual(seen.viewport, [800, 600]);
+    assert.equal(
+      await page.eval("document.scrollingElement.scrollHeight <= innerHeight"),
+      true,
+      "the chrome fits its window",
+    );
+    for (const control of seen.controls) assert.ok(control.reachable, JSON.stringify(control));
+    await second.close();
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
   },
 );

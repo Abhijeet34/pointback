@@ -841,10 +841,11 @@ function closeCompose(refocus) {
 function placeCard(rects) {
   const mount = frame.parentElement;
   const bounds = mount.getBoundingClientRect();
+  // The page's own coordinates start inside the frame's border.
   const frameBox = frame.getBoundingClientRect();
   const r = Array.isArray(rects) && rects.length ? rects[rects.length - 1] : { left: 0, bottom: 0 };
-  const originX = frameBox.left - bounds.left;
-  const originY = frameBox.top - bounds.top;
+  const originX = frameBox.left + frame.clientLeft - bounds.left;
+  const originY = frameBox.top + frame.clientTop - bounds.top;
   const top = Math.min(originY + r.bottom + 8, bounds.height - card.offsetHeight - 8);
   const left = Math.min(originX + r.left, bounds.width - card.offsetWidth - 8);
   card.style.top = `${Math.max(8, top)}px`;

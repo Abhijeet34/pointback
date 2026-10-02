@@ -387,7 +387,12 @@ body {
   display: none;
 }
 
+/* The notice scrolls with nothing: whatever took the page out of its normal state stays in view
+   above the notes, and the column's own height still holds Send on screen. */
 .notice {
+  position: sticky;
+  top: 0;
+  z-index: var(--hw-z-sticky);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
