@@ -255,6 +255,22 @@ test("a missing file argument or file is an error exit, not a stack trace", asyn
   assert.match(noFile.stderr, /^error: no such file/);
 });
 
+test("a file that is neither HTML nor Markdown is refused with a message and exit 1", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-kind-"));
+  writeFileSync(join(dir, "notes.txt"), "plain notes\n");
+  const refused = await cli([join(dir, "notes.txt")], lab.env);
+  assert.equal(refused.code, 1);
+  assert.equal(refused.stdout, "");
+  assert.equal(
+    refused.stderr,
+    "error: notes.txt cannot be reviewed: open an HTML (.html, .htm) or Markdown (.md, .markdown) file\n",
+  );
+  writeFileSync(join(dir, "notes.md"), "# Notes\n");
+  const opened = await cli([join(dir, "notes.md")], lab.env);
+  assert.equal(opened.code, 0, opened.stderr);
+  assert.equal(opened.json().session.status, "opened");
+});
+
 test("--root resolves relative to where the agent is, and is refused where it means nothing", async () => {
   const repo = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-cli-root-"));
   mkdirSync(join(repo, "sheets"));

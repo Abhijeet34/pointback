@@ -130,6 +130,35 @@ test("prompts are validated field by field", () => {
   assert.deepEqual(store.take(key), []);
 });
 
+test("source lines ride only on a Markdown file's notes, and only as two line numbers", () => {
+  const { dir, artifact } = lab();
+  const markdown = join(dir, "plan.md");
+  writeFileSync(markdown, "# Plan\n\nOne\ntwo\n");
+  const store = new SessionStore(dir);
+  const md = store.open(markdown).key;
+  const html = store.open(artifact).key;
+  for (const lines of [[3], [0, 4], [4, 3], [3, 4.5], "3-4", null, [3, 4, 5]]) {
+    assert.throws(
+      () => store.addDraft(md, { ...prompt(), lines }),
+      (e) => e.status === 400 && e.message === "prompt.lines must be [first, last] line numbers",
+      JSON.stringify(lines),
+    );
+  }
+  store.addDraft(md, { ...prompt(), lines: [3, 4] });
+  // An HTML page that happens to carry the attribute names no source lines anyone can use.
+  store.addDraft(html, { ...prompt(), lines: [3, 4] });
+  store.send(md);
+  store.send(html);
+  assert.deepEqual(
+    store.take(md).map((note) => note.lines),
+    [[3, 4]],
+  );
+  assert.deepEqual(
+    store.take(html).map((note) => "lines" in note),
+    [false],
+  );
+});
+
 test("uids are monotonic per session and extra fields are dropped", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);

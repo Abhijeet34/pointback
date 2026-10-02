@@ -22,7 +22,8 @@ const usage = `${name} ${version}
 Usage:
   ${name} <file.html> [--no-open] [--reopen] [--root <dir>]
                                               open a review session in the browser; assets
-                                              resolve within --root (default: the file's folder)
+                                              resolve within --root (default: the file's folder);
+                                              a .md or .markdown file is rendered, any other refused
   ${name} poll <file.html> [--timeout-ms N]    wait for the reviewer's feedback
   ${name} reply <file.html> <uid> --done|--declined|--question [--message TEXT]
   ${" ".repeat(name.length)}                                    tell the reviewer what became of note <uid>
