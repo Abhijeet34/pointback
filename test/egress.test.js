@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { cli, fixture, isolatedEnv, sendNote } from "./helpers/env.js";
+import { cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
+import { until } from "./helpers/wait.js";
 
 const trap = new URL("./helpers/egress-trap.mjs", import.meta.url).href;
 const lab = isolatedEnv();
@@ -18,7 +19,9 @@ test("the whole slice opens no connection that leaves the loopback interface", a
   const key = opened.json().session.url.match(/session\/([0-9a-f]{16})/)[1];
   const info = lab.serverInfo();
   const polling = cli(["poll", fixture, "--timeout-ms", "10000"], lab.env);
-  await new Promise((r) => setTimeout(r, 400));
+  await until(async () => (await presenceOf(info, key)) === "listening", {
+    what: "the poll to attach",
+  });
   await sendNote(info, key, { prompt: "x", selector: "#t", tag: "h1", text: "t" });
   assert.equal((await polling).json().status, "feedback");
   await cli(["stop"], lab.env);

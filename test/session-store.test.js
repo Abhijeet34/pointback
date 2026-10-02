@@ -744,6 +744,7 @@ test("each note keeps the time it was written, and an unusable stamp falls back 
   const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const written = new Date().toISOString();
+  // Not a wait for anything: it puts the clock past `written`, so an arrival stamp differs from it.
   await new Promise((resolve) => setTimeout(resolve, 10));
   store.queue(key, [
     { ...prompt("first"), at: written },

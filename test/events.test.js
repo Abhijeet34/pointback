@@ -9,6 +9,9 @@ import { SessionStore } from "../src/session-store.js";
 import { until } from "./helpers/wait.js";
 import { watchAvailable } from "./helpers/watch.js";
 
+/** fs.watch has no ready event, so a tab's watcher gets a moment before the file changes. */
+const armed = () => sleep(150);
+
 function lab() {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-events-"));
   const artifact = join(dir, "plan.html");
@@ -47,7 +50,7 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
     gone: false,
     drafts: [],
   });
-  await sleep(150);
+  await armed();
   writeFileSync(artifact, "<p>two</p>");
   // Waited for rather than slept past: how fast the platform's file watcher delivers is the
   // runner's business, and DEBOUNCE_MS * 4 was this assertion depending on it. Either line
@@ -146,13 +149,14 @@ test("a file the agent's poll finds gone comes back to every tab, even unchanged
   const watching = await watchAvailable();
   const { artifact, key, store, streams } = lab();
   const one = tab(streams, key);
-  await sleep(150);
+  await armed();
   // Moved away and straight back around the poll, so the watcher's debounce first runs with the
   // file present at the size and mtime it started with: it never saw the file leave, the tab did.
   renameSync(artifact, `${artifact}.away`);
   assert.equal((await store.waitForFeedback(key, 0)).status, "gone");
   renameSync(`${artifact}.away`, artifact);
   if (!watching) {
+    // A negative: nothing but the greeting and the poll's news may reach a tab that cannot watch.
     await sleep(200);
     assert.deepEqual(only(one.types(), ["reload-off"]), ["hello", "gone"], "no watching here");
     one.detach();
@@ -170,7 +174,7 @@ test("a deleted file is gone rather than a revision, its return reloads, and clo
   const watching = await watchAvailable();
   const { dir, artifact, key, streams } = lab();
   const one = tab(streams, key);
-  await sleep(150);
+  await armed();
   rmSync(artifact);
   if (watching) {
     await until(() => one.types().includes("gone"), {
@@ -184,6 +188,7 @@ test("a deleted file is gone rather than a revision, its return reloads, and clo
     });
     assert.deepEqual(one.types(), ["hello", "gone", "reload"]);
   } else {
+    // A negative: a tab that cannot watch hears nothing past its greeting and the failure.
     await sleep(200);
     assert.deepEqual(one.types(), ["hello", "reload-off"], "no watching here, so nothing more");
   }
@@ -192,6 +197,7 @@ test("a deleted file is gone rather than a revision, its return reloads, and clo
   const two = tab(streams, key);
   assert.equal(two.lines[0].gone, true);
   rmSync(dir, { recursive: true, force: true });
+  // A negative: the vanished directory's watcher must report, not throw, before the hub closes.
   await sleep(200);
   streams.closeAll();
   assert.equal(streams.size, 0);

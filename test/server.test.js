@@ -378,7 +378,9 @@ test("a Markdown file opens as a sandboxed page, and any other kind of file is r
 
 test("prompts queue, show in the chat, and reach one poller with anchors intact", async () => {
   const waiting = get(`/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=5000`);
-  await new Promise((r) => setTimeout(r, 50));
+  await until(async () => (await get(`/api/${key}/session`)).presence.state === "listening", {
+    what: "the poll to attach",
+  });
   const queued = await queueNotes(
     key,
     [{ prompt: "Shorter", selector: "#title", tag: "h1", text: "Rollout plan" }],
@@ -565,7 +567,10 @@ test("a poll whose connection dies before the reply redelivers the batch, never 
       resolve();
     });
   });
-  await new Promise((r) => setTimeout(r, 150));
+  // Answered is when the agent shows working; a poll before then would simply be the first one.
+  await until(async () => (await get(`/api/${k}/session`)).presence.state === "working", {
+    what: "the dropped poll to be answered",
+  });
   const again = await get(`/api/poll?file=${encodeURIComponent(file)}&timeoutMs=1000`);
   assert.equal(again.status, "feedback");
   assert.equal(again.prompts[0].prompt, "do not lose me");

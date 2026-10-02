@@ -15,8 +15,9 @@ import { join, relative } from "node:path";
 import { after, test } from "node:test";
 import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
-import { cli, fixture, isolatedEnv, sendNote } from "./helpers/env.js";
+import { cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
 import { assertPrivate } from "./helpers/private.js";
+import { until } from "./helpers/wait.js";
 
 const lab = isolatedEnv();
 after(() => lab.stop());
@@ -61,7 +62,9 @@ test("poll waits for feedback and returns it with its target intact", async () =
     .json()
     .session.url.match(/session\/([0-9a-f]{16})/)[1];
   const polling = cli(["poll", fixture, "--timeout-ms", "10000"], lab.env);
-  await new Promise((r) => setTimeout(r, 400));
+  await until(async () => (await presenceOf(info, key)) === "listening", {
+    what: "the poll to attach",
+  });
   const res = await sendNote(info, key, {
     prompt: "Shorter",
     selector: "#title",
@@ -296,8 +299,14 @@ test("--root resolves relative to where the agent is, and is refused where it me
 test("stop shuts the server down and reports when none runs", async () => {
   const info = lab.serverInfo();
   assert.deepEqual((await cli(["stop"], lab.env)).json(), { status: "stopped" });
-  await new Promise((r) => setTimeout(r, 200));
-  await assert.rejects(fetch(`http://127.0.0.1:${info.port}/health`));
+  await until(
+    () =>
+      fetch(`http://127.0.0.1:${info.port}/health`).then(
+        () => false,
+        () => true,
+      ),
+    { what: "the stopped server to stop answering" },
+  );
   assert.deepEqual((await cli(["stop"], lab.env)).json(), { status: "not-running" });
 });
 
