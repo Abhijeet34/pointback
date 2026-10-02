@@ -172,7 +172,11 @@ test(
     );
     await page.type("Make the title shorter");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    // The stream can draw the note while the card is still open, and a drag made then is not the
+    // reviewer's next gesture: they act once the card has closed.
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
 
     // A passage by mouse. The card is a chrome element, not the artifact's, so the reviewer's
     // instruction is typed in the chrome and the artifact never sends note text; the card opening
@@ -183,7 +187,9 @@ test(
     );
     await page.type("Name the queue in the first sentence");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 2");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 2",
+    );
 
     // Keyboard only from here. Adding a note hands focus back to the element in the artifact, so
     // Shift+Arrow grows a real selection there and Enter opens the chrome card to type the note.
@@ -201,7 +207,9 @@ test(
     );
     await page.type("Say which queue");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 3");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 3",
+    );
 
     // Five more stops reach the owner of the first step: the three header cells, then the first
     // body row's first two. A table is its cells; neither it nor a row is a stop of its own.
@@ -213,7 +221,9 @@ test(
     );
     await page.type("Priya is on leave that week");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 4");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 4",
+    );
 
     assert.ok(
       await page.eval("document.getElementById('marks').getBoundingClientRect().height >= 72"),
@@ -672,7 +682,9 @@ test(
     const typed = await page.eval("document.getElementById('cardText').value");
     const submitted = Date.now();
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
     assert.equal(await page.eval("document.querySelector('.mark .mark-note').textContent"), typed);
     // The note is kept by the server as a draft, and only with the fields a note has.
     const { port, token } = lab.serverInfo();
@@ -1112,7 +1124,9 @@ test(
     );
     await page.type("Cut this line");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
     assert.equal(
       await page.eval("document.querySelector('.mark:not(.sent) .mark-text').textContent"),
       "Bottom of the revised plan",
@@ -1210,14 +1224,18 @@ async function openReview(url) {
   return { page, artifact };
 }
 
-/** Adds a note the way a reviewer does: point at the element, type, press Enter. */
+/**
+ * Adds a note the way a reviewer does: point at the element, type, press Enter. The stream can
+ * draw the note before the add's own answer closes the card, and the page ignores what it is
+ * pointed at while a card is open, so the next gesture waits for the card to close as well.
+ */
 async function noteOn(page, artifact, selector, text) {
   const unsent = "document.querySelectorAll('.mark:not(.sent)').length";
   const before = Number(await page.eval(unsent));
   await pointAt(page, artifact, selector);
   await page.type(text);
   await page.enter();
-  await page.waitFor(`${unsent} === ${before + 1}`);
+  await page.waitFor(`document.getElementById('card').hidden && ${unsent} === ${before + 1}`);
 }
 
 /** Clicks an element in the artifact with Annotate on, and waits for the card to take focus. */
@@ -1741,6 +1759,67 @@ test(
   },
 );
 
+test(
+  "a tab handed the review back while its send is in flight never offers those notes again",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { url } = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(url);
+    await noteOn(page, artifact, "#title", "Make the title shorter");
+    await noteOn(page, artifact, "#p1", "Say how long each step takes");
+    await page.eval(`(() => {
+      const send = document.getElementById("send");
+      window.offered = [];
+      new MutationObserver(() => {
+        if (!send.disabled && send.textContent !== "Send to agent") offered.push(send.textContent);
+      }).observe(send, { attributes: true, childList: true, characterData: true, subtree: true });
+    })()`);
+    // The send is held before the server sees it, so the drafts are all still there when another
+    // tab on the review opens and closes and this one is told it is current again.
+    const held = [];
+    const hold = (message) => {
+      if (message.sessionId === page.sessionId && message.method === "Fetch.requestPaused")
+        held.push(message.params.requestId);
+    };
+    page.browser.listeners.push(hold);
+    await page.send("Fetch.enable", { patterns: [{ urlPattern: "*/prompts" }] });
+    try {
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.getElementById('send').disabled");
+      await until(() => held.length === 1, { what: "the send to reach the network" });
+      const second = await browser.page(url);
+      await page.waitFor(
+        "!document.getElementById('notice').hidden && document.getElementById('noticeText').textContent.includes('took over')",
+      );
+      await second.close();
+      await page.front();
+      await page.waitFor("document.getElementById('notice').hidden");
+      assert.deepEqual(
+        JSON.parse(
+          await page.eval(
+            "JSON.stringify([document.getElementById('send').disabled, window.offered])",
+          ),
+        ),
+        [true, []],
+        "Send stays shut over notes already on their way",
+      );
+    } finally {
+      for (const requestId of held) await page.send("Fetch.continueRequest", { requestId });
+      await page.send("Fetch.disable");
+      page.browser.listeners.splice(page.browser.listeners.indexOf(hold), 1);
+    }
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 2");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => p.uid),
+      [1, 2],
+    );
+    assert.deepEqual(JSON.parse(await page.eval("JSON.stringify(window.offered)")), []);
+    await page.close();
+  },
+);
+
 /**
  * Holds every chunk of the tab's event stream until the returned function lets it through, so an
  * answer the tab gets over HTTP lands first. The chrome's reader looks `read` up on each call, so
@@ -2017,7 +2096,9 @@ test(
     const note = `Pin it to ${"3f9a2c7e1b5d8f0a".repeat(4)}`;
     await page.type(note);
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
     const margin = await usable("with a note in the margin", [".mark", "#send"]);
 
     const [sendLeft, sendTop, sendRight, sendBottom] = margin["#send"];
@@ -2832,8 +2913,19 @@ test(
     await page.send("CSS.enable");
     const { root } = await page.send("DOM.getDocument");
     const painted = async (selector) => {
-      const { nodeId } = await page.send("DOM.querySelector", { nodeId: root.nodeId, selector });
-      const { fonts } = await page.send("CSS.getPlatformFontsForNode", { nodeId });
+      // A render that lands first, such as Send relabelled by an event, replaces the text node,
+      // and the new one reports no fonts until it has painted, so this waits for the paint.
+      const fonts = await until(
+        async () => {
+          const { nodeId } = await page.send("DOM.querySelector", {
+            nodeId: root.nodeId,
+            selector,
+          });
+          const { fonts } = await page.send("CSS.getPlatformFontsForNode", { nodeId });
+          return fonts.length > 0 && fonts;
+        },
+        { what: `${selector} to paint its text` },
+      );
       // The face that sets the text is the one drawing most of its glyphs: a symbol such as ⌘ is
       // outside the latin subset and falls back. A variable face reports its named instance,
       // "Archivo SemiBold", so the family is the prefix.
@@ -2896,7 +2988,9 @@ test(
     await page.waitFor("document.activeElement.id === 'cardText'");
     await page.type("The neutral one");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
     const margin = JSON.parse(
       await page.eval(
         "JSON.stringify([...document.querySelectorAll('.mark .mark-target')].map((e) => e.textContent))",
@@ -2987,7 +3081,7 @@ async function noteOnInstall(page, artifact, text) {
   );
   await page.type(text);
   await page.enter();
-  await page.waitFor(`${unsent} === ${before + 1}`);
+  await page.waitFor(`document.getElementById('card').hidden && ${unsent} === ${before + 1}`);
   return selector;
 }
 

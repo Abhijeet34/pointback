@@ -69,8 +69,9 @@ let liveReload = true;
 let connection = "live";
 let editing = false;
 let deferredReload = false;
-// A send is in flight: Send stays shut until the stream reports the notes sent (or the send fails).
-let sending = false;
+// The ids of the notes a send has in flight: Send stays shut until the stream reports them sent,
+// a hello no longer lists them as drafts, or the send fails.
+let sending = /** @type {string[] | null} */ (null);
 let lastScroll = null;
 let workingTimer = null;
 let stream = null;
@@ -176,7 +177,8 @@ function sync(state) {
   // The sent notes come with every hello, so a reply that landed while this page was away shows.
   chat = state.chat;
   pending = state.drafts;
-  sending = false;
+  // A hello can land mid-send, before the server has the send, and still lists its notes.
+  if (sending && !pending.some((draft) => sending.includes(draft.id))) sending = null;
   draftsHeard += 1;
   marksDirty = true;
   // A gone file has no page to load; the last one shown stays up under the notice.
@@ -307,7 +309,7 @@ function apply(event) {
     // The notes a send moved arrive here, and so does the end of "Sending…".
     if (event.sent) {
       chat.push(...event.sent);
-      sending = false;
+      sending = null;
     }
     marksDirty = true;
   } else if (event.type === "reply") {
@@ -361,7 +363,7 @@ function render() {
   const replied = chat.length > 0 && chat.every((entry) => entry.reply);
   // An event or the POST's own answer can land mid-send while the notes still list as unsent;
   // Send must not offer them again in that gap.
-  sendButton.disabled = sending || count === 0 || fileGone || offline;
+  sendButton.disabled = sending !== null || count === 0 || fileGone || offline;
   sendButton.textContent = sending
     ? "Sending…"
     : fileGone
@@ -1043,7 +1045,7 @@ sendForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (pending.length === 0) return;
   if (!(await saveEdit())) return;
-  sending = true;
+  sending = pending.map((draft) => draft.id);
   problem = null;
   render();
   try {
@@ -1053,7 +1055,7 @@ sendForm.addEventListener("submit", async (event) => {
     await api("POST", `/api/${key}/prompts`);
   } catch (error) {
     problem = `Could not send: ${error.message}`;
-    sending = false;
+    sending = null;
     notesChanged();
   }
 });
