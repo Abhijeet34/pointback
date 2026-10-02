@@ -253,6 +253,28 @@ test("a missing file argument or file is an error exit, not a stack trace", asyn
   assert.match(noFile.stderr, /^error: no such file/);
 });
 
+test("--root resolves relative to where the agent is, and is refused where it means nothing", async () => {
+  const repo = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-cli-root-"));
+  mkdirSync(join(repo, "sheets"));
+  const sheet = join(repo, "sheets", "a.html");
+  writeFileSync(sheet, "<p>a</p>");
+  const opened = await cli([sheet, "--root", relative(process.cwd(), repo)], lab.env);
+  assert.equal(opened.code, 0, opened.stderr);
+  const { session } = opened.json();
+  const info = lab.serverInfo();
+  const bootstrap = await fetch(session.url.replace(/\/session\/([^#]+)#.*$/, "/api/$1/session"), {
+    headers: { authorization: `Bearer ${info.token}` },
+  }).then((r) => r.json());
+  assert.match(bootstrap.artifactUrl, /\/sheets\/a\.html$/, "the page sits below the root");
+
+  const outside = await cli([sheet, "--root", join(repo, "sheets", "a.html")], lab.env);
+  assert.equal(outside.code, 1);
+  assert.match(outside.stderr, /^error: root is not a directory/);
+  const poll = await cli(["poll", sheet, "--root", repo], lab.env);
+  assert.equal(poll.code, 1);
+  assert.match(poll.stderr, /^error: --root applies only when opening a review/);
+});
+
 test("stop shuts the server down and reports when none runs", async () => {
   const info = lab.serverInfo();
   assert.deepEqual((await cli(["stop"], lab.env)).json(), { status: "stopped" });

@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -172,6 +180,93 @@ test("traversal over the wire is refused, dot segments and encodings included", 
       `leaked content for ${path}`,
     );
   }
+});
+
+/**
+ * A design system's layout: a sheet two folders down that links `../components.css` and
+ * `../../exports/variables.css`, a secret beside the repository, and two symlinks inside the
+ * repository that lead out to it. The repository is also reachable through a symlinked alias.
+ */
+function repoLab() {
+  const base = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-root-"));
+  const repo = join(base, "repo");
+  const sheets = join(repo, "components", "sheets");
+  mkdirSync(sheets, { recursive: true });
+  mkdirSync(join(repo, "exports"));
+  const sheet = join(sheets, "actions.html");
+  writeFileSync(sheet, '<link rel="stylesheet" href="../components.css"><p>sheet</p>');
+  writeFileSync(join(repo, "components", "components.css"), ".button{}");
+  writeFileSync(join(repo, "exports", "variables.css"), ":root{--hw-ink:#111}");
+  writeFileSync(join(base, "secret.txt"), "SECRET");
+  symlinkSync(join(base, "secret.txt"), join(sheets, "leak.css"));
+  symlinkSync(base, join(repo, "up"));
+  symlinkSync(repo, join(base, "alias"));
+  return { base, repo, sheet };
+}
+
+/** What a browser fetches for `href` written in the page at `pageUrl`: dot segments resolved first. */
+const linked = (pageUrl, href) => new URL(href, base + pageUrl).pathname;
+
+test("assets outside the file's folder load only from a named root, which holds the file", async () => {
+  const { base: outside, repo, sheet } = repoLab();
+  const opened = await post("/api/sessions", { file: sheet });
+  const plain = (await get(`/api/${opened.key}/session`)).artifactUrl;
+  assert.match(plain, /\/actions\.html$/, "without a root the page sits at its folder's top");
+  assert.equal(await status(linked(plain, "../components.css")), 404, "today's default is kept");
+
+  // Named through a symlinked alias, the root is stored by its canonical spelling.
+  const widened = await post("/api/sessions", { file: sheet, root: join(outside, "alias") });
+  assert.equal(widened.key, opened.key, "a root is a setting of the review, not another review");
+  const page = (await get(`/api/${opened.key}/session`)).artifactUrl;
+  assert.match(page, /\/components\/sheets\/actions\.html$/);
+  for (const [href, body] of [
+    ["../components.css", ".button{}"],
+    ["../../exports/variables.css", ":root{--hw-ink:#111}"],
+  ]) {
+    const res = await fetch(base + linked(page, href));
+    assert.equal(res.status, 200, href);
+    assert.equal(await res.text(), body, href);
+  }
+  const html = await fetch(base + page).then((r) => r.text());
+  assert.match(html, /<script src="\/sdk.js"><\/script>/, "the page itself is still injected");
+
+  // Out of the root: by dot segments the browser resolves, by ones it sends raw, by encodings,
+  // and by a symlink inside the root whose target is outside it.
+  const top = dirname(dirname(dirname(page)));
+  for (const path of [
+    linked(page, "../../../secret.txt"),
+    `${top}/../secret.txt`,
+    `${top}/..%2fsecret.txt`,
+    `${top}/%2e%2e/secret.txt`,
+    `${top}/components/sheets/leak.css`,
+    `${top}/up/secret.txt`,
+  ]) {
+    const reply = await raw(path);
+    assert.match(reply, /^HTTP\/1\.1 404/, path);
+    assert.ok(!reply.includes("SECRET"), `leaked the secret for ${path}`);
+  }
+
+  // A root that does not hold the file, is not a folder, or does not exist is refused at open.
+  const refused = async (root) =>
+    fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ file: sheet, root }),
+    }).then(async (r) => [r.status, (await r.json()).error]);
+  assert.deepEqual(await refused(join(repo, "exports")), [
+    400,
+    `${realpathSync.native(sheet)} is not inside root ${realpathSync.native(join(repo, "exports"))}`,
+  ]);
+  assert.equal((await refused(sheet))[0], 400, "a file is not a root");
+  assert.equal((await refused(join(repo, "nope")))[0], 404);
+  assert.equal((await refused(""))[0], 400);
+  assert.equal((await refused(7))[0], 400);
+
+  // Opening again without a root goes back to the file's own folder.
+  await post("/api/sessions", { file: sheet });
+  const again = (await get(`/api/${opened.key}/session`)).artifactUrl;
+  assert.equal(again, plain);
+  assert.equal(await status(linked(again, "../components.css")), 404);
 });
 
 test("prompts queue, show in the chat, and reach one poller with anchors intact", async () => {

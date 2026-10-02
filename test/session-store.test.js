@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { limits } from "../src/limits.js";
 import { EPOCH_PATTERN, SessionStore } from "../src/session-store.js";
@@ -400,6 +400,23 @@ test("a session stored before epochs gets one on load, and keeps it across resta
   assert.deepEqual(await upgraded.waitForFeedback(key, 10, undefined, { uid: 1, epoch }), {
     status: "waiting",
   });
+});
+
+test("a session stored before roots resolves its assets in the file's own folder", () => {
+  const { file, artifact } = lab();
+  const { key } = new SessionStore(file).open(artifact);
+  const stored = JSON.parse(readFileSync(file, "utf8"));
+  delete stored.sessions[key].root;
+  writeFileSync(file, JSON.stringify(stored));
+
+  const upgraded = new SessionStore(file);
+  assert.equal(upgraded.get(key).root, dirname(realpathSync.native(artifact)));
+  assert.equal(upgraded.status(key).artifactUrl.split("/").pop(), "plan.html");
+  assert.equal(
+    new SessionStore(file).get(key).root,
+    upgraded.get(key).root,
+    "and it was persisted",
+  );
 });
 
 test("a moved file's session still delivers what it holds, then answers gone and tells the tab", async () => {
