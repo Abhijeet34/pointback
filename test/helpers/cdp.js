@@ -440,9 +440,11 @@ class Page {
       const { id, auxData } = params.context;
       if (auxData?.isDefault) this.contexts.set(`${sessionId} ${auxData.frameId}`, id);
     } else if (method === "Runtime.executionContextDestroyed" && ours) {
-      for (const [key, id] of this.contexts) if (id === params.executionContextId) this.contexts.delete(key);
+      for (const [key, id] of this.contexts)
+        if (id === params.executionContextId) this.contexts.delete(key);
     } else if (method === "Runtime.executionContextsCleared" && ours) {
-      for (const key of this.contexts.keys()) if (key.startsWith(`${sessionId} `)) this.contexts.delete(key);
+      for (const key of this.contexts.keys())
+        if (key.startsWith(`${sessionId} `)) this.contexts.delete(key);
     }
   }
 
@@ -457,7 +459,8 @@ class Page {
     }
     const isPage = (url) => /\/artifact\//.test(url);
     for (const [session, tree] of trees) {
-      if (session !== this.sessionId && isPage(tree.frame.url)) return new Page(this.browser, session);
+      if (session !== this.sessionId && isPage(tree.frame.url))
+        return new Page(this.browser, session);
     }
     // The outermost frame at a page's address; the page's own frames are below it.
     const outermost = (node) =>

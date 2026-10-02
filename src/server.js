@@ -206,11 +206,17 @@ async function route(req, res, ctx) {
   const chrome = pathname.match(/^\/session\/([^/]+)$/);
   if (req.method === "GET" && chrome) {
     ctx.store.get(chrome[1]);
-    res.writeHead(200, { ...chromeHeaders(req.headers.host), "content-type": "text/html; charset=utf-8" });
+    res.writeHead(200, {
+      ...chromeHeaders(req.headers.host),
+      "content-type": "text/html; charset=utf-8",
+    });
     return res.end(chromeHtml);
   }
   if (req.method === "GET" && pathname === "/wrapper.html") {
-    res.writeHead(200, { ...wrapperHeaders(req.headers.host), "content-type": "text/html; charset=utf-8" });
+    res.writeHead(200, {
+      ...wrapperHeaders(req.headers.host),
+      "content-type": "text/html; charset=utf-8",
+    });
     return res.end(wrapperHtml);
   }
 

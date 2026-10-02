@@ -835,7 +835,15 @@ test(
         `after ${close}${selfFocus ? ", with the page taking the focus," : ""} no card opens and nothing is sent`,
       );
       const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
-      assert.equal(polled.status, "waiting", "the agent receives nothing the reviewer did not send");
+      assert.equal(
+        polled.status,
+        "waiting",
+        "the agent receives nothing the reviewer did not send",
+      );
+      // Chromium keeps the chrome's keys and clicks out of the page, so it is trusted without the
+      // gate Firefox and WebKit get: the reviewer's next click, straight after, opens the card. A
+      // Chromium that ever shares them makes the case above red rather than being trusted silently.
+      await pointAt(page, artifact, "#p3");
       await page.close();
     }
   },

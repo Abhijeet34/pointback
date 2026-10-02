@@ -420,7 +420,7 @@ function render() {
                       ? "Your agent is working on your last notes. Anything you send now waits for its next check."
                       : chat.length === 0 && count === 0
                         ? annotate
-                          ? `Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, ${SEND_KEY} sends.`
+                          ? `Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, ${SEND_KEY} sends.${keysShared ? " In this browser, a click in the page is heard only 5 seconds after your last key outside it." : ""}`
                           : "Turn on Annotate, or press A, to point at the page."
                         : count === 0
                           ? "Every note has been sent."
@@ -872,9 +872,20 @@ function followAnnotate() {
 
 // A page under review can post at any moment. What it proposes is acted on only straight after the
 // reviewer's own click or key inside it, so it can neither pop the card nor move focus by itself.
-// `active` is the wrapper's own activation, which a click or key in this chrome never sets: the
-// chrome's activation would be the reviewer's Enter or Cancel in the card, there for the page to spend.
-const gesture = (active) => active === true && document.activeElement === frame;
+// `active` is the wrapper's own activation, which a click or key in this chrome never sets in
+// Chromium. Firefox and WebKit set it on a key here, which would hand the page the reviewer's Enter in
+// the card, so there, and in any engine not known to be Chromium, nothing is heard for ACTIVATION_MS
+// after one. docs/THREAT-MODEL.md says what each engine's trust rests on.
+const ACTIVATION_MS = 5000;
+// Not in every engine's typings, being Chromium's own.
+const agent = /** @type {{ userAgentData?: { brands: { brand: string }[] } }} */ (navigator);
+const keysShared = !agent.userAgentData?.brands.some(({ brand }) => brand === "Chromium");
+let chromeKeyAt = -Infinity;
+window.addEventListener("keydown", () => (chromeKeyAt = performance.now()), true);
+const gesture = (active) =>
+  active === true &&
+  document.activeElement === frame &&
+  !(keysShared && performance.now() - chromeKeyAt < ACTIVATION_MS);
 
 // The note card is composed in the chrome, from a target the artifact proposed. The artifact
 // sends the fields that describe what the reviewer pointed at, and never the note text, so a
