@@ -697,8 +697,8 @@
   // opens with a code chip is marked where its line ends rather than where the chip does, and a
   // control by its box, which is what the reviewer sees of it. Where that spot would cover words, a
   // control, a picture, a code block or another pin, as it does between paragraphs closer than a pin
-  // is tall, the pin moves beside the line's end, under it, before its start, then to the right of
-  // the block; failing all of those, to whichever covers least.
+  // is tall, the pin moves beside the line's end, before its start, under its end, then to the right
+  // of the block; failing all of those, to whichever covers least.
   // A table cell has no room above its words, so its pin stays inside the cell, off the rows around it.
   function pinSpot(anchor, avoid, bounds) {
     let rects;
@@ -735,8 +735,8 @@
       // The pin's point is its lower left corner, so it stands on the line's top right corner.
       { left: right + 1, top: lineTop - PIN },
       { left: right + GAP, top: beside },
-      { left: right - PIN, top: lineBottom + GAP },
       { left: Math.min(...line.map((r) => r.left)) - PIN - GAP, top: beside },
+      { left: right - PIN, top: lineBottom + GAP },
       { left: element.getBoundingClientRect().right + GAP, top: beside },
     ].map(({ left, top }) => ({
       left: Math.min(Math.max(left, bounds.left), bounds.right - PIN),
