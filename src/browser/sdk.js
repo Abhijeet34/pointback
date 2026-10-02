@@ -84,17 +84,19 @@
   let activePin = 0;
   let missingSent = "";
 
-  // The parent is pointback's wrapper frame, whose origin is opaque, so "*" is the only name for it;
-  // it relays this to the chrome stamped with whether the reviewer's own gesture is live.
-  const send = (message) => parent.postMessage({ ...message, nonce }, "*");
+  // The parent is pointback's wrapper frame, which relays this to the chrome stamped with whether the
+  // reviewer's own gesture is live. This page's own origin is opaque, but its address is not.
+  const { hostname, port } = new URL(location.href);
+  const wrapperOrigin = `http://${hostname === "localhost" ? "127.0.0.1" : "localhost"}:${port}`;
+  const send = (message) => parent.postMessage({ ...message, nonce }, wrapperOrigin);
   // SVG elements report a lowercase tagName, so every comparison against the lists above goes through this.
   const tagName = (element) => element.tagName.toUpperCase();
   const squash = (text) => text.replace(/\s+/g, " ");
   const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
   window.addEventListener("message", (event) => {
-    // The chrome's messages arrive through the wrapper, which is opaque-origin like this page.
-    if (event.source !== parent || event.origin !== "null") return;
+    // The chrome's messages arrive through the wrapper, served under the loopback name this page is not.
+    if (event.source !== parent || event.origin !== wrapperOrigin) return;
     const data = event.data;
     if (data?.type === "init") {
       nonce = data.nonce;

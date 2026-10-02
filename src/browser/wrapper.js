@@ -1,16 +1,17 @@
 // The frame between the chrome and the page under review, and the one witness the chrome trusts
-// about the reviewer's gestures. The chrome loads it as a data: document, an opaque origin of its
-// own, so a click or key in the chrome never activates it while one in the page always does (HTML's
-// activation notification reaches a document's ancestors and its same-origin descendants only).
+// about the reviewer's gestures. It is served under the loopback name the chrome is not, so it is
+// another origin, and a click or key in the chrome never activates it while one in the page always
+// does (HTML's activation notification reaches a document's ancestors and its same-origin descendants
+// only).
 // Everything the page posts reaches the chrome through here, stamped with this frame's own
 // `navigator.userActivation`, which the page can neither read nor forge. docs/THREAT-MODEL.md
 // names what that check still allows.
+const chromeOrigin = `http://${location.hostname === "localhost" ? "127.0.0.1" : "localhost"}:${location.port}`;
 let page = /** @type {HTMLIFrameElement | null} */ (null);
-// The parent is always the chrome that made this frame; a data: document has no origin to name it by.
-const toChrome = (message) => parent.postMessage(message, "*");
+const toChrome = (message) => parent.postMessage(message, chromeOrigin);
 
 window.addEventListener("message", (event) => {
-  if (event.source === parent) {
+  if (event.source === parent && event.origin === chromeOrigin) {
     if (event.data?.type === "show") show(event.data.url);
     else page?.contentWindow?.postMessage(event.data, "*");
   } else if (page && event.source === page.contentWindow) {

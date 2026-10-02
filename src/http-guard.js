@@ -86,16 +86,48 @@ const COMMON_HEADERS = {
   "cache-control": "no-store",
 };
 
-/** The chrome page runs only this server's own scripts, styles and fonts, and can never be framed. */
-export const CHROME_HEADERS = {
-  ...COMMON_HEADERS,
-  "content-security-policy":
-    "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self'; frame-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-  "x-frame-options": "DENY",
-  "cross-origin-opener-policy": "same-origin",
-  "cross-origin-resource-policy": "same-origin",
-};
+/**
+ * The loopback name the other of the chrome and its wrapper frame is served under. The wrapper must
+ * be a different origin from the chrome, so that no click or key in the chrome activates it, and a
+ * different site, so that Chromium gives it a process of its own; the daemon answers to both names on
+ * one port, so each is served under the name the other is not.
+ */
+export function pairedHost(host) {
+  const [, name, port] = /^(.*):(\d+)$/.exec(host.toLowerCase()) ?? [];
+  return `${name === "localhost" ? "127.0.0.1" : "localhost"}:${port}`;
+}
+
+/**
+ * The chrome page runs only this server's own scripts, styles and fonts, frames only its wrapper,
+ * and can never be framed. `host` is the request's Host header, which `assertHost` already held to
+ * the loopback names.
+ */
+export function chromeHeaders(host) {
+  return {
+    ...COMMON_HEADERS,
+    "content-security-policy":
+      "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; " +
+      `connect-src 'self'; frame-src http://${pairedHost(host)}; base-uri 'none'; form-action 'none'; ` +
+      "frame-ancestors 'none'",
+    "x-frame-options": "DENY",
+    "cross-origin-opener-policy": "same-origin",
+    "cross-origin-resource-policy": "same-origin",
+  };
+}
+
+/**
+ * The wrapper frame runs only its own script and sheet, frames only the page under review, which is
+ * served under the chrome's name, and only the chrome may frame it.
+ */
+export function wrapperHeaders(host) {
+  const chrome = `http://${pairedHost(host)}`;
+  return {
+    ...COMMON_HEADERS,
+    "content-security-policy":
+      `default-src 'none'; script-src 'self'; style-src 'self'; frame-src ${chrome}; ` +
+      `base-uri 'none'; form-action 'none'; frame-ancestors ${chrome}`,
+  };
+}
 
 /**
  * The artifact keeps scripts but loses its origin, so it can neither read the chrome nor

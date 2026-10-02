@@ -200,15 +200,16 @@ function show() {
   deferredReload = false;
   shownRevision = revision;
   shownUrl = session.artifactUrl;
-  // Absolute: the wrapper's own address is a data: URL, against which nothing relative resolves.
+  // Absolute: the wrapper is served under the other loopback name, and the page under this one.
   showing = new URL(`${shownUrl}?r=${revision}`, location.href).href;
-  if (wrapperReady) frame.contentWindow.postMessage({ type: "show", url: showing }, "*");
+  if (wrapperReady) frame.contentWindow.postMessage({ type: "show", url: showing }, wrapperOrigin);
 }
 
 // The wrapper frame loads once with this page and is never navigated; the page under review is
 // shown inside it, and an address asked for before the wrapper listens is sent when it does.
 let wrapperReady = false;
 let showing = "";
+const wrapperOrigin = `http://${location.hostname === "localhost" ? "127.0.0.1" : "localhost"}:${location.port}`;
 
 /**
  * Reads the stream until it ends, then reconnects for as long as nothing answers: a daemon that
@@ -851,8 +852,8 @@ function describe(entry) {
 const locatorOf = (note) => [kindOf(note), describe(note)].filter(Boolean).join(" · ");
 
 function post(message) {
-  // The artifact has an opaque origin, so "*" is the only target that can name it.
-  frame.contentWindow?.postMessage({ ...message, nonce }, "*");
+  // To the wrapper, which hands it on to the page under review.
+  frame.contentWindow?.postMessage({ ...message, nonce }, wrapperOrigin);
 }
 
 function setAnnotate(on) {
@@ -930,12 +931,12 @@ function placeCard(rects) {
 }
 
 window.addEventListener("message", (event) => {
-  // Only the wrapper this page framed is heard, and it is opaque-origin; the page under review
-  // reaches the chrome only through it, never directly.
-  if (event.source !== frame.contentWindow || event.origin !== "null") return;
+  // Only the wrapper this page framed is heard; the page under review reaches the chrome only through
+  // it, never directly.
+  if (event.source !== frame.contentWindow || event.origin !== wrapperOrigin) return;
   if (event.data?.type === "wrapper") {
     wrapperReady = true;
-    if (showing) frame.contentWindow.postMessage({ type: "show", url: showing }, "*");
+    if (showing) frame.contentWindow.postMessage({ type: "show", url: showing }, wrapperOrigin);
     return;
   }
   if (event.data?.type === "loaded") return pageLoaded();
@@ -1174,14 +1175,9 @@ cardText.addEventListener("keydown", (event) => {
 });
 cardCancel.addEventListener("click", () => closeCompose(true));
 
-// The wrapper is a data: document, which is opaque-origin, so no click or key in this chrome activates
-// it; and, unlike a sandboxed one, Chromium keeps it in this page's process, which leaves the page
-// under review an out-of-process frame whose timers run at full rate. A sandboxed wrapper shared the
-// page's process, and the page's timers fired once a second in about half the runs measured. It is
-// set from here rather than the markup, so it cannot announce itself before this script listens.
-frame.src = `data:text/html;charset=utf-8,${encodeURIComponent(
-  `<!doctype html><html lang="en"><meta name="color-scheme" content="dark">` +
-    `<title>The page under review</title><link rel="stylesheet" href="${location.origin}/wrapper.css">` +
-    `<body><script src="${location.origin}/wrapper.js"></script></body></html>`,
-)}`;
+// The wrapper is served under the loopback name this page is not, which makes it another origin, so
+// no click or key in this chrome activates it, and another site, so Chromium gives it a process of
+// its own and the page under review stays an out-of-process frame whose timers run at full rate.
+// It is set from here rather than the markup, so it cannot announce itself before this script listens.
+frame.src = `${wrapperOrigin}/wrapper.html`;
 boot();

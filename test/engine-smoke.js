@@ -25,7 +25,8 @@ async function smoke(engine) {
     await page.waitForFunction(() => document.body.dataset.ready === "1");
     // Annotate starts on; the click below is the reviewer's gesture the chrome waits for.
     await page.waitForFunction(() => document.body.dataset.annotate === "1");
-    await page.frameLocator("#artifact").locator("#title").click();
+    // The page under review sits in pointback's wrapper frame, inside the chrome's own.
+    await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
     await page.waitForFunction(() => document.activeElement?.id === "cardText");
     await page.keyboard.type(NOTE);
     await page.keyboard.press("Enter");
