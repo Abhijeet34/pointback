@@ -257,7 +257,7 @@ The `engines` job in `.github/workflows/cross-platform.yml` runs it every Monday
 The DevTools harness above cannot reach either engine: WebKit speaks its own inspector protocol and Firefox removed its CDP support in Firefox 141 in favour of WebDriver BiDi.
 Playwright can, through `playwright-core`, one package with no dependencies and no install script; it fetches nothing until `npx playwright-core install webkit firefox` asks it to.
 It is a dev dependency used by `test/engine-smoke.js` alone, so the Chromium suite keeps its own harness and the tarball is unchanged.
-Playwright's WebKit is the engine Safari is built on rather than Safari itself; driving real Safari takes `safaridriver`, which runs headed only and needs a driver per engine.
+Playwright's WebKit is the engine Safari is built on rather than Safari itself; driving real Safari takes `safaridriver`, which has no headless mode, and Firefox would then need `geckodriver` beside it.
 
 The product name lives in `package.json` and is derived everywhere else through `src/identity.js`; `test/identity.test.js` fails if it appears anywhere else under `src/`.
 The mark is `src/browser/icon.svg`, a point and the return that carries it back, drawn on a 16px grid so the tab icon stays crisp; it follows the tab strip's light or dark scheme, and the same paths are inlined in `chrome.html` beside the wordmark.
