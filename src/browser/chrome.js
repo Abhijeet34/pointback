@@ -593,8 +593,10 @@ window.addEventListener("message", (event) => {
     // A proposal is heard only while the reviewer has Annotate on and no card open: the page can
     // send one at any moment, and must not pop the card, take focus, or wipe a note being typed.
     if (!annotate || composing) return;
+    // Only what the reviewer pointed at: `answers` is the chrome's to set, from the margin.
+    const { selector, tag, text, target } = data.note;
     openCompose(
-      data.note,
+      { selector, tag, text, target },
       typeof data.label === "string" ? data.label : "",
       data.structure,
       data.rects,
