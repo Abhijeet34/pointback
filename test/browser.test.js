@@ -172,7 +172,11 @@ test(
     );
     await page.type("Make the title shorter");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    // The stream can draw the note while the card is still open, and a drag made then is not the
+    // reviewer's next gesture: they act once the card has closed.
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
 
     // A passage by mouse. The card is a chrome element, not the artifact's, so the reviewer's
     // instruction is typed in the chrome and the artifact never sends note text; the card opening
@@ -183,7 +187,9 @@ test(
     );
     await page.type("Name the queue in the first sentence");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 2");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 2",
+    );
 
     // Keyboard only from here. Adding a note hands focus back to the element in the artifact, so
     // Shift+Arrow grows a real selection there and Enter opens the chrome card to type the note.
@@ -201,7 +207,9 @@ test(
     );
     await page.type("Say which queue");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 3");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 3",
+    );
 
     // Five more stops reach the owner of the first step: the three header cells, then the first
     // body row's first two. A table is its cells; neither it nor a row is a stop of its own.
@@ -213,26 +221,32 @@ test(
     );
     await page.type("Priya is on leave that week");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 4");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 4",
+    );
 
     assert.ok(
       await page.eval("document.getElementById('marks').getBoundingClientRect().height >= 72"),
       "notes stay visible at 800x600",
     );
 
-    const polling = cli(["poll", fixture, "--timeout-ms", "10000"], lab.env);
-    await new Promise((r) => setTimeout(r, 400));
-    // Every state Send passes through from the press to the server's answer, as it paints.
+    // Every state Send passes through from the press to the notes showing sent, as it paints.
     await page.eval(`(() => {
       const send = document.getElementById("send");
       globalThis.sendStates = [];
       new MutationObserver(() => sendStates.push([send.disabled, send.textContent]))
         .observe(send, { attributes: true, childList: true, characterData: true, subtree: true });
     })()`);
+    // The reviewer sees the notes turn sent, and only then does the agent ask: a poll that waits
+    // for nothing gets the whole batch. A poll started first, on its own 10 s clock, missed a send a
+    // busy browser delivered late, and stalled this test in 13 of 40 runs in one loaded window.
     const sentAt = Date.now();
     await page.eval("document.getElementById('send').click()");
-    const polled = (await polling).json();
-    const roundTripMs = Date.now() - sentAt;
+    await page.waitFor(
+      "document.querySelectorAll('.mark.sent').length === 4 && document.querySelectorAll('.mark:not(.sent)').length === 0",
+    );
+    const sentMs = Date.now() - sentAt;
+    const polled = (await cli(["poll", fixture, "--timeout-ms", "0"], lab.env)).json();
 
     assert.equal(polled.status, "feedback");
     assert.deepEqual(
@@ -324,7 +338,7 @@ test(
     const offered = JSON.parse(await page.eval("JSON.stringify(sendStates)")).filter(
       ([disabled]) => !disabled,
     );
-    assert.deepEqual(offered, [], "Send stays shut from the press to the server's answer");
+    assert.deepEqual(offered, [], "Send stays shut from the press until the notes show sent");
     // Working is a still dot, and nothing on the page loops. Ask for motion explicitly, or a
     // machine with Reduce Motion on would pass this with the old 1.4 s pulse still in the
     // stylesheet. A finite house transition, such as Send's colour settling after the press, is
@@ -412,7 +426,7 @@ test(
     );
     console.log(
       `browser slice: page usable in ${readyMs} ms; four notes composed in the chrome by mouse and ` +
-        `keyboard; send to poll return ${roundTripMs} ms; ` +
+        `keyboard; Send to notes shown sent ${sentMs} ms; ` +
         `page structure ${structureBytes} B against ${referenceBytes} B in the reference's format`,
     );
   },
@@ -668,7 +682,9 @@ test(
     const typed = await page.eval("document.getElementById('cardText').value");
     const submitted = Date.now();
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
     assert.equal(await page.eval("document.querySelector('.mark .mark-note').textContent"), typed);
     // The note is kept by the server as a draft, and only with the fields a note has.
     const { port, token } = lab.serverInfo();
@@ -808,9 +824,13 @@ test(
   "a presence change leaves a reviewer who scrolled up in the notes where they were",
   { skip: !executable && "no browser found" },
   async () => {
-    // Enough notes to overflow the margin at 800x600: a full send's worth, drafted and sent.
+    // Enough notes to overflow the margin at 800x600: a full send's worth, drafted and sent, on a
+    // review of its own. On the shared one, four notes the annotate test left unsent when it stalled
+    // took these drafts past the one-send cap, and the 47th answered 429.
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
     const { port, token } = lab.serverInfo();
-    const key = new URL(opened.session.url).pathname.split("/").pop();
+    const key = new URL(session.url).pathname.split("/").pop();
     const call = (method, path, body) =>
       fetch(`http://127.0.0.1:${port}${path}`, {
         method,
@@ -824,10 +844,10 @@ test(
     const res = await call("POST", `/api/${key}/prompts`, {});
     assert.equal(res.status, 200, await res.text());
     assert.equal(
-      (await cli(["poll", fixture, "--timeout-ms", "0"], lab.env)).json().status,
+      (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status,
       "feedback",
     );
-    const page = await browser.page(opened.session.url);
+    const page = await browser.page(session.url);
     await page.waitFor("document.body.dataset.ready === '1'");
     const marks = "document.getElementById('marginBody')";
     assert.ok(
@@ -837,11 +857,12 @@ test(
     await page.eval(`${marks}.scrollTop = 0`);
     // An empty poll attaches and detaches at once: two presence events reach the tab.
     assert.equal(
-      (await cli(["poll", fixture, "--timeout-ms", "0"], lab.env)).json().status,
+      (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status,
       "waiting",
     );
     await page.waitFor("document.getElementById('presence').dataset.state === 'waiting'");
     assert.equal(await page.eval(`${marks}.scrollTop`), 0);
+    await page.close();
   },
 );
 
@@ -1103,7 +1124,9 @@ test(
     );
     await page.type("Cut this line");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
     assert.equal(
       await page.eval("document.querySelector('.mark:not(.sent) .mark-text').textContent"),
       "Bottom of the revised plan",
@@ -1155,17 +1178,16 @@ test(
       await page.eval("document.getElementById('endText').textContent"),
       /One note is still waiting/,
     );
-    const polling = cli(["poll", file, "--timeout-ms", "10000"], lab.env);
-    await new Promise((r) => setTimeout(r, 300));
+    // The reviewer sees the review end with the note sent, and then the agent's poll takes it.
     await page.eval("document.getElementById('endGo').click()");
-    const polled = (await polling).json();
+    await page.waitFor(
+      "document.getElementById('noticeText').textContent === 'You ended this review.' && document.querySelectorAll('.mark:not(.sent)').length === 0",
+    );
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.equal(polled.status, "feedback");
     assert.equal(polled.session_ended, true);
     assert.equal(polled.prompts[0].prompt, "Cut this line");
     assert.match(polled.next_step, /stop polling/);
-    await page.waitFor(
-      "document.getElementById('noticeText').textContent === 'You ended this review.'",
-    );
     assert.equal(await page.eval("document.getElementById('annotate').disabled"), true);
     // Disabled must also look it: the label dims like the other disabled controls, the cursor
     // stops promising a press, and the track and thumb no longer paint as a live switch.
@@ -1202,14 +1224,18 @@ async function openReview(url) {
   return { page, artifact };
 }
 
-/** Adds a note the way a reviewer does: point at the element, type, press Enter. */
+/**
+ * Adds a note the way a reviewer does: point at the element, type, press Enter. The stream can
+ * draw the note before the add's own answer closes the card, and the page ignores what it is
+ * pointed at while a card is open, so the next gesture waits for the card to close as well.
+ */
 async function noteOn(page, artifact, selector, text) {
   const unsent = "document.querySelectorAll('.mark:not(.sent)').length";
   const before = Number(await page.eval(unsent));
   await pointAt(page, artifact, selector);
   await page.type(text);
   await page.enter();
-  await page.waitFor(`${unsent} === ${before + 1}`);
+  await page.waitFor(`document.getElementById('card').hidden && ${unsent} === ${before + 1}`);
 }
 
 /** Clicks an element in the artifact with Annotate on, and waits for the card to take focus. */
@@ -1517,9 +1543,19 @@ const REPLIES = `JSON.stringify([...document.querySelectorAll('.mark.sent')].map
     painted: line.checkVisibility() && box.height > 0,
   };
 }))`;
-/** Requests this page made over the API apart from the event stream, which stays open. */
-const API_REQUESTS =
-  "performance.getEntriesByType('resource').filter((e) => e.name.includes('/api/')).length";
+/**
+ * Counts the API requests this page makes from now on, as each is made. A resource timing entry
+ * is no such count: it lands when its request completes, which can be after the page has already
+ * rendered the response, so a count taken in between misses it and the next one looks like news.
+ */
+const COUNT_API_REQUESTS = `(() => {
+  const real = window.fetch;
+  window.apiRequests = 0;
+  window.fetch = (input, init) => {
+    if (String(input).includes('/api/')) window.apiRequests += 1;
+    return real(input, init);
+  };
+})()`;
 
 test(
   "the agent's reply lands on its note in one event, as text, and a question is answered by a note",
@@ -1532,7 +1568,7 @@ test(
     await noteOn(page, artifact, "#risks h2", "Name the riskiest step");
     await page.eval("document.getElementById('send').click()");
     await page.waitFor("document.querySelectorAll('.mark.sent').length === 3");
-    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => p.uid),
       [1, 2, 3],
@@ -1543,7 +1579,7 @@ test(
     };
 
     // Done on uid 2 reaches the margin over the stream that is already open: no other request.
-    const requests = Number(await page.eval(API_REQUESTS));
+    await page.eval(COUNT_API_REQUESTS);
     const replied = Date.now();
     await reply("2", "--done");
     await page.waitFor("document.querySelectorAll('.mark-reply').length === 1");
@@ -1554,8 +1590,8 @@ test(
       null,
     ]);
     assert.equal(
-      Number(await page.eval(API_REQUESTS)),
-      requests,
+      await page.eval("window.apiRequests"),
+      0,
       "the reply arrived as one event on the stream, not by refetching the session",
     );
 
@@ -1609,19 +1645,26 @@ test(
     );
     await page.type("The billing queue");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    // The drafts event on the stream can render the added note before the add's own HTTP
+    // answer closes the card, so a wait keyed on the note count alone can read focus while
+    // it is still in cardText. The card closing is what the reviewer sees happen last.
+    await page.waitFor("document.getElementById('card').hidden");
     assert.equal(
       await page.eval("document.activeElement.id"),
       "send",
       "an answer written from the margin hands focus on to Send",
     );
+    assert.equal(await page.eval("document.querySelectorAll('.mark:not(.sent)').length"), 1);
     assert.equal(await page.eval("document.querySelectorAll('.mark-answer').length"), 0);
     assert.equal(
       await page.eval("document.querySelector('.mark:not(.sent) .mark-tag').textContent"),
       "Answer",
     );
+    // The answer is the agent's to fetch once the reviewer sees it sent. A poll on a 3 s clock
+    // started at the click can lose the race to a Send that a busy browser delivers late.
     await page.eval("document.getElementById('send').click()");
-    const answered = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 4");
+    const answered = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       answered.prompts.map(({ uid, prompt, selector, answers }) => ({
         uid,
@@ -1652,6 +1695,213 @@ test(
     );
     console.log(
       `browser reply: the margin showed Done ${shownMs} ms after the reply command started`,
+    );
+    await page.close();
+  },
+);
+
+test(
+  "Send keeps the notes on the margin as sent, and a reply lands, however late the tab's responses are",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Make the title shorter");
+    await noteOn(page, artifact, "#p1", "Say how long each step takes");
+    // Every change to the margin is recorded, so a frame that showed fewer notes is caught.
+    await page.eval(`(() => {
+      const marks = document.getElementById('marks');
+      window.fewestNotes = marks.children.length;
+      new MutationObserver(() => {
+        window.fewestNotes = Math.min(window.fewestNotes, marks.children.length);
+      }).observe(marks, { childList: true });
+    })()`);
+    // The server's answers to Send and to any refetch are held once given, as a busy browser holds
+    // a response; the event stream is open already and goes on untouched. A refetch emptied the
+    // margin until it landed, and one answered before the agent's reply wiped the reply off.
+    const held = [];
+    const hold = (message) => {
+      if (message.sessionId === page.sessionId && message.method === "Fetch.requestPaused")
+        held.push(message.params.requestId);
+    };
+    page.browser.listeners.push(hold);
+    await page.send("Fetch.enable", {
+      patterns: ["*/prompts", "*/session"].map((urlPattern) => ({
+        urlPattern,
+        requestStage: "Response",
+      })),
+    });
+    try {
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 2");
+      assert.equal(await page.eval("window.fewestNotes"), 2, "the notes never left the margin");
+      const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+      assert.deepEqual(
+        polled.prompts.map((p) => p.uid),
+        [1, 2],
+      );
+      const replied = await cli(["reply", file, "1", "--done"], lab.env);
+      assert.equal(replied.code, 0, replied.stderr);
+      await page.waitFor("document.querySelectorAll('.mark-reply').length === 1");
+    } finally {
+      for (const requestId of held) await page.send("Fetch.continueRequest", { requestId });
+      await page.send("Fetch.disable");
+      page.browser.listeners.splice(page.browser.listeners.indexOf(hold), 1);
+    }
+    // Whatever the held answers carried, landing now takes nothing off the margin. A negative, so
+    // it sleeps rather than waits.
+    await new Promise((r) => setTimeout(r, 500));
+    assert.deepEqual(JSON.parse(await page.eval(REPLIES)), [
+      { label: "Done", message: "", drawn: ["span:Done"], painted: true },
+      null,
+    ]);
+    await page.close();
+  },
+);
+
+test(
+  "a tab handed the review back while its send is in flight never offers those notes again",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { url } = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(url);
+    await noteOn(page, artifact, "#title", "Make the title shorter");
+    await noteOn(page, artifact, "#p1", "Say how long each step takes");
+    await page.eval(`(() => {
+      const send = document.getElementById("send");
+      window.offered = [];
+      new MutationObserver(() => {
+        if (!send.disabled && send.textContent !== "Send to agent") offered.push(send.textContent);
+      }).observe(send, { attributes: true, childList: true, characterData: true, subtree: true });
+    })()`);
+    // The send is held before the server sees it, so the drafts are all still there when another
+    // tab on the review opens and closes and this one is told it is current again.
+    const held = [];
+    const hold = (message) => {
+      if (message.sessionId === page.sessionId && message.method === "Fetch.requestPaused")
+        held.push(message.params.requestId);
+    };
+    page.browser.listeners.push(hold);
+    await page.send("Fetch.enable", { patterns: [{ urlPattern: "*/prompts" }] });
+    try {
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.getElementById('send').disabled");
+      await until(() => held.length === 1, { what: "the send to reach the network" });
+      const second = await browser.page(url);
+      await page.waitFor(
+        "!document.getElementById('notice').hidden && document.getElementById('noticeText').textContent.includes('took over')",
+      );
+      await second.close();
+      await page.front();
+      await page.waitFor("document.getElementById('notice').hidden");
+      assert.deepEqual(
+        JSON.parse(
+          await page.eval(
+            "JSON.stringify([document.getElementById('send').disabled, window.offered])",
+          ),
+        ),
+        [true, []],
+        "Send stays shut over notes already on their way",
+      );
+    } finally {
+      for (const requestId of held) await page.send("Fetch.continueRequest", { requestId });
+      await page.send("Fetch.disable");
+      page.browser.listeners.splice(page.browser.listeners.indexOf(hold), 1);
+    }
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 2");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => p.uid),
+      [1, 2],
+    );
+    assert.deepEqual(JSON.parse(await page.eval("JSON.stringify(window.offered)")), []);
+    await page.close();
+  },
+);
+
+/**
+ * Holds every chunk of the tab's event stream until the returned function lets it through, so an
+ * answer the tab gets over HTTP lands first. The chrome's reader looks `read` up on each call, so
+ * the hold covers every read issued after it is installed; an empty poll's presence events make
+ * the stream issue one.
+ */
+async function holdStream(page, file) {
+  await page.eval(`(() => {
+    const proto = ReadableStreamDefaultReader.prototype;
+    const read = proto.read;
+    window.streamReads = 0;
+    window.streamHeld = new Promise((resolve) => (window.releaseStream = resolve));
+    proto.read = function () {
+      window.streamReads += 1;
+      return read.call(this).then((chunk) => window.streamHeld.then(() => chunk));
+    };
+  })()`);
+  await cli(["poll", file, "--timeout-ms", "0"], lab.env);
+  await page.waitFor("window.streamReads >= 1");
+  return () => page.eval("window.releaseStream()");
+}
+
+test(
+  "the send key sends the note it adds, even when the stream tells the tab about it late",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const release = await holdStream(page, file);
+    await pointAt(page, artifact, "#title");
+    await page.type("Make the title shorter");
+    await page.key("Enter", { keyCode: 13, modifiers: 2 });
+    // The card closes once the server has kept the note, and the send key decides then whether to
+    // send; only after that is the stream let through.
+    await page.waitFor("document.getElementById('card').hidden");
+    await release();
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => p.prompt),
+      ["Make the title shorter"],
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a note's answer that lands after the note was sent leaves it sent",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const held = [];
+    const hold = (message) => {
+      if (message.sessionId === page.sessionId && message.method === "Fetch.requestPaused")
+        held.push(message.params.requestId);
+    };
+    page.browser.listeners.push(hold);
+    await page.send("Fetch.enable", {
+      patterns: [{ urlPattern: "*/drafts", requestStage: "Response" }],
+    });
+    try {
+      await pointAt(page, artifact, "#title");
+      await page.type("Make the title shorter");
+      await page.enter();
+      // The stream says the server kept the note; the answer to adding it is still held.
+      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    } finally {
+      for (const requestId of held) await page.send("Fetch.continueRequest", { requestId });
+      await page.send("Fetch.disable");
+      page.browser.listeners.splice(page.browser.listeners.indexOf(hold), 1);
+    }
+    // The held answer is older than the send, so landing now must not put the note back as unsent.
+    // A negative, so it sleeps rather than waits.
+    await new Promise((r) => setTimeout(r, 500));
+    assert.deepEqual(
+      await page.eval(
+        "[document.querySelectorAll('.mark.sent').length, document.querySelectorAll('.mark:not(.sent)').length]",
+      ),
+      [1, 0],
     );
     await page.close();
   },
@@ -1846,13 +2096,15 @@ test(
     const note = `Pin it to ${"3f9a2c7e1b5d8f0a".repeat(4)}`;
     await page.type(note);
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
     const margin = await usable("with a note in the margin", [".mark", "#send"]);
 
-    const polling = cli(["poll", file, "--timeout-ms", "10000"], lab.env);
     const [sendLeft, sendTop, sendRight, sendBottom] = margin["#send"];
     await page.click((sendLeft + sendRight) / 2, (sendTop + sendBottom) / 2);
-    const polled = (await polling).json();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.equal(polled.status, "feedback");
     assert.deepEqual(
       polled.prompts.map(({ prompt, selector }) => ({ prompt, selector })),
@@ -2285,7 +2537,8 @@ globalThis.forge = () => {
     assert.equal(await page.eval(margin), before);
     assert.equal(await page.eval("document.getElementById('card').hidden"), true);
     await page.eval("document.getElementById('send').click()");
-    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => p.prompt),
       [secrets.edited],
@@ -2340,7 +2593,8 @@ test(
     );
 
     await page.eval("document.getElementById('send').click()");
-    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     const byTag = Object.fromEntries(polled.prompts.map((p) => [p.tag, p]));
     assert.deepEqual(
       polled.prompts.map((p) => p.tag),
@@ -2533,13 +2787,16 @@ test(
     await a();
     await page.waitFor("document.body.dataset.annotate === '1'");
 
-    // The send key adds the note being written and sends it, from the card.
+    // The send key adds the note being written and sends it, from the card. The agent asks once
+    // the reviewer sees it sent: a poll started first, on its own clock, lost to a stalled browser.
     const ctrlEnter = () => page.key("Enter", { keyCode: 13, modifiers: 2 });
-    let polling = cli(["poll", plan, "--timeout-ms", "10000"], lab.env);
+    const sent = "document.querySelectorAll('.mark.sent').length";
+    const sentBefore = Number(await page.eval(sent));
     await pointAt(page, artifact, "#risks h2");
     await page.type("Rank the risks");
     await ctrlEnter();
-    let polled = (await polling).json();
+    await page.waitFor(`${sent} === ${sentBefore + 1}`);
+    let polled = (await cli(["poll", plan, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => [p.prompt, p.tag]),
       [["Rank the risks", "h2"]],
@@ -2550,9 +2807,9 @@ test(
     await page.type("Say who can roll back");
     await page.enter();
     await artifact.waitFor("document.activeElement.textContent === 'Rollback'");
-    polling = cli(["poll", plan, "--timeout-ms", "10000"], lab.env);
     await ctrlEnter();
-    polled = (await polling).json();
+    await page.waitFor(`${sent} === ${sentBefore + 2}`);
+    polled = (await cli(["poll", plan, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => p.prompt),
       ["Say who can roll back"],
@@ -2656,8 +2913,19 @@ test(
     await page.send("CSS.enable");
     const { root } = await page.send("DOM.getDocument");
     const painted = async (selector) => {
-      const { nodeId } = await page.send("DOM.querySelector", { nodeId: root.nodeId, selector });
-      const { fonts } = await page.send("CSS.getPlatformFontsForNode", { nodeId });
+      // A render that lands first, such as Send relabelled by an event, replaces the text node,
+      // and the new one reports no fonts until it has painted, so this waits for the paint.
+      const fonts = await until(
+        async () => {
+          const { nodeId } = await page.send("DOM.querySelector", {
+            nodeId: root.nodeId,
+            selector,
+          });
+          const { fonts } = await page.send("CSS.getPlatformFontsForNode", { nodeId });
+          return fonts.length > 0 && fonts;
+        },
+        { what: `${selector} to paint its text` },
+      );
       // The face that sets the text is the one drawing most of its glyphs: a symbol such as ⌘ is
       // outside the latin subset and falls back. A variable face reports its named instance,
       // "Archivo SemiBold", so the family is the prefix.
@@ -2707,7 +2975,8 @@ test(
       );
     }
     await page.eval("document.getElementById('send').click()");
-    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => p.tag),
       ["h1", "td", "mark", "svg"],
@@ -2719,7 +2988,9 @@ test(
     await page.waitFor("document.activeElement.id === 'cardText'");
     await page.type("The neutral one");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
     const margin = JSON.parse(
       await page.eval(
         "JSON.stringify([...document.querySelectorAll('.mark .mark-target')].map((e) => e.textContent))",
@@ -2810,7 +3081,7 @@ async function noteOnInstall(page, artifact, text) {
   );
   await page.type(text);
   await page.enter();
-  await page.waitFor(`${unsent} === ${before + 1}`);
+  await page.waitFor(`document.getElementById('card').hidden && ${unsent} === ${before + 1}`);
   return selector;
 }
 

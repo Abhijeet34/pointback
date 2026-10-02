@@ -69,8 +69,9 @@ let liveReload = true;
 let connection = "live";
 let editing = false;
 let deferredReload = false;
-// A send is in flight: Send stays shut until the server's answer has replaced the unsent notes.
-let sending = false;
+// The ids of the notes a send has in flight: Send stays shut until the stream reports them sent,
+// a hello no longer lists them as drafts, or the send fails.
+let sending = /** @type {string[] | null} */ (null);
 let lastScroll = null;
 let workingTimer = null;
 let stream = null;
@@ -81,6 +82,8 @@ let shownMarks = 0;
 let appName = "";
 // The reviewer's unsent notes, as the server holds them: every change goes through it first.
 let pending = [];
+// How many times the stream has set `pending`, so a change's own answer can tell it is stale.
+let draftsHeard = 0;
 // The note last shown from the margin or its pin, by number; the draft being edited in place;
 // and the notes whose pin found nothing on the page to stand on.
 let shownNote = 0;
@@ -174,6 +177,9 @@ function sync(state) {
   // The sent notes come with every hello, so a reply that landed while this page was away shows.
   chat = state.chat;
   pending = state.drafts;
+  // A hello can land mid-send, before the server has the send, and still lists its notes.
+  if (sending && !pending.some((draft) => sending.includes(draft.id))) sending = null;
+  draftsHeard += 1;
   marksDirty = true;
   // A gone file has no page to load; the last one shown stays up under the notice.
   fileGone = state.gone === true;
@@ -299,6 +305,12 @@ function apply(event) {
     liveReload = false;
   } else if (event.type === "drafts") {
     pending = event.drafts;
+    draftsHeard += 1;
+    // The notes a send moved arrive here, and so does the end of "Sending…".
+    if (event.sent) {
+      chat.push(...event.sent);
+      sending = null;
+    }
     marksDirty = true;
   } else if (event.type === "reply") {
     const note = chat.find((entry) => entry.uid === event.uid);
@@ -314,11 +326,18 @@ function apply(event) {
       ?.scrollIntoView({ block: "nearest" });
 }
 
-/** Adopts the server's answer to a change of the unsent notes, or says why it was refused. */
+/**
+ * Asks the server to change the unsent notes, or says why it was refused. The answer's list is
+ * adopted only if the stream said nothing about the drafts meanwhile: a later event is newer than
+ * it, and an earlier one is followed by this change's own. Ignoring every answer let the send key
+ * find no note to send while the stream lagged; adopting every one could put a sent note back.
+ */
 async function changeDrafts(what, method, path, body) {
   problem = null;
+  const heard = draftsHeard;
   try {
-    pending = (await api(method, path, body)).drafts;
+    const { drafts } = await api(method, path, body);
+    if (draftsHeard === heard) pending = drafts;
     return true;
   } catch (error) {
     problem = `Could not ${what}: ${error.message}`;
@@ -342,9 +361,9 @@ function render() {
   const count = pending.length;
   const asking = chat.some((entry) => unanswered(entry));
   const replied = chat.length > 0 && chat.every((entry) => entry.reply);
-  // An event landing mid-send renders before this tab has the server's answer, with the notes
-  // still listed as unsent; Send must not offer them again in that gap.
-  sendButton.disabled = sending || count === 0 || fileGone || offline;
+  // An event or the POST's own answer can land mid-send while the notes still list as unsent;
+  // Send must not offer them again in that gap.
+  sendButton.disabled = sending !== null || count === 0 || fileGone || offline;
   sendButton.textContent = sending
     ? "Sending…"
     : fileGone
@@ -984,17 +1003,15 @@ endDialog.addEventListener("close", async () => {
   if (choice === "end" && !(await saveEdit())) return;
   problem = null;
   try {
+    // As with Send, what ending changed reaches this page on the event stream: the notes, then the end.
     await api("POST", `/api/${key}/end`, {
       by: "user",
       drafts: choice === "end" ? "send" : "discard",
     });
-    ({ chat, drafts: pending } = await api("GET", `/api/${key}/session`));
-    ended = { by: "user" };
-    followAnnotate();
   } catch (error) {
     problem = `Could not end the review: ${error.message}`;
+    notesChanged();
   }
-  notesChanged();
 });
 
 const sendForm = /** @type {HTMLFormElement} */ (document.getElementById("sendForm"));
@@ -1028,18 +1045,19 @@ sendForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (pending.length === 0) return;
   if (!(await saveEdit())) return;
-  sending = true;
+  sending = pending.map((draft) => draft.id);
   problem = null;
   render();
   try {
+    // The sent notes arrive on the event stream, in order with the agent's replies to them, and
+    // that event renders them. A refetch here raced the stream: it emptied the margin until it
+    // landed, and one answered before a reply but read after it wiped the reply off its note.
     await api("POST", `/api/${key}/prompts`);
-    ({ chat, drafts: pending } = await api("GET", `/api/${key}/session`));
   } catch (error) {
     problem = `Could not send: ${error.message}`;
-  } finally {
-    sending = false;
+    sending = null;
+    notesChanged();
   }
-  notesChanged();
 });
 
 let adding = false;

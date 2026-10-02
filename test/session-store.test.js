@@ -602,6 +602,38 @@ test("a file change bumps the revision, persists it and is announced", () => {
   assert.equal(new SessionStore(dir).status(key).revision, 2);
 });
 
+test("a send names the notes it moved in the one event that clears them; a discard names none", () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  const events = [];
+  store.on(key, (event) => event.type === "drafts" && events.push(event));
+  store.addDraft(key, prompt("first"));
+  store.addDraft(key, prompt("second"));
+  store.send(key);
+  store.addDraft(key, prompt("last"));
+  store.end(key, "user", "send");
+  store.reopen(key);
+  store.addDraft(key, prompt("dropped"));
+  store.end(key, "user", "discard");
+  assert.deepEqual(
+    events.map((event) => event.sent?.map((note) => [note.uid, note.prompt])),
+    [
+      undefined,
+      undefined,
+      [
+        [1, "first"],
+        [2, "second"],
+      ],
+      undefined,
+      [[3, "last"]],
+      undefined,
+      undefined,
+    ],
+  );
+  assert.deepEqual([...events[2].sent, ...events[4].sent], store.status(key).chat);
+});
+
 test("ending queues the last prompts in the same step, wakes a waiting poll, and reopens", async () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);
