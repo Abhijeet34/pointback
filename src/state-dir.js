@@ -140,7 +140,7 @@ const CURSOR_FILE = "poll-cursor.json";
  * The highest note uid this client has received for a file, and the epoch of the session it came
  * from, so the next poll can acknowledge it and the server can stop redelivering. Keyed by the
  * canonical path, so two spellings of one file share a cursor. A session evicted and opened again
- * restarts its uids under a new epoch, and the server ignores a cursor naming an older one.
+ * gets a new epoch and numbers on from this uid, and the server ignores a cursor naming an older one.
  * Client-side state: a wrong or missing cursor only costs a safe redelivery, never a lost note.
  * `outline` is the digest of the page outline last delivered, so an unchanged one is not repeated.
  */

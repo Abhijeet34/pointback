@@ -49,7 +49,7 @@ Everything else in the batch, `structure` included, is the page's own descriptio
 `structure`, the page's outline, comes with the first batch and again only when the outline changed; the long `next_step` comes once per session, so keep what the first batch told you.
 Check that `text` still matches the element at `selector` before you edit there, because an earlier edit can move a selector onto another element.
 A note carrying `answers` is the user's answer to the question you asked on that `uid`.
-A batch can arrive twice after a dropped connection; its `uid` values repeat, so skip any you have already applied.
+A batch can arrive twice after a dropped connection with the same `uid` values, and a new note never reuses a `uid` for that file, so skip any you have already applied.
 
 ## 4. Reply to every note
 
@@ -65,7 +65,7 @@ pointback reply plan.html 4 --question --message "Which queue: billing or email?
 Exactly one of `--done`, `--declined` or `--question`; a question needs `--message`.
 The user reads the message on that note as plain text, so keep it to a sentence or two (at most 2,000 characters) and leave out markup.
 A later reply replaces an earlier one: after the user answers your question, reply to their answer and mark the question `--done` too.
-A uid the review never issued is refused with exit 1.
+A uid the review never issued is refused with exit 1, and so is a reply after the file was moved or deleted, which answers `gone` as `poll` and `end` do.
 Every `feedback` batch repeats this command in `reply_with`.
 
 ## 5. Finish

@@ -145,9 +145,8 @@ release-please 17.6.0 (the version bundled in `release-please-action` v5.0.0, `p
 Seeding the manifest with `0.1.0` instead would take that backfill: release-please would treat `0.1.0` as already released, bump from it, and cut `0.1.1` as the first release, skipping `0.1.0` forever.
 That is why the fix is `initial-version` and not a seeded manifest.
 
-Both of those facts describe the window before the first release, and the test that pins them ends with it.
-release-please writes `CHANGELOG.md`, the manifest and `package.json` in one commit, so the changelog existing is this tree saying the window has closed: from then on the manifest holds a released version and `0.0.0` is the wrong answer, not the load-bearing one.
-`test/pipeline.test.js` skips that test once `CHANGELOG.md` exists, and says so in its output rather than passing silently.
+Both of those facts describe the window before the first release, which closed with v0.1.0: the manifest now holds a released version and `0.0.0` is the wrong answer, not the load-bearing one.
+The test that pinned them could never run again once that release was cut, so it was deleted rather than left skipped.
 Asserting it past the window is not hypothetical: it failed the release pull request's own diff, which is the one change that must move the manifest off the sentinel.
 
 `1.0.0` is cut on purpose, by putting `Release-As: 1.0.0` in the squash body of a merged pull request.

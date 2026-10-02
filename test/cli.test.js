@@ -4,6 +4,7 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -27,6 +28,32 @@ test("--version and --help answer without touching the state directory", async (
   const help = await cli(["--help"], lab.env);
   assert.match(help.stdout, new RegExp(`^${name} ${version}`));
   assert.equal((await cli([], lab.env)).stdout, help.stdout);
+});
+
+// The help is the CLI's own contract: one column for every description, every environment
+// variable the code reads, and both kinds of file a review opens.
+test("--help aligns its descriptions and names every variable and file kind", async () => {
+  const help = (await cli(["--help"], lab.env)).stdout;
+  const usage = help.slice(help.indexOf("Usage:"), help.indexOf("Output is JSON"));
+  const commands = usage.split("\n").filter((line) => line.startsWith(`  ${name}`));
+  const described = usage.split("\n").filter((line) => /^ {3,}\S/.test(line));
+  assert.equal(commands.length, 6);
+  assert.deepEqual(new Set(described.map((line) => line.search(/\S/))).size, 1, usage);
+  assert.match(usage, /\.md\b/);
+  const read = new Set();
+  for (const file of readdirSync(new URL("../src", import.meta.url)).filter((f) =>
+    f.endsWith(".js"),
+  ))
+    for (const [, key] of readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8").matchAll(
+      /\benv\("([A-Z_]+)"/g,
+    ))
+      read.add(key);
+  assert.ok(read.has("IDLE_MS"), [...read].join(", "));
+  const environment = help.slice(help.indexOf("Environment:"));
+  const prefix = `${name.toUpperCase()}_`;
+  const listed = [...environment.matchAll(new RegExp(`^  ${prefix}([A-Z_]+) +\\S`, "gm"))];
+  assert.deepEqual(listed.map(([, key]) => key).sort(), [...read].sort());
+  assert.equal(new Set(listed.map((m) => m[0].length)).size, 1, "one column for what each means");
 });
 
 test("open starts a detached server, records a session and returns a token-bearing url", async () => {
@@ -157,7 +184,9 @@ const keyOf = (opened) => opened.json().session.url.match(/session\/([0-9a-f]{16
 
 // The cursor outlives the session: 64 other reviews evict this one, opening it again restarts
 // its uids at 1, and a stale cursor of 3 used to acknowledge the new note before it was read.
-test("a cursor from before an eviction never acknowledges the reopened session's notes", async () => {
+// SKILL.md tells the agent to skip any uid it has already applied, so a uid must never come round
+// again for the same file: before, a reopened session restarted at 1 and the agent dropped it.
+test("after an eviction a new note takes a uid the agent never saw, and an old cursor acknowledges nothing", async () => {
   const own = isolatedEnv();
   try {
     const { dir, file } = scratch();
@@ -165,10 +194,8 @@ test("a cursor from before an eviction never acknowledges the reopened session's
     const api = daemon(own);
     for (const text of ["one", "two", "three"]) await api.note(key, text);
     const first = await cli(["poll", file, "--timeout-ms", "500"], own.env);
-    assert.deepEqual(
-      first.json().prompts.map((p) => p.uid),
-      [1, 2, 3],
-    );
+    const applied = new Set(first.json().prompts.map((p) => p.uid));
+    assert.deepEqual([...applied], [1, 2, 3]);
     assert.equal(
       (await cli(["poll", file, "--timeout-ms", "50"], own.env)).json().status,
       "waiting",
@@ -191,7 +218,15 @@ test("a cursor from before an eviction never acknowledges the reopened session's
     assert.equal(polled.json().status, "feedback", "the stale cursor acknowledged nothing");
     assert.deepEqual(
       polled.json().prompts.map((p) => [p.uid, p.prompt]),
-      [[1, "the note that must not be lost"]],
+      [[4, "the note that must not be lost"]],
+    );
+    assert.deepEqual(
+      polled
+        .json()
+        .prompts.filter((p) => !applied.has(p.uid))
+        .map((p) => p.prompt),
+      ["the note that must not be lost"],
+      "an agent skipping the uids it already applied, as SKILL.md says, applies the new note",
     );
   } finally {
     await own.stop();
@@ -224,13 +259,22 @@ test("every spelling of a file shares one cursor, so a received batch is never d
   }
 });
 
-test("poll and end on a moved file answer gone as JSON and exit 1", async () => {
+test("poll, reply and end on a moved file answer gone as JSON and exit 1", async () => {
   const { dir, file } = scratch();
-  const opened = (await cli([file], lab.env)).json();
+  const openedRun = await cli([file], lab.env);
+  const opened = openedRun.json();
+  const key = keyOf(openedRun);
+  const api = daemon(lab);
+  await api.note(key, "taken before the move");
+  assert.equal(
+    (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json().status,
+    "feedback",
+  );
   renameSync(file, join(dir, "moved.html"));
   const canonical = join(realpathSync.native(dir), "a.html");
   for (const args of [
     ["poll", file, "--timeout-ms", "50"],
+    ["reply", file, "1", "--done"],
     ["end", file],
   ]) {
     const answer = await cli(args, lab.env);
@@ -242,20 +286,35 @@ test("poll and end on a moved file answer gone as JSON and exit 1", async () => 
     assert.match(out.next_step, /moved or deleted/);
     assert.match(out.next_step, new RegExp(`${name} <its new path>`));
   }
-  // Nothing was ended: the file coming back resumes the same review.
+  // Nothing was ended or answered: the file coming back resumes the same review.
   renameSync(join(dir, "moved.html"), file);
   const reopened = (await cli([file], lab.env)).json();
   assert.equal(reopened.session.url, opened.session.url);
   assert.equal(reopened.session.status, "opened");
+  const chat = (await (await api.call("GET", `/api/${key}/session`)).json()).chat;
+  assert.deepEqual(
+    chat.map((entry) => [entry.uid, entry.reply]),
+    [[1, undefined]],
+    "the reply to a gone file was not stored",
+  );
 });
 
 test("a missing file argument or file is an error exit, not a stack trace", async () => {
   const noArg = await cli(["poll"], lab.env);
   assert.equal(noArg.code, 1);
   assert.match(noArg.stderr, /^error: poll needs a file argument/);
-  const noFile = await cli(["open", "/definitely/missing.html"], lab.env);
-  assert.equal(noFile.code, 1);
-  assert.match(noFile.stderr, /^error: no such file/);
+  const missing = join(scratch().dir, "missing.html");
+  for (const args of [
+    ["open", missing],
+    ["poll", missing, "--timeout-ms", "0"],
+    ["reply", missing, "1", "--done"],
+    ["end", missing],
+  ]) {
+    const noFile = await cli(args, lab.env);
+    assert.equal(noFile.code, 1, args[0]);
+    assert.equal(noFile.stdout, "", args[0]);
+    assert.match(noFile.stderr, /^error: no such file: \S*missing\.html$/m, args[0]);
+  }
 });
 
 test("a file that is neither HTML nor Markdown is refused with a message and exit 1", async () => {
@@ -500,10 +559,11 @@ test("reply answers a note done, declined or with a question, and refuses a uid 
   await refused(["--done"], /the note's uid/);
   await refused(["1"], /exactly one of --done, --declined, --question/);
   await refused(["1", "--done", "--declined"], /exactly one of/);
-  await refused(["1", "--question"], /a question needs its text/);
+  await refused(["1", "--question"], /^error: --question needs the question's text in --message$/m);
+  await refused(["1", "--question", "--message", "  "], /in --message$/m);
   await refused(
     ["1", "--declined", "--message", "x".repeat(limits.replyChars + 1)],
-    /over 2000 characters/,
+    /^error: --message is over 2000 characters$/m,
   );
   const never = join(scratch().dir, "a.html");
   const unopened = await cli(["reply", never, "1", "--done"], lab.env);

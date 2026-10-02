@@ -89,15 +89,16 @@ Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (d
 | `ended`    | The review is over, and `ended_by` names who ended it                                     |
 | `gone`     | The file was moved or deleted; `file` names where it was, and the exit is 1               |
 
-`end` on a moved or deleted file prints the same `gone` answer and exits 1, and the open tab says the file is gone.
+`end` and `reply` on a moved or deleted file print the same `gone` answer and exit 1, and the open tab says the file is gone.
 Notes already sent before the file went are still delivered first.
 
 A final batch arrives as `feedback` with `session_ended: true`, so the last notes are never lost to the end of the session.
 
 Delivery is at-least-once.
 A batch stays on the queue until the poll that took it succeeds, and `pointback poll` acknowledges each batch on the next poll, so a poll whose response never arrived (a dropped connection, a killed poller) redelivers the identical batch rather than dropping it.
-A redelivered batch carries the same `uid` values it did the first time, which increase within a session, so an agent that tracks the highest `uid` it has applied can tell a repeat from a new note.
-The acknowledgement is keyed by the file's canonical path, so `/tmp/plan.html` and `/private/tmp/plan.html` share it, and it carries the session's epoch: a session evicted and opened again restarts its `uid` values at 1 under a new epoch, and an acknowledgement from its earlier life confirms nothing in the new one.
+A redelivered batch carries the same `uid` values it did the first time, and a new note never reuses one for that file, so an agent that skips every `uid` it has already applied drops nothing.
+That holds across eviction too: a session evicted at the cap and opened again numbers on from the last `uid` `pointback poll` received for the file.
+The acknowledgement is keyed by the file's canonical path, so `/tmp/plan.html` and `/private/tmp/plan.html` share it, and it carries the session's epoch, so an acknowledgement from a session's earlier life confirms nothing in the new one.
 There is no packet loss: the queue is never emptied for a response the agent did not receive.
 
 Each note in `prompts` looks like this:
@@ -246,6 +247,8 @@ The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on se
 The first CLI call starts a detached server bound to `127.0.0.1` only and records its port and a random capability token in `~/.pointback/server.json`, readable by the owner alone.
 A restarted server takes the same port and token again while that port is free, which is what lets an open tab reconnect, and mints a fresh token whenever it has to take another port.
 Because the token outlives the process, whatever holds a dead daemon's port must never receive it: the CLI and the tab present it only to a server that first answers a fresh challenge keyed with it (`tokenProof` in `src/http-guard.js`).
+There is one exception: a daemon from 0.1.4 or earlier cannot answer the challenge and still has to stop, so to a server on the recorded port that answers as `{"app":"pointback"}` without the proof, the CLI sends the token once on `POST /shutdown` and then retires it in `server.json`, and the next daemon mints a fresh one (`stopServer` in `src/client.js`).
+A process squatting the port with that answer receives a token that no running daemon accepts.
 Every API call, from the CLI or from the chrome page, carries that token; the browser receives it in the URL fragment, which never reaches a server log.
 A session is keyed by a hash of the file's canonical path, but that key opens nothing: the artifact bytes are served under a second random per-session token, and the store is a `Map`, so no key can resolve to an inherited property.
 The page under review runs in a sandboxed iframe with an opaque origin.

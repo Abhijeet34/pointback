@@ -27,6 +27,7 @@ const card = /** @type {HTMLFormElement} */ (document.getElementById("card"));
 const cardTarget = document.getElementById("cardTarget");
 const cardText = /** @type {HTMLTextAreaElement} */ (document.getElementById("cardText"));
 const cardCancel = /** @type {HTMLButtonElement} */ (document.getElementById("cardCancel"));
+const cardAdd = /** @type {HTMLButtonElement} */ (document.getElementById("cardAdd"));
 const presenceSince = document.getElementById("presenceSince");
 
 // Every label is read by a reviewer mid-review, so the resting state between two polls
@@ -877,6 +878,12 @@ function openCompose(note, label, outline, rects, from) {
   editing = true;
   cardTarget.textContent = label;
   cardTarget.title = label;
+  // An answer is the reviewer's reply to the agent's question, not a request for a change.
+  const answer = note.answers !== undefined;
+  card.setAttribute("aria-label", answer ? "Answer the question" : "Leave a note");
+  cardText.placeholder = answer ? "Your answer to the question" : "What should change here?";
+  cardText.setAttribute("aria-label", answer ? "Answer" : "Note");
+  cardAdd.textContent = answer ? "Add answer" : "Add note";
   cardText.value = "";
   card.hidden = false;
   placeCard(rects);
