@@ -1,7 +1,7 @@
 // The core act in the engines the CLI may hand a review to: it opens the reviewer's default
 // browser, which is Safari on an unconfigured Mac, while test/browser.test.js drives Chromium
 // only. Open a file, point at an element, write a note, send, and a poll returns it.
-// `npm run smoke -- webkit firefox`; weekly in .github/workflows/engines.yml.
+// `npm run smoke -- webkit firefox`; weekly in .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
 /* global document */
 import assert from "node:assert/strict";
