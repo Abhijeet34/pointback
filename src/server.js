@@ -22,6 +22,7 @@ import { EventStreams } from "./events.js";
 import { name, version } from "./identity.js";
 import { injectSdk } from "./inject.js";
 import { limits } from "./limits.js";
+import { artifactKind, renderMarkdown } from "./markdown.js";
 import { DRAFT_ID_PATTERN, EPOCH_PATTERN, SessionStore } from "./session-store.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
 
@@ -34,6 +35,7 @@ const staticFiles = new Map(
     "/sdk.js": "text/javascript; charset=utf-8",
     "/chrome.js": "text/javascript; charset=utf-8",
     "/chrome.css": "text/css; charset=utf-8",
+    "/markdown.css": "text/css; charset=utf-8",
     "/house/brand.tokens.css": "text/css; charset=utf-8",
     "/house/roles.css": "text/css; charset=utf-8",
     "/house/scales.css": "text/css; charset=utf-8",
@@ -41,6 +43,7 @@ const staticFiles = new Map(
     "/house/fonts/archivo/archivo-latin-wdth-normal.woff2": "font/woff2",
     "/house/fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2": "font/woff2",
     "/house/fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2": "font/woff2",
+    "/house/fonts/literata/literata-latin-opsz-normal.woff2": "font/woff2",
     "/icon.svg": "image/svg+xml",
     "/icon-32.png": "image/png",
   }).map(([path, type]) => [
@@ -187,7 +190,10 @@ async function route(req, res, ctx) {
   }
   const asset = req.method === "GET" ? staticFiles.get(pathname) : undefined;
   if (asset) {
-    res.writeHead(200, { ...STATIC_HEADERS, "content-type": asset.type });
+    // A rendered Markdown page loads the house faces from its opaque-origin frame, which makes each
+    // load a CORS request; these are the package's own public font files, so nothing is exposed.
+    const cors = asset.type.startsWith("font/") ? { "access-control-allow-origin": "*" } : {};
+    res.writeHead(200, { ...STATIC_HEADERS, ...cors, "content-type": asset.type });
     return res.end(asset.body);
   }
 
@@ -359,8 +365,13 @@ function serveArtifact(res, store, match) {
   if (!file) throw new HttpError(404, "not found");
   const type = contentTypes[extname(file).toLowerCase()] ?? "application/octet-stream";
   if (file === session.file) {
+    // A session opened before other files were refused still names one; it shows nothing.
+    const kind = artifactKind(file);
+    if (!kind) throw new HttpError(404, "not found");
+    const source = readFileSync(file, "utf8");
+    const page = kind === "markdown" ? renderMarkdown(source, file) : source;
     res.writeHead(200, { ...ARTIFACT_HEADERS, "content-type": contentTypes[".html"] });
-    return res.end(injectSdk(readFileSync(file, "utf8"), SDK_PATH));
+    return res.end(injectSdk(page, SDK_PATH));
   }
   const headers = type.startsWith("font/") ? FONT_HEADERS : ARTIFACT_HEADERS;
   res.writeHead(200, { ...headers, "content-type": type });

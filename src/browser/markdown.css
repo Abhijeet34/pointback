@@ -1,0 +1,198 @@
+/* A Markdown file rendered for review, in the house reading styles: Literata for running prose,
+   Archivo for headings, IBM Plex Mono for code, at the prose measure. Colours are --hw-* roles
+   and sizes rem, as in the chrome; dark is pinned by data-theme on <html> to match the chrome. */
+
+@font-face {
+  font-family: "Literata";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 900;
+  src: url("/house/fonts/literata/literata-latin-opsz-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  src: url("/house/fonts/archivo/archivo-latin-wdth-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("/house/fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--hw-bg);
+  color: var(--hw-text);
+  font: 400 var(--hw-text-md) / var(--hw-leading-read) var(--hw-font-read);
+}
+
+/* The column is the prose measure, so headings, rules, code and text share one right edge. */
+main {
+  max-width: var(--hw-measure-prose);
+  margin: 0 auto;
+  padding: var(--hw-space-32) var(--hw-gutter-sm) var(--hw-space-64);
+}
+
+@media (min-width: 768px) {
+  main {
+    padding-inline: var(--hw-gutter-md);
+  }
+}
+
+main > :first-child {
+  margin-top: 0;
+}
+
+p,
+ul,
+ol,
+blockquote,
+pre,
+.table,
+hr {
+  margin: 0 0 var(--hw-space-16);
+}
+
+p,
+li {
+  text-wrap: pretty;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--hw-font-sans);
+  line-height: var(--hw-leading-snug);
+  margin: var(--hw-space-32) 0 var(--hw-space-12);
+}
+
+h1 {
+  font-size: var(--hw-text-2xl);
+  font-weight: 650;
+  line-height: var(--hw-leading-tight);
+  letter-spacing: -0.012em;
+  text-wrap: balance;
+}
+
+h2 {
+  font-size: var(--hw-text-xl);
+  font-weight: 650;
+  letter-spacing: -0.006em;
+  padding-top: var(--hw-space-16);
+  border-top: var(--hw-border-w) solid var(--hw-line);
+}
+
+h3 {
+  font-size: var(--hw-text-lg);
+  font-weight: 600;
+}
+
+h4,
+h5,
+h6 {
+  font-size: var(--hw-text-md);
+  font-weight: 600;
+}
+
+a {
+  color: var(--hw-accent-text);
+  text-underline-offset: 0.15em;
+}
+
+strong {
+  font-weight: 650;
+}
+
+ul,
+ol {
+  padding-left: 1.5em;
+}
+
+li + li,
+li > ul,
+li > ol {
+  margin-top: var(--hw-space-4);
+}
+
+li > p {
+  margin-bottom: var(--hw-space-8);
+}
+
+blockquote {
+  margin-left: 0;
+  padding-left: var(--hw-space-16);
+  border-left: var(--hw-focus-w) solid var(--hw-line-strong);
+  color: var(--hw-text-muted);
+}
+
+code {
+  font: 400 max(0.88em, 11px) / 1 var(--hw-font-mono);
+  background: var(--hw-fill);
+  border-radius: var(--hw-radius-sm);
+  padding: 0.12em 0.32em;
+}
+
+pre {
+  overflow-x: auto;
+  padding: var(--hw-space-12) var(--hw-space-16);
+  background: var(--hw-surface);
+  border: var(--hw-border-w) solid var(--hw-line);
+  border-radius: var(--hw-radius-md);
+}
+
+pre code {
+  font: 400 var(--hw-text-sm) / 1.6 var(--hw-font-mono);
+  background: none;
+  padding: 0;
+}
+
+/* A wide table scrolls inside its own box, so the page never scrolls sideways on a phone. */
+.table {
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  font: 400 var(--hw-text-sm) / var(--hw-leading-snug) var(--hw-font-sans);
+}
+
+th {
+  text-align: left;
+  font-weight: 560;
+  color: var(--hw-text-muted);
+  padding: var(--hw-space-8) var(--hw-space-12);
+  border-bottom: var(--hw-border-w) solid var(--hw-line-strong);
+}
+
+td {
+  padding: var(--hw-space-8) var(--hw-space-12);
+  border-bottom: var(--hw-border-w) solid var(--hw-line);
+  vertical-align: top;
+}
+
+:is(th, td):first-child {
+  padding-left: 0;
+}
+
+hr {
+  border: 0;
+  border-top: var(--hw-border-w) solid var(--hw-line);
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}

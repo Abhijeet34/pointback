@@ -1,5 +1,5 @@
-// Copies the house design system's colour ramps, roles, scales, component layer and the two faces
-// the chrome sets (Archivo and IBM Plex Mono, each with its OFL text) into src/browser/house/ and
+// Copies the house design system's colour ramps, roles, scales, component layer and the three faces
+// the chrome and a rendered Markdown page set (Archivo, IBM Plex Mono and Literata, each with its OFL text) into src/browser/house/ and
 // records the commit they came from, so the chrome's look is pinned to one reviewed upstream
 // version. Byte-for-byte copies: test/house.test.js refuses a vendored file whose digest no
 // longer matches the pin, so a hand edit here is drift and the fix is to change the house.
@@ -28,6 +28,9 @@ export const FILES = {
   "fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2":
     "fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2",
   "fonts/ibm-plex-mono/OFL.txt": "fonts/ibm-plex-mono/OFL.txt",
+  "fonts/literata/literata-latin-opsz-normal.woff2":
+    "fonts/literata/literata-latin-opsz-normal.woff2",
+  "fonts/literata/OFL.txt": "fonts/literata/OFL.txt",
 };
 
 export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

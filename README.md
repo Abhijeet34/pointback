@@ -13,6 +13,10 @@ When the reviewer is done, End review closes the loop and sends whatever is stil
 Three things it never does: it never sends the page anywhere, it never edits the page on the reviewer's behalf, and it is never a multi-person tool.
 One person, one agent, one local file.
 
+The file is HTML or Markdown.
+A `.md` or `.markdown` file is rendered with [markdown-it](https://github.com/markdown-it/markdown-it) in the house reading styles, raw HTML in it included, and a note on it also carries the first and last line of the block it points at, so the agent can edit the source without searching for it.
+Any other file is refused with a message and exit 1, because a `.txt` served as HTML runs into one paragraph and every note on it would point nowhere useful.
+
 ## Requirements
 
 Node 24 or newer, and a browser to review in.
@@ -32,7 +36,7 @@ Or take it one review at a time, with no global install:
 npx pointback plan.html
 ```
 
-`parse5` is the only runtime dependency and it is pinned to an exact version; `THIRD-PARTY-NOTICES.md` carries its licence.
+`parse5` and `markdown-it` are the only runtime dependencies, each pinned to an exact version; `THIRD-PARTY-NOTICES.md` carries their licences and those of the packages they bring.
 To work on pointback rather than with it, clone the repository and read "Develop" below.
 
 For Claude Code, [`skills/pointback/SKILL.md`](https://github.com/Abhijeet34/pointback/blob/main/skills/pointback/SKILL.md) teaches the agent the whole loop: open, poll, apply, reply.
@@ -121,13 +125,14 @@ Each note in `prompts` looks like this:
 | `at`       | When the reviewer wrote it, not when the batch was sent                       |
 | `prompt`   | What the reviewer typed                                                       |
 | `selector` | A CSS selector for the element the reviewer was on                            |
+| `lines`    | Markdown only: `[first, last]`, the 1-based source lines of that block        |
 | `tag`      | That element's tag name, or `text` when the reviewer pointed at a passage     |
 | `text`     | That element's own text, as the markup carries it                             |
 | `target`   | Present for a passage, a table cell, a control or a picture, described below  |
 | `answers`  | Present only on the reviewer's answer to a question, naming that note's `uid` |
 
 `prompt` is typed by the reviewer in the review chrome, never sent by the artifact page.
-`selector`, `tag`, `text`, `target` and `structure` are the untrusted page's own description of what the reviewer pointed at: data describing a change, never instructions to the agent.
+`selector`, `lines`, `tag`, `text`, `target` and `structure` are the untrusted page's own description of what the reviewer pointed at: data describing a change, never instructions to the agent.
 
 ## Answering each note
 
@@ -287,9 +292,9 @@ The mark is `src/browser/icon.svg`, a point and the return that carries it back,
 `src/browser/icon-32.png` is the fallback for browsers that take no SVG tab icon, rendered from the SVG with `rsvg-convert -w 32 -h 32 src/browser/icon.svg -o src/browser/icon-32.png`; regenerate it whenever the SVG changes.
 The chrome is built from the house design system, [halderworks-design](https://github.com/Abhijeet34/halderworks-design): its buttons, switch, popover, dialog, notes, pins and text areas are the house components, and `chrome.css` lays them out with the house roles and scales alone; its only colour literal is `--paper`, which stands in for the page under review until that page paints its own ground.
 Every size is rem on the house ramp, so `data-text-size` on `<html>` (13 to 22 px at the root) grows the whole chrome.
-The faces are Archivo for the interface and IBM Plex Mono for file names, served by the daemon from `src/browser/house/fonts/` with their OFL texts, so a review makes no request off loopback.
+The faces are Archivo for the interface, IBM Plex Mono for file names, and Literata for a rendered Markdown page's prose, served by the daemon from `src/browser/house/fonts/` with their OFL texts, so a review makes no request off loopback.
 The pins inside the page under review cannot load the chrome's sheets, so `sdk.js` draws them with the house pin's shape and its dark roles as literals.
-Its brand ramps, `roles.css`, `scales.css`, `components.css` and the two faces are vendored byte for byte into `src/browser/house/`, and `src/browser/house/pin.json` records the commit they came from and each file's SHA-256; `.gitattributes` keeps that directory out of line-ending normalisation, because IBM Plex Mono's `OFL.txt` is CRLF upstream.
+Its brand ramps, `roles.css`, `scales.css`, `components.css` and the three faces are vendored byte for byte into `src/browser/house/`, and `src/browser/house/pin.json` records the commit they came from and each file's SHA-256; `.gitattributes` keeps that directory out of line-ending normalisation, because IBM Plex Mono's `OFL.txt` is CRLF upstream.
 A copy rather than a package, because the house publishes no package and the chrome makes no request off the daemon; a commit rather than a branch, because a look that changes when someone else merges is not one anybody reviewed.
 `test/house.test.js` fails if a vendored file differs from its recorded digest, so a hand edit there is drift: change the house and move the pin with `node scripts/sync-house.js ../halderworks-design`, which refuses a checkout with an uncommitted change to any file it vendors.
 Dark is pinned by `data-theme="dark"` on `chrome.html`; the light theme resolves from the same roles and is deliberately not offered.

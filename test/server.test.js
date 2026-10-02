@@ -271,7 +271,7 @@ test("assets outside the file's folder load only from a named root, which holds 
 
 // The artifact frame is opaque-origin, so every asset load from it is cross-origin. Only a font may be
 // read that way: CORS on any other file would let a hostile page read it and send it out.
-test("only a font under the root is readable cross-origin, never the page, another file or the api", async () => {
+test("only a font is readable cross-origin, never the page, another file or the api", async () => {
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-font-"));
   const site = join(root, "site");
   mkdirSync(join(site, "fonts"), { recursive: true });
@@ -280,9 +280,16 @@ test("only a font under the root is readable cross-origin, never the page, anoth
   for (const name of [...fonts, ...others]) writeFileSync(join(site, "fonts", name), "x");
   writeFileSync(join(root, "outside.woff2"), "x");
   symlinkSync(join(root, "outside.woff2"), join(site, "fonts", "link.woff2"));
-  // An artifact named like a font is still the page: served as HTML, and never cross-origin.
-  const page = join(site, "page.woff2");
-  writeFileSync(page, "<p>a page with a font's name</p>");
+  // A file named like a font is not a page, and the page is never readable cross-origin.
+  writeFileSync(join(site, "page.woff2"), "<p>a page with a font's name</p>");
+  const named = await fetch(`${base}/api/sessions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ file: join(site, "page.woff2") }),
+  });
+  assert.equal(named.status, 415);
+  const page = join(site, "page.html");
+  writeFileSync(page, "<p>a page</p>");
   const opened = await post("/api/sessions", { file: page });
   const url = (await get(`/api/${opened.key}/session`)).artifactUrl;
   const corsOf = async (path) => {
@@ -310,6 +317,50 @@ test("only a font under the root is readable cross-origin, never the page, anoth
   });
   assert.equal(api.headers.get("access-control-allow-origin"), null, "the api, tokened");
   assert.deepEqual(await corsOf("/health"), [200, null]);
+  // The daemon's own house faces load from a rendered Markdown page's frame; its sheets do not need to.
+  assert.deepEqual(await corsOf("/house/fonts/literata/literata-latin-opsz-normal.woff2"), [
+    200,
+    "*",
+  ]);
+  assert.deepEqual(await corsOf("/markdown.css"), [200, null]);
+  assert.deepEqual(await corsOf("/chrome.js"), [200, null]);
+});
+
+test("a Markdown file opens as a sandboxed page, and any other kind of file is refused with a reason", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-kinds-"));
+  const open = async (name, body) => {
+    writeFileSync(join(root, name), body);
+    const res = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ file: join(root, name) }),
+    });
+    return [res.status, await res.json()];
+  };
+  for (const name of ["plan.md", "PLAN.MARKDOWN", "plan.htm"]) {
+    const [code, opened] = await open(name, "# Plan\n\nShip it.\n");
+    assert.equal(code, 200, name);
+    const res = await fetch(base + (await get(`/api/${opened.key}/session`)).artifactUrl);
+    assert.equal(res.headers.get("content-type"), "text/html; charset=utf-8", name);
+    // Raw HTML in Markdown runs, so the rendered page keeps the sandbox every artifact has.
+    assert.equal(
+      res.headers.get("content-security-policy"),
+      "sandbox allow-scripts allow-forms allow-popups",
+      name,
+    );
+  }
+  for (const name of ["notes.txt", "data.json", "app.js", "logo.svg", "Makefile"]) {
+    assert.deepEqual(
+      await open(name, "x"),
+      [
+        415,
+        {
+          error: `${name} cannot be reviewed: open an HTML (.html, .htm) or Markdown (.md, .markdown) file`,
+        },
+      ],
+      name,
+    );
+  }
 });
 
 test("prompts queue, show in the chat, and reach one poller with anchors intact", async () => {

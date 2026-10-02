@@ -37,6 +37,14 @@
     "fonts/ibm-plex-mono/OFL.txt": {
       "from": "fonts/ibm-plex-mono/OFL.txt",
       "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+    },
+    "fonts/literata/literata-latin-opsz-normal.woff2": {
+      "from": "fonts/literata/literata-latin-opsz-normal.woff2",
+      "sha256": "29de894c768689feef6ab4ef274a9a16d19bfc5b0c3cbfcdac80ef220816210c"
+    },
+    "fonts/literata/OFL.txt": {
+      "from": "fonts/literata/OFL.txt",
+      "sha256": "8742963604cd89dc81437811a850018fc03b2bfad686d7422c8235967c87614e"
     }
   }
 }

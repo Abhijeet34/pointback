@@ -2433,3 +2433,164 @@ test(
     rmSync(dirname(file), { recursive: true, force: true });
   },
 );
+
+/** A private copy of this repository's README.md, the Markdown a reviewer is most often handed. */
+function copyOfReadme() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-md-"));
+  const file = join(dir, "README.md");
+  const source = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  writeFileSync(file, source);
+  return { file, source };
+}
+
+// Read from the Markdown itself, never from the page: the first and last line of the paragraph
+// whose first line starts with `opening`, 1-based, as an agent editing the file would count them.
+function paragraphLines(source, opening) {
+  const lines = source.split("\n");
+  const first = lines.findIndex((line) => line.startsWith(opening));
+  assert.ok(first >= 0, `no paragraph opens with ${opening}`);
+  let last = first;
+  while (lines[last + 1]?.trim()) last += 1;
+  return [first + 1, last + 1];
+}
+
+// The Install section's paragraph, the one that names the runtime dependencies.
+const INSTALL = "`parse5`";
+const INSTALL_IN_PAGE = `(() => {
+  const paragraphs = [...document.querySelectorAll('main > p')];
+  return 'main > p:nth-of-type(' + (paragraphs.findIndex((p) => p.textContent.startsWith('parse5')) + 1) + ')';
+})()`;
+
+/** A note on the Install paragraph, clicked on its last line, which is plain words in the README. */
+async function noteOnInstall(page, artifact, text) {
+  const selector = await artifact.eval(INSTALL_IN_PAGE);
+  const height = Number(
+    await artifact.eval(`document.querySelector('${selector}').getBoundingClientRect().height`),
+  );
+  const unsent = "document.querySelectorAll('.mark:not(.sent)').length";
+  const before = Number(await page.eval(unsent));
+  await clickIn(page, artifact, selector, { x: 30, y: height - 8 });
+  await page.waitFor(
+    "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+  );
+  await page.type(text);
+  await page.enter();
+  await page.waitFor(`${unsent} === ${before + 1}`);
+  return selector;
+}
+
+test(
+  "a Markdown file renders as a page, and a note on a paragraph arrives with its source lines",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, source } = copyOfReadme();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    // What paints: the blocks a README is made of, and none of the syntax that wrote them.
+    const shape = JSON.parse(
+      await artifact.eval(`JSON.stringify({
+        title: document.querySelector('main > h1')?.textContent,
+        sections: document.querySelectorAll('main > h2').length,
+        items: document.querySelectorAll('main li').length,
+        code: document.querySelectorAll('pre > code').length,
+        heads: document.querySelectorAll('table th').length,
+        syntax: /^(#{1,6} |\`\`\`|\\|---)/m.test(document.body.innerText),
+      })`),
+    );
+    assert.equal(shape.title, "pointback");
+    assert.ok(shape.sections >= 8, `${shape.sections} sections`);
+    assert.ok(shape.items > 0 && shape.code > 0 && shape.heads > 0, JSON.stringify(shape));
+    assert.equal(shape.syntax, false, "no Markdown syntax paints as text");
+    // The house reading faces, read from the font the renderer used for each run of text.
+    await artifact.eval("document.fonts.ready.then(() => true)");
+    await artifact.send("DOM.enable");
+    await artifact.send("CSS.enable");
+    const { root } = await artifact.send("DOM.getDocument");
+    const painted = async (selector) => {
+      const { nodeId } = await artifact.send("DOM.querySelector", {
+        nodeId: root.nodeId,
+        selector,
+      });
+      const { fonts } = await artifact.send("CSS.getPlatformFontsForNode", { nodeId });
+      const [main] = fonts.toSorted((x, y) => y.glyphCount - x.glyphCount);
+      return main.familyName.replace(/ (Medium|SemiBold|Bold)$/, "");
+    };
+    assert.equal(await painted("main > p"), "Literata", "prose paints in Literata");
+    assert.equal(await painted("main > h2"), "Archivo", "a heading paints in Archivo");
+    assert.equal(await painted("pre > code"), "IBM Plex Mono", "code paints in Plex Mono");
+
+    const selector = await noteOnInstall(page, artifact, "Say why two");
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    const [note] = polled.prompts;
+    assert.equal(note.prompt, "Say why two");
+    assert.equal(note.tag, "p");
+    assert.equal(note.selector, selector);
+    const lines = paragraphLines(source, INSTALL);
+    assert.ok(lines[1] > lines[0], "the paragraph spans more than one line of the file");
+    assert.deepEqual(note.lines, lines, "the note carries the paragraph's lines in the file");
+    const keys = Object.keys(note);
+    assert.equal(keys.indexOf("lines"), keys.indexOf("selector") + 1, "beside the selector");
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "a save to the Markdown keeps the reviewer's place and the pin, and a new note has the new lines",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, source } = copyOfReadme();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOnInstall(page, artifact, "Before the edit");
+    const install = `[...document.querySelectorAll('main > h2')].find((h) => h.textContent === 'Install')`;
+    await artifact.eval(`window.scrollTo(0, ${install}.getBoundingClientRect().top + scrollY - 6)`);
+    await page.waitFor("Number(document.body.dataset.scroll) > 0");
+    const top = `Math.round(${install}.getBoundingClientRect().top)`;
+    const wasAt = Number(await artifact.eval(top));
+    await pinsBesideTargets(
+      artifact,
+      ["Note 1, not sent yet"],
+      [await artifact.eval(INSTALL_IN_PAGE)],
+      "before the edit",
+    );
+
+    // The agent adds a section above everything the reviewer has read: fifteen lines of Markdown.
+    const added = `## Added above\n\n${"A line the agent wrote above the Install section.\n".repeat(12)}\n`;
+    const edited = source.replace("## Requirements", `${added}## Requirements`);
+    writeFileSync(file, edited);
+    await page.waitFor("document.body.dataset.revision === '1'");
+    const nowAt = Number(await artifact.eval(top));
+    assert.ok(
+      Math.abs(nowAt - wasAt) <= 4,
+      `the reviewer's place moved from ${wasAt} px to ${nowAt} px`,
+    );
+    await pinsBesideTargets(
+      artifact,
+      ["Note 1, not sent yet"],
+      [await artifact.eval(INSTALL_IN_PAGE)],
+      "after the edit",
+    );
+
+    await noteOnInstall(page, artifact, "After the edit");
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 2");
+    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    const before = paragraphLines(source, INSTALL);
+    const after = paragraphLines(edited, INSTALL);
+    assert.deepEqual(
+      after,
+      before.map((line) => line + 15),
+    );
+    assert.deepEqual(
+      polled.prompts.map(({ prompt, lines }) => [prompt, lines]),
+      [
+        ["Before the edit", before],
+        ["After the edit", after],
+      ],
+      "each note carries the lines of the file it was written against",
+    );
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
