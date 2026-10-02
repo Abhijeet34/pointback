@@ -18,7 +18,9 @@ import { readPollCursor, stateDir, writePollCursor } from "./state-dir.js";
 const usage = `${name} ${version}
 
 Usage:
-  ${name} <file.html> [--no-open] [--reopen]   open a review session in the browser
+  ${name} <file.html> [--no-open] [--reopen] [--root <dir>]
+                                              open a review session in the browser; assets
+                                              resolve within --root (default: the file's folder)
   ${name} poll <file.html> [--timeout-ms N]    wait for the reviewer's feedback
   ${name} end <file.html>                      close the review; the tab says so
   ${name} stop                                 stop the background server
@@ -35,6 +37,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
       help: { type: "boolean" },
       "no-open": { type: "boolean" },
       reopen: { type: "boolean" },
+      root: { type: "string" },
       "timeout-ms": { type: "string" },
     },
   });
@@ -45,6 +48,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   const command = ["open", "poll", "end", "stop", "server"].includes(first) ? first : "open";
   const args = command === first ? rest : positionals;
   const dir = stateDir();
+  if (values.root !== undefined && command !== "open")
+    throw new Error("--root applies only when opening a review");
 
   if (command === "server") {
     const port = Number(env("PORT") ?? 0);
@@ -71,6 +76,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   if (command === "open") {
     const session = await api(server, "POST", "/api/sessions", {
       file: resolve(file),
+      root: values.root === undefined ? undefined : resolve(values.root),
       reopen: values.reopen === true,
     });
     // The token rides in the fragment: it reaches the page's script and never the server's request line.

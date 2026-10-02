@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { extname, join } from "node:path";
 import { KEY_PATTERN, TOKEN_PATTERN, resolveAsset } from "./artifact-path.js";
 import {
   ARTIFACT_HEADERS,
@@ -208,9 +208,11 @@ async function api(req, res, url, ctx) {
     const body = await readJsonBody(req);
     if (typeof body.file !== "string" || body.file === "")
       throw new HttpError(400, "file required");
+    if (body.root !== undefined && (typeof body.root !== "string" || body.root === ""))
+      throw new HttpError(400, "root must be a directory path");
     let session;
     try {
-      session = ctx.store.open(body.file);
+      session = ctx.store.open(body.file, body.root);
     } catch (error) {
       if (error?.code === "ENOENT") throw new HttpError(404, `no such file: ${body.file}`);
       throw error;
@@ -338,8 +340,7 @@ function serveArtifact(res, store, match) {
   if (!timingSafeEqual(Buffer.from(token), Buffer.from(session.assetToken))) {
     throw new HttpError(404, "not found");
   }
-  const root = dirname(session.file);
-  const file = resolveAsset(root, rest);
+  const file = resolveAsset(session.root, rest);
   if (!file) throw new HttpError(404, "not found");
   const type = contentTypes[extname(file).toLowerCase()] ?? "application/octet-stream";
   if (file === session.file) {

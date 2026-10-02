@@ -1,12 +1,13 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { basename, dirname, relative, sep } from "node:path";
 import {
   KEY_PATTERN,
   TOKEN_PATTERN,
   canonicalFile,
   canonicalPath,
+  isOutside,
   sessionKey,
 } from "./artifact-path.js";
 import { HttpError } from "./http-guard.js";
@@ -51,6 +52,11 @@ export class SessionStore {
           session.epoch = newEpoch();
           upgraded = true;
         }
+        // A session stored before roots existed resolved its assets in the file's own folder.
+        if (typeof session.root !== "string") {
+          session.root = dirname(session.file);
+          upgraded = true;
+        }
         this.#sessions.set(key, session);
       }
     }
@@ -61,9 +67,13 @@ export class SessionStore {
     writeJsonAtomic(this.#file, { sessions: Object.fromEntries(this.#sessions) });
   }
 
-  /** Returns the session for a file, creating it on first sight and touching its recency. */
-  open(file) {
+  /**
+   * Returns the session for a file, creating it on first sight and touching its recency. `root` is
+   * the folder its assets resolve within, set by every open so the latest one is what is served.
+   */
+  open(file, root) {
     const canonical = canonicalFile(file);
+    const assets = assetRoot(root, canonical);
     const key = sessionKey(canonical);
     const now = new Date().toISOString();
     let session = this.#sessions.get(key);
@@ -72,6 +82,7 @@ export class SessionStore {
       session = {
         key,
         file: canonical,
+        root: assets,
         // A fresh secret per session gates the artifact bytes; the key alone opens nothing.
         assetToken: randomBytes(16).toString("hex"),
         // Names this life of the session. Eviction and a later open restart `nextUid` at 1, and a
@@ -88,6 +99,7 @@ export class SessionStore {
       this.#sessions.set(key, session);
     } else {
       session.lastActive = now;
+      session.root = assets;
     }
     this.#persist();
     return session;
@@ -153,7 +165,6 @@ export class SessionStore {
       key,
       file: session.file,
       fileName: basename(session.file),
-      artifactUrl: `/artifact/${key}/${session.assetToken}/${encodeURIComponent(basename(session.file))}`,
       chat: session.chat,
       ...this.status(key),
     };
@@ -162,7 +173,11 @@ export class SessionStore {
   /** What a freshly connected tab must know to be current: revision, presence, whether it ended, whether its file is gone, and the unsent notes. */
   status(key) {
     const session = this.get(key);
+    // The page's own address is its path under the root, so `../` in its markup climbs the root's
+    // folders. It is part of status because a later open with another root moves it.
+    const path = relative(session.root, session.file).split(sep).map(encodeURIComponent).join("/");
     return {
+      artifactUrl: `/artifact/${key}/${session.assetToken}/${path}`,
       revision: session.revision,
       drafts: session.drafts ?? [],
       presence: this.presence(key),
@@ -473,6 +488,27 @@ export class SessionStore {
     const presence = this.presence(key);
     if (presence.state !== before) this.#events.emit(key, { type: "presence", ...presence });
   }
+}
+
+/**
+ * The folder a review's assets resolve within: the file's own unless the agent named a wider one,
+ * canonicalised so a symlinked spelling cannot stretch it, and holding the file it serves.
+ */
+function assetRoot(root, file) {
+  if (root === undefined) return dirname(file);
+  let canonical;
+  try {
+    canonical = canonicalFile(root);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR")
+      throw new HttpError(404, `no such directory: ${root}`);
+    throw error;
+  }
+  if (!statSync(canonical).isDirectory())
+    throw new HttpError(400, `root is not a directory: ${root}`);
+  if (isOutside(canonical, file))
+    throw new HttpError(400, `${file} is not inside root ${canonical}`);
+  return canonical;
 }
 
 /** A bounded string field, named by its owner so the 400 says which one was wrong. */

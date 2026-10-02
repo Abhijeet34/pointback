@@ -35,10 +35,11 @@ const only = (types, allowed) => types.filter((type) => !allowed.includes(type))
 
 test("a tab is greeted with the state it must match, and a saved file reloads it", async () => {
   const watching = await watchAvailable();
-  const { artifact, key, streams } = lab();
+  const { artifact, key, store, streams } = lab();
   const one = tab(streams, key);
   assert.deepEqual(one.lines[0], {
     type: "hello",
+    artifactUrl: `/artifact/${key}/${store.get(key).assetToken}/plan.html`,
     revision: 0,
     presence: { state: "waiting" },
     ended: null,
@@ -80,6 +81,7 @@ test("a second tab takes the review, and closing it hands the review back", () =
   two.detach();
   assert.deepEqual(one.lines.at(-1), {
     type: "current",
+    artifactUrl: `/artifact/${key}/${store.get(key).assetToken}/plan.html`,
     revision: 1,
     presence: { state: "waiting" },
     ended: null,

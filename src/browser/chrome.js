@@ -47,6 +47,7 @@ let chat = [];
 let session = null;
 let revision = 0;
 let shownRevision = -1;
+let shownUrl = "";
 let presence = { state: "waiting" };
 let ended = null;
 let fileGone = false;
@@ -141,6 +142,8 @@ async function boot() {
 /** Adopts the state the server just described, reloading the page under review if it moved on. */
 function sync(state) {
   revision = state.revision;
+  // A later open with another --root moves the page's own address, so a tab promoted back follows it.
+  session.artifactUrl = state.artifactUrl;
   presence = state.presence;
   ended = state.ended;
   pending = state.drafts;
@@ -148,7 +151,7 @@ function sync(state) {
   // A gone file has no page to load; the last one shown stays up under the notice.
   fileGone = state.gone === true;
   if (fileGone) setAnnotate(false);
-  else if (revision !== shownRevision) show();
+  else if (revision !== shownRevision || session.artifactUrl !== shownUrl) show();
 }
 
 function show() {
@@ -159,7 +162,8 @@ function show() {
   }
   deferredReload = false;
   shownRevision = revision;
-  frame.src = `${session.artifactUrl}?r=${revision}`;
+  shownUrl = session.artifactUrl;
+  frame.src = `${shownUrl}?r=${revision}`;
 }
 
 /**

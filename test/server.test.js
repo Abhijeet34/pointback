@@ -317,6 +317,7 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
   assert.equal(first.contentType, "application/x-ndjson; charset=utf-8");
   assert.deepEqual(await first.next(), {
     type: "hello",
+    artifactUrl,
     revision: 0,
     presence: { state: "waiting" },
     ended: null,
