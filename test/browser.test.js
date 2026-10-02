@@ -220,8 +220,6 @@ test(
       "notes stay visible at 800x600",
     );
 
-    const polling = cli(["poll", fixture, "--timeout-ms", "10000"], lab.env);
-    await new Promise((r) => setTimeout(r, 400));
     // Every state Send passes through from the press to the server's answer, as it paints.
     await page.eval(`(() => {
       const send = document.getElementById("send");
@@ -229,10 +227,16 @@ test(
       new MutationObserver(() => sendStates.push([send.disabled, send.textContent]))
         .observe(send, { attributes: true, childList: true, characterData: true, subtree: true });
     })()`);
+    // The reviewer sees the notes turn sent, and only then does the agent ask: a poll that waits
+    // for nothing gets the whole batch. A poll started first, on its own 10 s clock, missed a send a
+    // busy browser delivered late, and stalled this test in 13 of 40 runs in one loaded window.
     const sentAt = Date.now();
     await page.eval("document.getElementById('send').click()");
-    const polled = (await polling).json();
-    const roundTripMs = Date.now() - sentAt;
+    await page.waitFor(
+      "document.querySelectorAll('.mark.sent').length === 4 && document.querySelectorAll('.mark:not(.sent)').length === 0",
+    );
+    const sentMs = Date.now() - sentAt;
+    const polled = (await cli(["poll", fixture, "--timeout-ms", "0"], lab.env)).json();
 
     assert.equal(polled.status, "feedback");
     assert.deepEqual(
@@ -412,7 +416,7 @@ test(
     );
     console.log(
       `browser slice: page usable in ${readyMs} ms; four notes composed in the chrome by mouse and ` +
-        `keyboard; send to poll return ${roundTripMs} ms; ` +
+        `keyboard; Send to notes shown sent ${sentMs} ms; ` +
         `page structure ${structureBytes} B against ${referenceBytes} B in the reference's format`,
     );
   },
@@ -808,9 +812,13 @@ test(
   "a presence change leaves a reviewer who scrolled up in the notes where they were",
   { skip: !executable && "no browser found" },
   async () => {
-    // Enough notes to overflow the margin at 800x600: a full send's worth, drafted and sent.
+    // Enough notes to overflow the margin at 800x600: a full send's worth, drafted and sent, on a
+    // review of its own. On the shared one, four notes the annotate test left unsent when it stalled
+    // took these drafts past the one-send cap, and the 47th answered 429.
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
     const { port, token } = lab.serverInfo();
-    const key = new URL(opened.session.url).pathname.split("/").pop();
+    const key = new URL(session.url).pathname.split("/").pop();
     const call = (method, path, body) =>
       fetch(`http://127.0.0.1:${port}${path}`, {
         method,
@@ -824,10 +832,10 @@ test(
     const res = await call("POST", `/api/${key}/prompts`, {});
     assert.equal(res.status, 200, await res.text());
     assert.equal(
-      (await cli(["poll", fixture, "--timeout-ms", "0"], lab.env)).json().status,
+      (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status,
       "feedback",
     );
-    const page = await browser.page(opened.session.url);
+    const page = await browser.page(session.url);
     await page.waitFor("document.body.dataset.ready === '1'");
     const marks = "document.getElementById('marginBody')";
     assert.ok(
@@ -837,11 +845,12 @@ test(
     await page.eval(`${marks}.scrollTop = 0`);
     // An empty poll attaches and detaches at once: two presence events reach the tab.
     assert.equal(
-      (await cli(["poll", fixture, "--timeout-ms", "0"], lab.env)).json().status,
+      (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status,
       "waiting",
     );
     await page.waitFor("document.getElementById('presence').dataset.state === 'waiting'");
     assert.equal(await page.eval(`${marks}.scrollTop`), 0);
+    await page.close();
   },
 );
 
@@ -1517,9 +1526,19 @@ const REPLIES = `JSON.stringify([...document.querySelectorAll('.mark.sent')].map
     painted: line.checkVisibility() && box.height > 0,
   };
 }))`;
-/** Requests this page made over the API apart from the event stream, which stays open. */
-const API_REQUESTS =
-  "performance.getEntriesByType('resource').filter((e) => e.name.includes('/api/')).length";
+/**
+ * Counts the API requests this page makes from now on, as each is made. A resource timing entry
+ * is no such count: it lands when its request completes, which can be after the page has already
+ * rendered the response, so a count taken in between misses it and the next one looks like news.
+ */
+const COUNT_API_REQUESTS = `(() => {
+  const real = window.fetch;
+  window.apiRequests = 0;
+  window.fetch = (input, init) => {
+    if (String(input).includes('/api/')) window.apiRequests += 1;
+    return real(input, init);
+  };
+})()`;
 
 test(
   "the agent's reply lands on its note in one event, as text, and a question is answered by a note",
@@ -1532,7 +1551,7 @@ test(
     await noteOn(page, artifact, "#risks h2", "Name the riskiest step");
     await page.eval("document.getElementById('send').click()");
     await page.waitFor("document.querySelectorAll('.mark.sent').length === 3");
-    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => p.uid),
       [1, 2, 3],
@@ -1543,7 +1562,7 @@ test(
     };
 
     // Done on uid 2 reaches the margin over the stream that is already open: no other request.
-    const requests = Number(await page.eval(API_REQUESTS));
+    await page.eval(COUNT_API_REQUESTS);
     const replied = Date.now();
     await reply("2", "--done");
     await page.waitFor("document.querySelectorAll('.mark-reply').length === 1");
@@ -1554,8 +1573,8 @@ test(
       null,
     ]);
     assert.equal(
-      Number(await page.eval(API_REQUESTS)),
-      requests,
+      await page.eval("window.apiRequests"),
+      0,
       "the reply arrived as one event on the stream, not by refetching the session",
     );
 
@@ -1620,8 +1639,11 @@ test(
       await page.eval("document.querySelector('.mark:not(.sent) .mark-tag').textContent"),
       "Answer",
     );
+    // The answer is the agent's to fetch once the reviewer sees it sent. A poll on a 3 s clock
+    // started at the click can lose the race to a Send that a busy browser delivers late.
     await page.eval("document.getElementById('send').click()");
-    const answered = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 4");
+    const answered = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       answered.prompts.map(({ uid, prompt, selector, answers }) => ({
         uid,
@@ -1653,6 +1675,65 @@ test(
     console.log(
       `browser reply: the margin showed Done ${shownMs} ms after the reply command started`,
     );
+    await page.close();
+  },
+);
+
+test(
+  "Send keeps the notes on the margin as sent, and a reply lands, however late the tab's responses are",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Make the title shorter");
+    await noteOn(page, artifact, "#p1", "Say how long each step takes");
+    // Every change to the margin is recorded, so a frame that showed fewer notes is caught.
+    await page.eval(`(() => {
+      const marks = document.getElementById('marks');
+      window.fewestNotes = marks.children.length;
+      new MutationObserver(() => {
+        window.fewestNotes = Math.min(window.fewestNotes, marks.children.length);
+      }).observe(marks, { childList: true });
+    })()`);
+    // The server's answers to Send and to any refetch are held once given, as a busy browser holds
+    // a response; the event stream is open already and goes on untouched. A refetch emptied the
+    // margin until it landed, and one answered before the agent's reply wiped the reply off.
+    const held = [];
+    const hold = (message) => {
+      if (message.sessionId === page.sessionId && message.method === "Fetch.requestPaused")
+        held.push(message.params.requestId);
+    };
+    page.browser.listeners.push(hold);
+    await page.send("Fetch.enable", {
+      patterns: ["*/prompts", "*/session"].map((urlPattern) => ({
+        urlPattern,
+        requestStage: "Response",
+      })),
+    });
+    try {
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 2");
+      assert.equal(await page.eval("window.fewestNotes"), 2, "the notes never left the margin");
+      const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+      assert.deepEqual(
+        polled.prompts.map((p) => p.uid),
+        [1, 2],
+      );
+      const replied = await cli(["reply", file, "1", "--done"], lab.env);
+      assert.equal(replied.code, 0, replied.stderr);
+      await page.waitFor("document.querySelectorAll('.mark-reply').length === 1");
+    } finally {
+      for (const requestId of held) await page.send("Fetch.continueRequest", { requestId });
+      await page.send("Fetch.disable");
+      page.browser.listeners.splice(page.browser.listeners.indexOf(hold), 1);
+    }
+    // Whatever the held answers carried, landing now takes nothing off the margin. A negative, so
+    // it sleeps rather than waits.
+    await new Promise((r) => setTimeout(r, 500));
+    assert.deepEqual(JSON.parse(await page.eval(REPLIES)), [
+      { label: "Done", message: "", drawn: ["span:Done"], painted: true },
+      null,
+    ]);
     await page.close();
   },
 );
