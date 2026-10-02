@@ -1,0 +1,92 @@
+/* Halderworks scales, identical for every brand: type, space, control sizes and motion, the
+   viewer's text size, and the density, touch and reduced-motion blocks that move them.
+   Load after ramps/roles.css. Type, space and control sizes are in rem, so the text-size setting
+   moves every step, every control and every component's inner space together; page gutters stay
+   px. tools/export.py reads this file into exports/; the comment on each line is the
+   description the exports carry. */
+
+:root {
+  /* ---- type: one ramp in rem; px at the default size M ---- */
+  --hw-text-xs: max(0.8rem, 11px);           /* 12: labels, captions; never under 11px */
+  --hw-text-sm: 0.8667rem;                   /* 13: secondary lines, controls */
+  --hw-text-md: 1rem;                        /* 15: content */
+  --hw-text-lg: 1.1333rem;                   /* 17: lead, row title in a reading view */
+  --hw-text-xl: 1.4rem;                      /* 21: section title */
+  --hw-text-2xl: 1.8667rem;                  /* 28: page title */
+  --hw-text-3xl: clamp(2.4rem, 1.6rem + 2.4vw, 3.6rem);  /* stage headline */
+  --hw-text-4xl: clamp(3.2rem, 1.4rem + 6.2vw, 7.5rem);  /* stage poster */
+  --hw-leading-tight: 1.1;                   /* a stage size */
+  --hw-leading-snug: 1.3;                    /* a title */
+  --hw-leading: 1.5;                         /* interface text */
+  --hw-leading-read: 1.62;                   /* running prose */
+
+  /* ---- space: rem inside components, so a larger text size grows the box ---- */
+  --hw-space-4: 0.2667rem;                   /* 4 */
+  --hw-space-8: 0.5333rem;                   /* 8 */
+  --hw-space-12: 0.8rem;                     /* 12 */
+  --hw-space-16: 1.0667rem;                  /* 16 */
+  --hw-space-24: 1.6rem;                     /* 24 */
+  --hw-space-32: 2.1333rem;                  /* 32 */
+  --hw-space-48: 3.2rem;                     /* 48 */
+  --hw-space-64: 4.2667rem;                  /* 64 */
+
+  /* ---- density: control and row sizes, in rem for the same reason ---- */
+  --hw-control-h-sm: max(24px, 1.6rem);      /* 24: a compact control; never under the 2.5.8 target */
+  --hw-control-h: 2.1333rem;                 /* 32: button, select, input outer height */
+  --hw-control-h-lg: 2.6667rem;              /* 40: one call to action on a marketing surface */
+  --hw-row-h: 2.9333rem;                     /* 44: a table or list row */
+  --hw-row-h-compact: 2.1333rem;             /* 32: a compact row */
+  --hw-cell-pad-x: 1.0667rem;                /* 16: cell padding, both densities */
+  --hw-cell-pad-y: 0.8rem;                   /* 12: cell padding, vertical */
+  --hw-cell-pad-y-compact: 0.4rem;           /* 6 */
+  --hw-field-pad-x: 0.8rem;                  /* 12: input padding, both densities */
+  --hw-field-pad-y: 0.4667rem;               /* 7: input padding, vertical */
+  --hw-field-pad-y-compact: 0.2rem;          /* 3 */
+
+  /* ---- motion: three durations and one curve ---- */
+  --hw-duration-fast: 120ms;                 /* feedback: hover, press, toggle */
+  --hw-duration-base: 200ms;                 /* enter: menu, popover, toast */
+  --hw-duration-slow: 320ms;                 /* move: dialog, sheet, disclosure */
+  --hw-ease-out: cubic-bezier(0.22, 1, 0.36, 1);  /* every entrance and every move */
+}
+
+/* The viewer's text size, five steps on the root: 13, 15, 17, 19 and 22px at the browser's
+   default 16px. A percentage rather than px, so a reader who raised the browser's own default
+   keeps that raise on top of this setting. M is the default. */
+html { font-size: 93.75%; }
+html[data-text-size="s"] { font-size: 81.25%; }
+html[data-text-size="m"] { font-size: 93.75%; }
+html[data-text-size="l"] { font-size: 106.25%; }
+html[data-text-size="xl"] { font-size: 118.75%; }
+html[data-text-size="xxl"] { font-size: 137.5%; }
+
+/* Compact density. One attribute, and it moves vertical rhythm and control height only. */
+[data-density="compact"] {
+  --hw-control-h: var(--hw-control-h-sm);
+  --hw-row-h: var(--hw-row-h-compact);
+  --hw-cell-pad-y: var(--hw-cell-pad-y-compact);
+  --hw-field-pad-y: var(--hw-field-pad-y-compact);
+}
+
+/* Touch. On a coarse pointer the control IS the target, so it never measures under the 44px
+   pointer floor, compact or not, at any text size. After the compact block, at the same
+   specificity, so a compact ancestor cannot pull a touch control back to 24px. */
+@media (pointer: coarse) {
+  :root { --hw-control-h: max(44px, 2.1333rem); }
+  [data-density="compact"] { --hw-control-h: max(44px, var(--hw-control-h-sm)); }
+}
+
+/* Reduced motion removes movement, not feedback (design/40-motion.md). */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --hw-duration-fast: 100ms;
+    --hw-duration-base: 100ms;
+    --hw-duration-slow: 100ms;
+  }
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-property: opacity, color, background-color, border-color, outline-color !important;
+    scroll-behavior: auto !important;
+  }
+}
