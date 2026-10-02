@@ -1086,8 +1086,10 @@ async function openReview(url) {
   await page.waitFor("document.body.dataset.ready === '1'");
   const artifact = await attaching;
   await artifact.waitFor("document.readyState === 'complete'");
+  // Read from what the page acknowledged rather than from the switch's markup.
+  await page.waitFor("document.body.dataset.annotate !== undefined");
   await page.eval(
-    "String(document.getElementById('annotate').checked) === 'true' || document.getElementById('annotate').click()",
+    "document.body.dataset.annotate === '1' || document.getElementById('annotate').click()",
   );
   await page.waitFor("document.body.dataset.annotate === '1'");
   return { page, artifact };
