@@ -491,21 +491,24 @@ test(
     const page = await browser.page(opened.json().session.url);
     const artifact = await page.frame();
     await artifact.waitFor(`${painted} === ${JSON.stringify(styled)}`);
+    const unstyledAtNewAddress = `document.readyState === 'complete' && ![null, ${JSON.stringify(styled)}].includes(${painted}) && /\\/[0-9a-f]{32}\\/actions\\.html$/.test(location.pathname)`;
 
-    // Opened again without a root, a second tab gets today's default and the sheet unstyled.
-    const plain = await browser.page((await cli([file], lab.env)).json().session.url);
+    // Opened again without a root while this tab shows the review, which opens no second tab: this
+    // one follows the page to the address the new root gives it, or its next reload paints a 404.
+    const reopened = (await cli([file], lab.env)).json().session.url;
+    await artifact.waitFor(unstyledAtNewAddress);
+
+    // A second tab on that open gets today's default and the sheet unstyled.
+    const plain = await browser.page(reopened);
     const plainFrame = await plain.frame();
     await plainFrame.waitFor(`document.readyState === 'complete' && ${painted} !== null`);
     assert.notEqual(await plainFrame.eval(painted), styled, "assets stay in the file's folder");
 
-    // The first tab gets the review back when the second goes, and follows the root it now has
-    // rather than reloading under the address the wider root gave it.
+    // The first tab gets the review back when the second goes, still at the address the new root
+    // gave it rather than the one the wider root did.
     await plain.close();
     await page.front();
-    await artifact.waitFor(
-      `document.readyState === 'complete' && ![null, ${JSON.stringify(styled)}].includes(${painted})`,
-    );
-    assert.match(await artifact.eval("location.pathname"), /\/[0-9a-f]{32}\/actions\.html$/);
+    await artifact.waitFor(unstyledAtNewAddress);
     await page.close();
   },
 );

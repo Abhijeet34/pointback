@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { EventStreams } from "../src/events.js";
@@ -99,6 +99,22 @@ test("a second tab takes the review, and closing it hands the review back", () =
   assert.equal(streams.live(key), false, "the last tab gone, the next open opens one again");
 });
 
+test("an open under another root moves an open tab to the page's new address, and only then", async () => {
+  const { dir, artifact, key, streams, store } = lab();
+  const one = tab(streams, key);
+  store.open(artifact);
+  store.open(artifact, dirname(dir));
+  assert.deepEqual(only(one.types(), await noise()), ["hello", "rerooted"]);
+  assert.deepEqual(
+    one.lines.find((line) => line.type === "rerooted"),
+    {
+      type: "rerooted",
+      artifactUrl: `/artifact/${key}/${store.get(key).assetToken}/${basename(dir)}/plan.html`,
+    },
+  );
+  one.detach();
+});
+
 test("presence, unsent notes, the end and a reopen all reach every tab; feedback does not", async () => {
   const { key, streams, store } = lab();
   const one = tab(streams, key);
@@ -123,6 +139,30 @@ test("presence, unsent notes, the end and a reopen all reach every tab; feedback
     [["x"], []],
     "a tab sees the note arrive and leave with Send",
   );
+  one.detach();
+});
+
+test("a file the agent's poll finds gone comes back to every tab, even unchanged inside the debounce", async () => {
+  const watching = await watchAvailable();
+  const { artifact, key, store, streams } = lab();
+  const one = tab(streams, key);
+  await sleep(150);
+  // Moved away and straight back around the poll, so the watcher's debounce first runs with the
+  // file present at the size and mtime it started with: it never saw the file leave, the tab did.
+  renameSync(artifact, `${artifact}.away`);
+  assert.equal((await store.waitForFeedback(key, 0)).status, "gone");
+  renameSync(`${artifact}.away`, artifact);
+  if (!watching) {
+    await sleep(200);
+    assert.deepEqual(only(one.types(), ["reload-off"]), ["hello", "gone"], "no watching here");
+    one.detach();
+    return;
+  }
+  await until(() => one.types().includes("reload"), {
+    what: "the file's return to reach a tab the poll told it was gone",
+    timeoutMs: 10_000,
+  });
+  assert.deepEqual(one.types(), ["hello", "gone", "reload"]);
   one.detach();
 });
 
