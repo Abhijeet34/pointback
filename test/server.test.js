@@ -611,6 +611,23 @@ test("unsent notes live on the server: added, removed, sent as one batch, and ke
     );
     assert.equal((await call("DELETE", `/api/${k}/drafts/__proto__`)).status, 404);
 
+    // An edit rewrites the instruction and nothing else: the note keeps its target and its stamp.
+    const edited = await call("PATCH", `/api/${k}/drafts/${drafts[1].id}`, {
+      prompt: "two, said better",
+    });
+    assert.equal(edited.status, 200);
+    assert.deepEqual(edited.body.drafts, [{ ...drafts[1], prompt: "two, said better" }]);
+    assert.equal(
+      (await call("PATCH", `/api/${k}/drafts/${drafts[1].id}`, { prompt: " " })).status,
+      400,
+      "an edit cannot empty a note",
+    );
+    const sentElsewhere = await call("PATCH", `/api/${k}/drafts/${drafts[0].id}`, { prompt: "x" });
+    assert.deepEqual(
+      [sentElsewhere.status, sentElsewhere.body.error],
+      [404, "that note was already sent or removed"],
+    );
+
     assert.equal((await call("POST", `/api/${k}/prompts`, {})).body.accepted, 1);
     assert.deepEqual((await call("GET", `/api/${k}/session`)).body.drafts, []);
     assert.equal((await call("POST", `/api/${k}/prompts`, {})).status, 400, "nothing to send");
@@ -618,7 +635,7 @@ test("unsent notes live on the server: added, removed, sent as one batch, and ke
       .body;
     assert.deepEqual(
       polled.prompts.map((p) => [p.uid, p.prompt, p.at === drafts[1].at]),
-      [[1, "two", true]],
+      [[1, "two, said better", true]],
     );
     assert.equal(polled.structure, "main", "the outline taken with the notes goes with them");
 

@@ -3,7 +3,8 @@
 A reviewer points at something on a rendered HTML page an agent produced, and the pointing comes back to the agent as an instruction.
 
 The agent writes a page, runs `pointback plan.html`, and a browser tab opens with the page inside a small review chrome.
-The reviewer turns on Annotate and points: at an element by clicking it or Tabbing to it, at a passage by selecting the text, at a table cell by landing on it.
+Annotate is on when the tab opens, and the reviewer points: at an element by clicking it or Tabbing to it, at a passage by selecting the text, at a table cell by landing on it.
+Each note is a numbered pin on the page and the same number in the margin; pressing either one leads to the other, and a note not yet sent can be edited where it stands.
 The agent runs `pointback poll plan.html` and receives each note as JSON with the element's CSS selector, tag name and visible text, plus the anchor that finds a passage or a cell again after the page has been rewritten.
 Once it has acted on a note, the agent runs `pointback reply plan.html 2 --done`, or `--declined` or `--question` with a `--message`, and the reviewer reads the answer on that note.
 When the agent rewrites the file, the open tab reloads to the new page and keeps the reviewer where they were reading.
@@ -191,6 +192,7 @@ Annotate mode gives every element that carries text of its own a Tab stop, so th
 Tab to an element, press Enter or Space to open the card, type, and press Enter to add the note; Escape closes the card and returns focus to the element you came from.
 Hold Shift and press an arrow key to grow a real selection a word at a time inside the focused element, then Enter to note that passage rather than the whole element.
 `test/browser.test.js` walks it: five Shift+ArrowRight on the first paragraph, Enter, type, Enter, then eight Tab stops to the owner of the first step and Enter again, with no mouse event anywhere in between.
+The pins are buttons after the page's own content, each named by its number and state, such as "Note 2, sent"; Enter on one moves focus to its note in the margin, and Enter on a margin note's number scrolls the page to its target and rings its pin.
 
 ## While the review is open
 
@@ -203,7 +205,7 @@ It carries seven things.
 - **Unsent notes.** A note is kept by the server the moment the reviewer adds it, so closing the tab, reloading it or restarting the daemon loses nothing, and every tab on the review shows the same list. Send hands every unsent note to the agent as one batch, which is why at most `promptsPerRequest` of them wait at once.
 - **Replies.** The agent's answer to a note lands on that note as it is given, and the status line says when the agent has asked a question or answered every note. Every connect carries the sent notes with their replies, so a tab that was away catches up.
 - **The handover.** Opening the file again while a tab shows the review opens nothing new, and the agent is told the review is already open. A second tab the reviewer opens themselves owns the artifact view; the older one is told the moment it happens and offers to take the review back, rather than finding out at the next save.
-- **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back reloads the review where it was.
+- **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back turns Annotate on again, if the reviewer had wanted it on, and reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
 
 When the stream drops, the tab says it is not connected, in the header and the notice, and turns Send off until it is back.

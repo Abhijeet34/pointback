@@ -5,12 +5,15 @@
     <title>Quiet page</title>
     <script>
       // A page under review that proposes a target on its own, with no gesture and whatever the
-      // chrome's Annotate state, every 40 ms from the moment it learns the nonce.
+      // chrome's Annotate state, every 40 ms from the moment it learns the nonce, and claims the
+      // reviewer pressed the first note's pin, until a test sets `quiet` to make its own gesture.
       let nonce = "";
       addEventListener("message", (e) => {
         if (e.data?.type !== "init" || nonce) return;
         nonce = e.data.nonce;
         setInterval(() => {
+          if (globalThis.quiet) return;
+          parent.postMessage({ type: "pin", nonce, n: 1 }, "*");
           parent.postMessage(
             {
               type: "target",
