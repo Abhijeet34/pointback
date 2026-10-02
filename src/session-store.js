@@ -308,17 +308,19 @@ export class SessionStore {
     const session = this.get(key);
     if (!session.drafts?.length) throw new HttpError(400, "no notes to send");
     const result = this.queue(key, session.drafts, session.draftStructure);
-    this.#draftsChanged(session, []);
+    this.#draftsChanged(session, [], session.chat.slice(-result.accepted));
     return result;
   }
 
-  #draftsChanged(session, drafts) {
+  #draftsChanged(session, drafts, sent) {
     session.drafts = drafts;
     if (drafts.length === 0) delete session.draftStructure;
     session.lastActive = new Date().toISOString();
     this.#persist(session);
     // Every tab on the review shows the same unsent notes, whichever of them changed the list.
-    this.#events.emit(session.key, { type: "drafts", drafts });
+    // Notes that left for the agent travel in the same event, so a tab moves them in one step and
+    // ahead of any reply to them; a refetch could be answered before a reply and read after it.
+    this.#events.emit(session.key, { type: "drafts", drafts, ...(sent && { sent }) });
     return { drafts };
   }
 
@@ -379,7 +381,8 @@ export class SessionStore {
       drafts === "send" && unsent.length > 0
         ? this.#accept(session, unsent, session.draftStructure)
         : 0;
-    if (drafts === "send" || drafts === "discard") this.#draftsChanged(session, []);
+    if (drafts === "send" || drafts === "discard")
+      this.#draftsChanged(session, [], queued > 0 ? session.chat.slice(-queued) : undefined);
     // Who closed the loop is the first answer, not the last. An agent tidying up after the
     // reviewer already ended would otherwise relabel it as its own and, since only a user end
     // refuses a plain reopen, hand itself back a review the reviewer deliberately closed.

@@ -174,6 +174,7 @@ function sync(state) {
   // The sent notes come with every hello, so a reply that landed while this page was away shows.
   chat = state.chat;
   pending = state.drafts;
+  sending = false;
   marksDirty = true;
   // A gone file has no page to load; the last one shown stays up under the notice.
   fileGone = state.gone === true;
@@ -299,6 +300,11 @@ function apply(event) {
     liveReload = false;
   } else if (event.type === "drafts") {
     pending = event.drafts;
+    // The notes a send moved arrive here, and so does the end of "Sending…".
+    if (event.sent) {
+      chat.push(...event.sent);
+      sending = false;
+    }
     marksDirty = true;
   } else if (event.type === "reply") {
     const note = chat.find((entry) => entry.uid === event.uid);
@@ -984,17 +990,15 @@ endDialog.addEventListener("close", async () => {
   if (choice === "end" && !(await saveEdit())) return;
   problem = null;
   try {
+    // As with Send, what ending changed reaches this page on the event stream: the notes, then the end.
     await api("POST", `/api/${key}/end`, {
       by: "user",
       drafts: choice === "end" ? "send" : "discard",
     });
-    ({ chat, drafts: pending } = await api("GET", `/api/${key}/session`));
-    ended = { by: "user" };
-    followAnnotate();
   } catch (error) {
     problem = `Could not end the review: ${error.message}`;
+    notesChanged();
   }
-  notesChanged();
 });
 
 const sendForm = /** @type {HTMLFormElement} */ (document.getElementById("sendForm"));
@@ -1032,14 +1036,15 @@ sendForm.addEventListener("submit", async (event) => {
   problem = null;
   render();
   try {
+    // The sent notes arrive on the event stream, in order with the agent's replies to them, and
+    // that event renders them. A refetch here raced the stream: it emptied the margin until it
+    // landed, and one answered before a reply but read after it wiped the reply off its note.
     await api("POST", `/api/${key}/prompts`);
-    ({ chat, drafts: pending } = await api("GET", `/api/${key}/session`));
   } catch (error) {
     problem = `Could not send: ${error.message}`;
-  } finally {
     sending = false;
+    notesChanged();
   }
-  notesChanged();
 });
 
 let adding = false;
