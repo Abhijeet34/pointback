@@ -41,6 +41,7 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
     type: "hello",
     artifactUrl: `/artifact/${key}/${store.get(key).assetToken}/plan.html`,
     revision: 0,
+    chat: [],
     presence: { state: "waiting" },
     ended: null,
     gone: false,

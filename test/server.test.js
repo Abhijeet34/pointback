@@ -457,6 +457,7 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
     type: "hello",
     artifactUrl,
     revision: 0,
+    chat: [],
     presence: { state: "waiting" },
     ended: null,
     gone: false,

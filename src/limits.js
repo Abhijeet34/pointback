@@ -6,6 +6,8 @@ export const limits = Object.freeze({
   pendingPromptsPerSession: 200,
   chatEntriesPerSession: 1000,
   promptTextChars: 20_000,
+  // The agent's reply is read on a note in the margin, so it is a sentence or two, not a document.
+  replyChars: 2000,
   structureChars: 4096,
   sessions: 64,
   concurrentPolls: 32,
