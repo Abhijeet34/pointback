@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { limits } from "../src/limits.js";
-import { SessionStore } from "../src/session-store.js";
+import { EPOCH_PATTERN, SessionStore } from "../src/session-store.js";
 
 function lab() {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-store-"));
@@ -12,6 +12,9 @@ function lab() {
   writeFileSync(artifact, "<p>plan</p>");
   return { dir, artifact, file: join(dir, "state.json") };
 }
+
+/** What the CLI would send back: the high uid it received, in the session life that numbered it. */
+const cursor = (store, key, uid) => ({ uid, epoch: store.get(key).epoch });
 
 const prompt = (text = "Make it shorter") => ({
   prompt: text,
@@ -180,21 +183,25 @@ test("the page outline is bounded, replaced with each batch, and delivered with 
     prompts: [{ uid: 1, at: store.get(key).chat[0].at, ...prompt() }],
     structure: "main\n  #title",
     receipt: 1,
+    epoch: store.get(key).epoch,
   });
 
   // Each later poll acknowledges the batch before it, so the next one is delivered rather than resent.
   store.queue(key, [prompt()], "main\n  #other");
-  assert.equal((await store.waitForFeedback(key, 20, undefined, 1)).structure, "main\n  #other");
+  assert.equal(
+    (await store.waitForFeedback(key, 20, undefined, cursor(store, key, 1))).structure,
+    "main\n  #other",
+  );
   store.queue(key, [prompt()]);
   assert.equal(
-    (await store.waitForFeedback(key, 20, undefined, 2)).structure,
+    (await store.waitForFeedback(key, 20, undefined, cursor(store, key, 2))).structure,
     "main\n  #other",
     "a batch that outlines nothing keeps the last outline rather than clearing it",
   );
 
   // Send-and-end carries a last batch, so it carries the outline that batch was written against.
   store.end(key, "user", [prompt()], "main\n  #last");
-  const final = await store.waitForFeedback(key, 20, undefined, 3);
+  const final = await store.waitForFeedback(key, 20, undefined, cursor(store, key, 3));
   assert.equal(final.structure, "main\n  #last");
   assert.equal(final.session_ended, true);
   store.reopen(key);
@@ -311,6 +318,107 @@ test("a session with undelivered notes is never disposed, even when it is the ol
   );
 });
 
+// An evicted session opened again restarts its uids at 1. The agent's cursor from the old life
+// still says 3, and before epochs it acknowledged the new life's first batch unseen.
+test("a cursor from a session's earlier life acknowledges nothing in its next one", async () => {
+  const { file, artifact, dir } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  const firstLife = store.get(key).epoch;
+  assert.match(firstLife, EPOCH_PATTERN);
+  store.queue(key, [prompt("one"), prompt("two"), prompt("three")]);
+  const delivered = await store.waitForFeedback(key, 20);
+  assert.equal(delivered.receipt, 3);
+  assert.equal(delivered.epoch, firstLife);
+  const stale = { uid: delivered.receipt, epoch: delivered.epoch };
+  assert.deepEqual(await store.waitForFeedback(key, 10, undefined, stale), { status: "waiting" });
+
+  for (let i = 0; i < limits.sessions; i += 1) {
+    const extra = join(dir, `extra-${i}.html`);
+    writeFileSync(extra, "<p></p>");
+    store.open(extra);
+  }
+  assert.throws(
+    () => store.get(key),
+    (e) => e.status === 404,
+    "the session was evicted",
+  );
+  store.open(artifact);
+  assert.notEqual(store.get(key).epoch, firstLife, "the session's next life has its own epoch");
+  store.queue(key, [prompt("the note that must not be lost")]);
+
+  // A poll takes the batch and its response is lost; the agent's next poll carries the old cursor.
+  assert.equal((await store.waitForFeedback(key, 10)).receipt, 1);
+  const again = await store.waitForFeedback(key, 10, undefined, stale);
+  assert.equal(again.status, "feedback", "the stale cursor acknowledged nothing");
+  assert.deepEqual(
+    again.prompts.map((p) => [p.uid, p.prompt]),
+    [[1, "the note that must not be lost"]],
+  );
+  const current = { uid: again.receipt, epoch: again.epoch };
+  assert.deepEqual(await store.waitForFeedback(key, 10, undefined, current), {
+    status: "waiting",
+  });
+});
+
+test("a session stored before epochs gets one on load, and keeps it across restarts", async () => {
+  const { file, artifact } = lab();
+  const first = new SessionStore(file);
+  const { key } = first.open(artifact);
+  first.queue(key, [prompt()]);
+  await first.waitForFeedback(key, 10);
+  const stored = JSON.parse(readFileSync(file, "utf8"));
+  delete stored.sessions[key].epoch;
+  writeFileSync(file, JSON.stringify(stored));
+
+  const upgraded = new SessionStore(file);
+  const epoch = upgraded.get(key).epoch;
+  assert.match(epoch, EPOCH_PATTERN);
+  assert.equal(new SessionStore(file).get(key).epoch, epoch, "the new epoch was persisted");
+  // Without one, no cursor could ever match and the outstanding batch would come back forever.
+  const redelivered = await upgraded.waitForFeedback(key, 10);
+  assert.equal(redelivered.epoch, epoch);
+  assert.deepEqual(await upgraded.waitForFeedback(key, 10, undefined, { uid: 1, epoch }), {
+    status: "waiting",
+  });
+});
+
+test("a moved file's session still delivers what it holds, then answers gone and tells the tab", async () => {
+  const { file, artifact, dir } = lab();
+  const store = new SessionStore(file);
+  const { key } = store.open(artifact);
+  const events = [];
+  store.on(key, (event) => events.push(event.type));
+  store.queue(key, [prompt("taken before the move")]);
+  renameSync(artifact, join(dir, "moved.html"));
+
+  assert.equal(store.keyFor(artifact), key, "the old path still names its session");
+  assert.equal(store.status(key).gone, true);
+  const held = await store.waitForFeedback(key, 10);
+  assert.equal(held.status, "feedback", "notes queued before the move are still delivered");
+  const gone = { status: "gone", file: store.get(key).file };
+  assert.deepEqual(await store.waitForFeedback(key, 10, undefined, cursor(store, key, 1)), gone);
+  assert.deepEqual(store.end(key, "agent"), gone, "an end answers the same");
+  assert.equal(store.status(key).ended, null, "and ends nothing");
+  assert.deepEqual(
+    events.filter((type) => type === "gone"),
+    ["gone", "gone"],
+    "every open tab is told, by the poll and by the end",
+  );
+
+  // A poll already waiting when the watcher sees the file go is answered at once.
+  const waiting = store.waitForFeedback(key, 5000, undefined, cursor(store, key, 1));
+  store.fileChanged(key);
+  assert.deepEqual(await waiting, gone);
+
+  renameSync(join(dir, "moved.html"), artifact);
+  assert.equal(store.status(key).gone, false);
+  assert.equal(store.fileChanged(key), 1, "a file that comes back is a new revision");
+  assert.deepEqual(await store.waitForFeedback(key, 10, undefined, cursor(store, key, 1)), {
+    status: "waiting",
+  });
+});
+
 test("a poller wakes on feedback, times out to waiting, and a losing poller keeps waiting", async () => {
   const { file, artifact } = lab();
   const store = new SessionStore(file);
@@ -324,7 +432,12 @@ test("a poller wakes on feedback, times out to waiting, and a losing poller keep
   assert.deepEqual(await second, { status: "waiting" });
   // A poll that has acknowledged the batch and is then aborted resolves null, with nothing to lose.
   const aborted = new AbortController();
-  const third = store.waitForFeedback(key, 5000, aborted.signal, delivered.receipt);
+  const third = store.waitForFeedback(
+    key,
+    5000,
+    aborted.signal,
+    cursor(store, key, delivered.receipt),
+  );
   aborted.abort();
   assert.equal(await third, null);
 });
@@ -347,7 +460,9 @@ test("a batch whose delivery is lost is redelivered by uid until the agent ackno
   );
   assert.equal(again.structure, "main\n  #t");
   // Once the agent acknowledges receipt, the batch is cleared and a later poll waits for new notes.
-  assert.deepEqual(await store.waitForFeedback(key, 10, undefined, 1), { status: "waiting" });
+  assert.deepEqual(await store.waitForFeedback(key, 10, undefined, cursor(store, key, 1)), {
+    status: "waiting",
+  });
 });
 
 test("presence follows the polls: waiting, listening, working, and back after the bound", async (t) => {
@@ -366,12 +481,12 @@ test("presence follows the polls: waiting, listening, working, and back after th
   assert.equal(store.status(key).presence.state, "working");
   // A second poll while working is the agent coming back, acknowledging the batch it took: listening
   // again, then waiting on timeout.
-  await store.waitForFeedback(key, 10, undefined, 1);
+  await store.waitForFeedback(key, 10, undefined, cursor(store, key, 1));
   assert.deepEqual(store.presence(key), { state: "waiting" });
   // Feedback taken at once (no attach) still counts as working, and working ages out on its own.
   store.queue(key, [prompt()]);
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  await store.waitForFeedback(key, 10, undefined, 1);
+  await store.waitForFeedback(key, 10, undefined, cursor(store, key, 1));
   assert.equal(store.presence(key).state, "working");
   t.mock.timers.tick(limits.workingMaxMs);
   assert.deepEqual(store.presence(key), { state: "waiting" });
@@ -385,8 +500,8 @@ test("a file change bumps the revision, persists it and is announced", () => {
   const { key } = store.open(artifact);
   const events = [];
   store.on(key, (event) => events.push(event));
-  assert.equal(store.bumpRevision(key), 1);
-  assert.equal(store.bumpRevision(key), 2);
+  assert.equal(store.fileChanged(key), 1);
+  assert.equal(store.fileChanged(key), 2);
   assert.deepEqual(events, [
     { type: "reload", revision: 1 },
     { type: "reload", revision: 2 },
@@ -417,10 +532,13 @@ test("ending queues the last prompts in the same step, wakes a waiting poll, and
   assert.equal(final.session_ended, true);
   assert.equal(final.ended_by, "user");
   // Acknowledging the final batch clears it, so the next poll sees only the ended notice.
-  assert.deepEqual(await store.waitForFeedback(key, 5000, undefined, final.receipt), {
-    status: "ended",
-    ended_by: "user",
-  });
+  assert.deepEqual(
+    await store.waitForFeedback(key, 5000, undefined, cursor(store, key, final.receipt)),
+    {
+      status: "ended",
+      ended_by: "user",
+    },
+  );
   assert.equal(store.presence(key).state, "waiting", "an ended session has no working agent");
   assert.equal(new SessionStore(file).status(key).ended.by, "user");
 

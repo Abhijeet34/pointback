@@ -1,9 +1,20 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { after, test } from "node:test";
 import { name, version } from "../src/identity.js";
+import { limits } from "../src/limits.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
 import { assertPrivate } from "./helpers/private.js";
 
@@ -105,6 +116,134 @@ test("end closes the review, and only --reopen opens it again", async () => {
   assert.equal((await cli([fixture], lab.env)).json().session.status, "user-ended");
 
   assert.equal((await cli([fixture, "--reopen"], lab.env)).json().session.status, "opened");
+});
+
+/** A private directory holding a copy of the fixture, so a test can move or alias it freely. */
+function scratch() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-cli-"));
+  const file = join(dir, "a.html");
+  copyFileSync(fixture, file);
+  return { dir, file };
+}
+
+/** The daemon's API, as the chrome and a dropped poll reach it rather than through the CLI. */
+function daemon(env) {
+  const info = env.serverInfo();
+  const call = (method, path, body) =>
+    fetch(`http://127.0.0.1:${info.port}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${info.token}`,
+        "content-type": "application/json",
+        origin: `http://127.0.0.1:${info.port}`,
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  return {
+    call,
+    note: async (key, prompt) => {
+      const res = await call("POST", `/api/${key}/prompts`, {
+        prompts: [{ prompt, selector: "#title", tag: "h1", text: "Rollout" }],
+      });
+      assert.equal(res.status, 200, await res.text());
+    },
+  };
+}
+
+const keyOf = (opened) => opened.json().session.url.match(/session\/([0-9a-f]{16})/)[1];
+
+// The cursor outlives the session: 64 other reviews evict this one, opening it again restarts
+// its uids at 1, and a stale cursor of 3 used to acknowledge the new note before it was read.
+test("a cursor from before an eviction never acknowledges the reopened session's notes", async () => {
+  const own = isolatedEnv();
+  try {
+    const { dir, file } = scratch();
+    const key = keyOf(await cli([file], own.env));
+    const api = daemon(own);
+    for (const text of ["one", "two", "three"]) await api.note(key, text);
+    const first = await cli(["poll", file, "--timeout-ms", "500"], own.env);
+    assert.deepEqual(
+      first.json().prompts.map((p) => p.uid),
+      [1, 2, 3],
+    );
+    assert.equal(
+      (await cli(["poll", file, "--timeout-ms", "50"], own.env)).json().status,
+      "waiting",
+    );
+
+    for (let i = 0; i < limits.sessions; i += 1) {
+      const other = join(dir, `other-${i}.html`);
+      writeFileSync(other, "<p></p>");
+      assert.equal((await api.call("POST", "/api/sessions", { file: other })).status, 200);
+    }
+    assert.equal((await api.call("GET", `/api/${key}/session`)).status, 404, "evicted");
+    assert.equal(keyOf(await cli([file], own.env)), key);
+    await api.note(key, "the note that must not be lost");
+    // A poll takes it and its response never reaches the agent: a dropped connection.
+    const lost = await api.call("GET", `/api/poll?file=${encodeURIComponent(file)}&timeoutMs=0`);
+    assert.equal((await lost.json()).status, "feedback");
+
+    const polled = await cli(["poll", file, "--timeout-ms", "500"], own.env);
+    assert.equal(polled.code, 0, polled.stderr);
+    assert.equal(polled.json().status, "feedback", "the stale cursor acknowledged nothing");
+    assert.deepEqual(
+      polled.json().prompts.map((p) => [p.uid, p.prompt]),
+      [[1, "the note that must not be lost"]],
+    );
+  } finally {
+    await own.stop();
+  }
+});
+
+// Each spelling resolves to one file, so receiving a batch by one and polling by another must
+// acknowledge it. Before the cursor was keyed canonically, a symlinked directory - macOS's
+// /tmp is one - kept a cursor per spelling and delivered the acknowledged batch again.
+test("every spelling of a file shares one cursor, so a received batch is never delivered twice", async () => {
+  const { dir, file } = scratch();
+  const real = realpathSync.native(dir);
+  const link = `${dir}-link`;
+  symlinkSync(real, link, "junction");
+  const spellings = {
+    "through a symlinked directory": join(link, "a.html"),
+    "with dot segments": join(dir, "sub", "..", "a.html"),
+    "relative to the working directory": relative(process.cwd(), file),
+  };
+  mkdirSync(join(dir, "sub"));
+  const key = keyOf(await cli([file], lab.env));
+  const api = daemon(lab);
+  for (const [how, spelling] of Object.entries(spellings)) {
+    await api.note(key, `received once, polled ${how}`);
+    const received = await cli(["poll", file, "--timeout-ms", "500"], lab.env);
+    assert.equal(received.json().status, "feedback", how);
+    const next = await cli(["poll", spelling, "--timeout-ms", "50"], lab.env);
+    assert.equal(next.code, 0, next.stderr);
+    assert.deepEqual(next.json(), { status: "waiting" }, `the batch came back when polled ${how}`);
+  }
+});
+
+test("poll and end on a moved file answer gone as JSON and exit 1", async () => {
+  const { dir, file } = scratch();
+  const opened = (await cli([file], lab.env)).json();
+  renameSync(file, join(dir, "moved.html"));
+  const canonical = join(realpathSync.native(dir), "a.html");
+  for (const args of [
+    ["poll", file, "--timeout-ms", "50"],
+    ["end", file],
+  ]) {
+    const answer = await cli(args, lab.env);
+    assert.equal(answer.code, 1, `${args[0]} exits 1`);
+    assert.doesNotMatch(answer.stderr, /ENOENT|error:/, `${args[0]} is not a crash`);
+    const out = answer.json();
+    assert.equal(out.status, "gone", args[0]);
+    assert.equal(out.file, canonical, args[0]);
+    assert.match(out.next_step, /moved or deleted/);
+    assert.match(out.next_step, new RegExp(`${name} <its new path>`));
+  }
+  // Nothing was ended: the file coming back resumes the same review.
+  renameSync(join(dir, "moved.html"), file);
+  const reopened = (await cli([file], lab.env)).json();
+  assert.equal(reopened.session.url, opened.session.url);
+  assert.equal(reopened.session.status, "opened");
 });
 
 test("a missing file argument or file is an error exit, not a stack trace", async () => {

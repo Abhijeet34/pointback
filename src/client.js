@@ -33,7 +33,11 @@ export async function api(info, method, path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = /** @type {any} */ (await res.json());
-  if (!res.ok) throw new Error(json.error ?? `${method} ${path} failed with ${res.status}`);
+  // The body rides on the error, because a refusal such as a gone file is an answer to print.
+  if (!res.ok)
+    throw Object.assign(new Error(json.error ?? `${method} ${path} failed with ${res.status}`), {
+      answer: json,
+    });
   return json;
 }
 

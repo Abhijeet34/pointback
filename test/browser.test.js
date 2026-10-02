@@ -3,7 +3,15 @@
 // its anchor and an outline of the page. Runs in a real headless browser through DevTools;
 // no browser means a loud skip, never a silent pass.
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
@@ -659,6 +667,53 @@ function copyOfFixture() {
   writeFileSync(file, html);
   return { file, html };
 }
+
+test(
+  "a file moved away under review says so and stops the page; its return brings the review back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const page = await browser.page(session.url);
+    await page.waitFor("document.body.dataset.revision === '0'");
+    // What paints, never the attribute behind it: the notice's box, the text, and how each
+    // control the reviewer could press is drawn.
+    const painted = `JSON.stringify((() => {
+      const notice = document.getElementById('notice');
+      const look = (id) => { const s = getComputedStyle(document.getElementById(id)); return s.color + ' ' + s.cursor; };
+      return {
+        notice: notice.checkVisibility() && notice.getBoundingClientRect().height > 0
+          ? document.getElementById('noticeText').textContent : null,
+        status: document.getElementById('status').textContent,
+        send: document.getElementById('send').textContent,
+        annotate: look('annotate'),
+        end: look('end'),
+      };
+    })())`;
+    const live = JSON.parse(await page.eval(painted));
+    assert.equal(live.notice, null);
+    const away = `${file}.away`;
+    renameSync(file, away);
+    // The agent's poll is the path that tells the tab whether or not the watcher saw the move.
+    const polled = await cli(["poll", file, "--timeout-ms", "0"], lab.env);
+    assert.equal(polled.code, 1);
+    assert.equal(polled.json().status, "gone");
+    await page.waitFor("document.getElementById('notice').checkVisibility()");
+    const gone = JSON.parse(await page.eval(painted));
+    assert.equal(gone.notice, "The file was moved or deleted, so this review cannot go on.");
+    assert.equal(gone.status, "Nothing can be sent while the file is gone.");
+    assert.equal(gone.send, "File is gone");
+    for (const control of ["annotate", "end"]) {
+      assert.notEqual(gone[control], live[control], `${control} no longer paints as pressable`);
+      assert.match(gone[control], / default$/, `${control} stops promising a press`);
+    }
+
+    renameSync(away, file);
+    await page.waitFor("!document.getElementById('notice').checkVisibility()");
+    assert.deepEqual(JSON.parse(await page.eval(painted)), live, "the review is back as it was");
+    await page.close();
+  },
+);
 
 test(
   "a save reloads the open page, keeps the reviewer's place, and the notes follow the new text",

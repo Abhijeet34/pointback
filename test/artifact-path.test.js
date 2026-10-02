@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { canonicalFile, resolveAsset, sessionKey } from "../src/artifact-path.js";
+import { canonicalFile, canonicalPath, resolveAsset, sessionKey } from "../src/artifact-path.js";
 
 // A root with one legitimate sibling, one legitimate nested asset, a symlink that escapes,
 // and a secret outside the root that every attack below tries to reach.
@@ -95,4 +95,21 @@ test("session keys are sixteen hex characters of the canonical path", () => {
   assert.match(key, /^[0-9a-f]{16}$/);
   assert.equal(key, sessionKey(canonicalFile(join(root, "img", "..", "plan.html"))));
   assert.notEqual(key, sessionKey(canonicalFile(join(root, "style.css"))));
+});
+
+test("a gone file keeps the canonical spelling it had, through its deepest surviving ancestor", () => {
+  const { base, root } = lab();
+  const plan = join(root, "plan.html");
+  const canonical = canonicalFile(plan);
+  assert.equal(canonicalPath(plan), canonical);
+  symlinkSync(root, join(base, "alias"), "junction");
+  assert.equal(canonicalPath(join(base, "alias", "plan.html")), canonical);
+
+  rmSync(plan);
+  assert.throws(() => canonicalFile(plan), /ENOENT/);
+  assert.equal(canonicalPath(plan), canonical, "a deleted file in a directory that remains");
+  assert.equal(canonicalPath(join(base, "alias", "plan.html")), canonical, "by either spelling");
+  const nested = canonicalFile(join(root, "img", "a.png"));
+  rmSync(join(root, "img"), { recursive: true });
+  assert.equal(canonicalPath(join(root, "img", "a.png")), nested, "a directory gone with it");
 });

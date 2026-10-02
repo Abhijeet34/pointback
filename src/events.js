@@ -48,10 +48,15 @@ export class EventStreams {
       for (const write of this.#groups.get(key)?.streams ?? []) write(event);
     };
     this.#store.on(key, onEvent);
-    const unwatch = watchFile(file, () => this.#store.bumpRevision(key), {
-      // A watch that dies takes live reload with it; saying so beats a page that quietly stops updating.
-      onError: () => onEvent({ type: "reload-off" }),
-    });
+    let unwatch = () => {};
+    try {
+      unwatch = watchFile(file, () => this.#store.fileChanged(key), {
+        // A watch that dies takes live reload with it; saying so beats a page that quietly stops updating.
+        onError: () => onEvent({ type: "reload-off" }),
+      });
+    } catch {
+      // The file's directory is gone too, so there is nothing to watch; the tab's hello says `gone`.
+    }
     const group = {
       streams: [],
       stop: () => {

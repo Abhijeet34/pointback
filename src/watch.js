@@ -6,7 +6,7 @@ import { basename, dirname } from "node:path";
 export const DEBOUNCE_MS = 100;
 
 /**
- * Calls `onChange` once per burst of writes to `file`; returns a function that stops watching.
+ * Calls `onChange` once per burst of writes to `file`, or when it is removed; returns a function that stops watching.
  * The parent directory is watched rather than the file, because a rename-replace save leaves an
  * inode watch pointing at the old file while a directory watch sees the new one arrive.
  */
@@ -24,9 +24,10 @@ export function watchFile(
   let timer;
   // macOS replays recent history into a new watcher, so an event alone proves nothing; only a
   // changed size or mtime does. Ceiling: two same-size saves inside one mtime tick look like one.
+  // The file leaving is a change too, and so is its coming back; the caller tells them apart.
   const fire = () => {
     const now = signature(file);
-    if (now === null || now === last) return;
+    if (now === last) return;
     last = now;
     onChange();
   };

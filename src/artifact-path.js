@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export const KEY_PATTERN = /^[0-9a-f]{16}$/;
 export const TOKEN_PATTERN = /^[0-9a-f]{32}$/;
@@ -13,6 +13,22 @@ export const TOKEN_PATTERN = /^[0-9a-f]{32}$/;
  */
 export function canonicalFile(file) {
   return realpathSync.native(resolve(file));
+}
+
+/**
+ * The canonical spelling of a path whose file may be gone: the deepest ancestor that still exists,
+ * resolved, with the rest appended. A moved or deleted file then still finds its session, which is
+ * keyed by the spelling it had while it existed, instead of failing in `realpath`.
+ */
+export function canonicalPath(file) {
+  const absolute = resolve(file);
+  try {
+    return realpathSync.native(absolute);
+  } catch (error) {
+    const parent = dirname(absolute);
+    if ((error?.code !== "ENOENT" && error?.code !== "ENOTDIR") || parent === absolute) throw error;
+    return join(canonicalPath(parent), basename(absolute));
+  }
 }
 
 /** A lookup key, never a credential: sixteen hex characters of the canonical path's hash. */

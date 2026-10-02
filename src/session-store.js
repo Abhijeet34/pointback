@@ -1,7 +1,14 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
-import { KEY_PATTERN, TOKEN_PATTERN, canonicalFile, sessionKey } from "./artifact-path.js";
+import {
+  KEY_PATTERN,
+  TOKEN_PATTERN,
+  canonicalFile,
+  canonicalPath,
+  sessionKey,
+} from "./artifact-path.js";
 import { HttpError } from "./http-guard.js";
 import { limits } from "./limits.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
@@ -15,6 +22,9 @@ import { readJson, writeJsonAtomic } from "./state-dir.js";
  * while a poll is attached, `working` after a poll took feedback until the next poll or the
  * bound in limits, and `waiting` otherwise. Every change to a session is emitted on its key.
  */
+export const EPOCH_PATTERN = /^[0-9a-f]{16}$/;
+const newEpoch = () => randomBytes(8).toString("hex");
+
 export class SessionStore {
   #file;
   #sessions = new Map();
@@ -27,11 +37,19 @@ export class SessionStore {
     this.#file = file;
     this.#events.setMaxListeners(0);
     const stored = readJson(file, { sessions: {} });
+    let upgraded = false;
     for (const [key, session] of Object.entries(stored.sessions ?? {})) {
       if (KEY_PATTERN.test(key) && TOKEN_PATTERN.test(session?.assetToken ?? "")) {
+        // A session stored before epochs existed gets one now, and keeps it: without one, no
+        // cursor could ever match it and its outstanding batch would be redelivered forever.
+        if (!EPOCH_PATTERN.test(session.epoch ?? "")) {
+          session.epoch = newEpoch();
+          upgraded = true;
+        }
         this.#sessions.set(key, session);
       }
     }
+    if (upgraded) this.#persist();
   }
 
   #persist() {
@@ -51,6 +69,9 @@ export class SessionStore {
         file: canonical,
         // A fresh secret per session gates the artifact bytes; the key alone opens nothing.
         assetToken: randomBytes(16).toString("hex"),
+        // Names this life of the session. Eviction and a later open restart `nextUid` at 1, and a
+        // poll cursor carried over from the old life must not acknowledge the new one's notes.
+        epoch: newEpoch(),
         nextUid: 1,
         revision: 0,
         pending: [],
@@ -101,8 +122,9 @@ export class SessionStore {
     return this.#sessions.size;
   }
 
+  /** The key for a path, even one whose file has since moved or been deleted. */
   keyFor(file) {
-    return sessionKey(canonicalFile(file));
+    return sessionKey(canonicalPath(file));
   }
 
   on(key, listener) {
@@ -126,13 +148,14 @@ export class SessionStore {
     };
   }
 
-  /** What a freshly connected tab must know to be current: revision, presence and whether it ended. */
+  /** What a freshly connected tab must know to be current: revision, presence, whether it ended, whether its file is gone. */
   status(key) {
     const session = this.get(key);
     return {
       revision: session.revision,
       presence: this.presence(key),
       ended: session.endedAt ? { by: session.endedBy, at: session.endedAt } : null,
+      gone: !existsSync(session.file),
     };
   }
 
@@ -176,12 +199,16 @@ export class SessionStore {
     return accepted.length;
   }
 
-  /** The file changed on disk: number the new state and tell every open tab. */
-  bumpRevision(key) {
+  /** The file changed on disk: number the new state, or say it is gone, and tell every open tab. */
+  fileChanged(key) {
     // A watcher can outlive its session by a beat if the session was evicted; then there is nothing
     // to renumber, so tolerate the gap rather than throwing inside the fs.watch callback.
     const session = this.#sessions.get(key);
     if (!session) return 0;
+    if (!existsSync(session.file)) {
+      this.#events.emit(key, { type: "gone" });
+      return session.revision;
+    }
     session.revision += 1;
     this.#persist();
     this.#events.emit(key, { type: "reload", revision: session.revision });
@@ -194,6 +221,9 @@ export class SessionStore {
    */
   end(key, by, prompts = [], structure) {
     const session = this.get(key);
+    // A review whose file moved or was deleted has nothing left to end; whoever asked, and every
+    // open tab, is told that instead, so the answer is the one a poll on that path gets.
+    if (!existsSync(session.file)) return this.#gone(session);
     const queued = prompts.length === 0 ? 0 : this.#accept(session, prompts, structure);
     // Who closed the loop is the first answer, not the last. An agent tidying up after the
     // reviewer already ended would otherwise relabel it as its own and, since only a user end
@@ -237,27 +267,38 @@ export class SessionStore {
    * code cleared the queue the moment the answer was composed, which lost a batch whenever the
    * response did not arrive; a poll that took a batch and hit a dead socket is exactly that case.
    */
-  #answer(key, ack, redeliver) {
+  #answer(key, cursor, redeliver) {
     const session = this.get(key);
     // A poll whose cursor has reached the outstanding batch confirms it arrived; only then is it
-    // cleared. A missing or stale cursor leaves the batch to be redelivered unchanged.
-    if (session.unacked && ack !== undefined && ack >= session.unacked.receipt) {
+    // cleared. A missing or stale cursor leaves the batch to be redelivered unchanged, and so does
+    // one from an earlier life of this session, whose uids are no measure of this one's.
+    if (
+      session.unacked &&
+      cursor?.epoch === session.epoch &&
+      cursor.uid >= session.unacked.receipt
+    ) {
       delete session.unacked;
       this.#persist();
     }
     const ended = session.endedAt ? { ended_by: session.endedBy } : null;
+    // Notes already taken or queued are still delivered after the file goes; once there is
+    // nothing left to deliver, a gone file is the answer, ahead of an end.
+    const final = !existsSync(session.file)
+      ? { status: "gone", file: session.file }
+      : ended && { status: "ended", ...ended };
     // One batch is in flight at a time. A fresh poll (redeliver) re-sends the outstanding batch, so a
     // poll whose response was lost gets the identical notes - same uids, idempotent - not a drop. A
     // poll woken while another already holds that batch does not, so two pollers never split one
     // batch, and a newer batch waits behind the outstanding one, keeping the order the reviewer set.
     if (session.unacked) {
-      if (!redeliver) return ended && { status: "ended", ...ended };
+      if (!redeliver) return final;
       const { prompts, structure, receipt } = session.unacked;
       return {
         status: "feedback",
         prompts,
         structure,
         receipt,
+        epoch: session.epoch,
         ...(ended && { session_ended: true, ...ended }),
       };
     }
@@ -272,18 +313,29 @@ export class SessionStore {
         prompts,
         structure: session.unacked.structure,
         receipt,
+        epoch: session.epoch,
         ...(ended && { session_ended: true, ...ended }),
       };
     }
-    return ended && { status: "ended", ...ended };
+    return final;
   }
 
-  /** Resolves with the poll's answer, `waiting` at the timeout, or null when the caller went away. */
-  waitForFeedback(key, timeoutMs, signal, ack) {
+  /** Tells every open tab the file is gone, and returns the answer the CLI prints for it. */
+  #gone(session) {
+    this.#events.emit(session.key, { type: "gone" });
+    return { status: "gone", file: session.file };
+  }
+
+  /**
+   * Resolves with the poll's answer, `waiting` at the timeout, or null when the caller went away.
+   * `cursor` is `{ uid, epoch }`: the high uid the agent last received and the session life it came from.
+   */
+  waitForFeedback(key, timeoutMs, signal, cursor) {
     // A fresh poll may redeliver the outstanding batch; a poll woken by an event may not.
-    const immediate = this.#answer(key, ack, true);
+    const immediate = this.#answer(key, cursor, true);
     if (immediate) {
       if (immediate.status === "feedback") this.#setWorking(key);
+      if (immediate.status === "gone") this.#gone(this.get(key));
       return Promise.resolve(immediate);
     }
     if (this.#activePolls >= limits.concurrentPolls)
@@ -301,8 +353,8 @@ export class SessionStore {
       };
       // Two pollers race for one batch; the one that finds nothing keeps waiting.
       const onEvent = (event) => {
-        if (event.type !== "feedback" && event.type !== "ended") return;
-        const answer = this.#answer(key, ack, false);
+        if (event.type !== "feedback" && event.type !== "ended" && event.type !== "gone") return;
+        const answer = this.#answer(key, cursor, false);
         if (answer) finish(answer);
       };
       const onAbort = () => finish(null);
