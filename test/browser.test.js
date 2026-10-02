@@ -1164,17 +1164,16 @@ test(
       await page.eval("document.getElementById('endText').textContent"),
       /One note is still waiting/,
     );
-    const polling = cli(["poll", file, "--timeout-ms", "10000"], lab.env);
-    await new Promise((r) => setTimeout(r, 300));
+    // The reviewer sees the review end with the note sent, and then the agent's poll takes it.
     await page.eval("document.getElementById('endGo').click()");
-    const polled = (await polling).json();
+    await page.waitFor(
+      "document.getElementById('noticeText').textContent === 'You ended this review.' && document.querySelectorAll('.mark:not(.sent)').length === 0",
+    );
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.equal(polled.status, "feedback");
     assert.equal(polled.session_ended, true);
     assert.equal(polled.prompts[0].prompt, "Cut this line");
     assert.match(polled.next_step, /stop polling/);
-    await page.waitFor(
-      "document.getElementById('noticeText').textContent === 'You ended this review.'",
-    );
     assert.equal(await page.eval("document.getElementById('annotate').disabled"), true);
     // Disabled must also look it: the label dims like the other disabled controls, the cursor
     // stops promising a press, and the track and thumb no longer paint as a live switch.
@@ -2017,10 +2016,10 @@ test(
     await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
     const margin = await usable("with a note in the margin", [".mark", "#send"]);
 
-    const polling = cli(["poll", file, "--timeout-ms", "10000"], lab.env);
     const [sendLeft, sendTop, sendRight, sendBottom] = margin["#send"];
     await page.click((sendLeft + sendRight) / 2, (sendTop + sendBottom) / 2);
-    const polled = (await polling).json();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.equal(polled.status, "feedback");
     assert.deepEqual(
       polled.prompts.map(({ prompt, selector }) => ({ prompt, selector })),
@@ -2453,7 +2452,8 @@ globalThis.forge = () => {
     assert.equal(await page.eval(margin), before);
     assert.equal(await page.eval("document.getElementById('card').hidden"), true);
     await page.eval("document.getElementById('send').click()");
-    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => p.prompt),
       [secrets.edited],
@@ -2508,7 +2508,8 @@ test(
     );
 
     await page.eval("document.getElementById('send').click()");
-    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     const byTag = Object.fromEntries(polled.prompts.map((p) => [p.tag, p]));
     assert.deepEqual(
       polled.prompts.map((p) => p.tag),
@@ -2701,13 +2702,16 @@ test(
     await a();
     await page.waitFor("document.body.dataset.annotate === '1'");
 
-    // The send key adds the note being written and sends it, from the card.
+    // The send key adds the note being written and sends it, from the card. The agent asks once
+    // the reviewer sees it sent: a poll started first, on its own clock, lost to a stalled browser.
     const ctrlEnter = () => page.key("Enter", { keyCode: 13, modifiers: 2 });
-    let polling = cli(["poll", plan, "--timeout-ms", "10000"], lab.env);
+    const sent = "document.querySelectorAll('.mark.sent').length";
+    const sentBefore = Number(await page.eval(sent));
     await pointAt(page, artifact, "#risks h2");
     await page.type("Rank the risks");
     await ctrlEnter();
-    let polled = (await polling).json();
+    await page.waitFor(`${sent} === ${sentBefore + 1}`);
+    let polled = (await cli(["poll", plan, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => [p.prompt, p.tag]),
       [["Rank the risks", "h2"]],
@@ -2718,9 +2722,9 @@ test(
     await page.type("Say who can roll back");
     await page.enter();
     await artifact.waitFor("document.activeElement.textContent === 'Rollback'");
-    polling = cli(["poll", plan, "--timeout-ms", "10000"], lab.env);
     await ctrlEnter();
-    polled = (await polling).json();
+    await page.waitFor(`${sent} === ${sentBefore + 2}`);
+    polled = (await cli(["poll", plan, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => p.prompt),
       ["Say who can roll back"],
