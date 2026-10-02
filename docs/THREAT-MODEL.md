@@ -15,6 +15,7 @@ In scope:
 - Recovering the token by listening on the port a daemon left when it exited. The token outlives the process, so the CLI and the review tab present it only to a server that has proved it holds it (`tokenProof` in `src/http-guard.js`), and a daemon that cannot take its old port back mints a fresh one.
 - Escaping the artifact iframe: the page under review reading the review chrome, calling the API, or recovering the server token from the URL fragment the chrome page is opened with (`src/browser/`).
 - Reading or writing a file outside the review's root through the asset route, by traversal, encoding, separator, null byte, or symlink (`src/artifact-path.js`). The root is the artifact's own directory unless the agent opened the review with `--root`, which must hold the artifact and is canonicalised when the review opens.
+- The page under review reading, by `fetch` or any other CORS request, a file under the root that is not a font, or the page itself: only font responses carry `Access-Control-Allow-Origin` (`FONT_HEADERS` in `src/http-guard.js`).
 - A note reaching the agent that the reviewer never wrote, or a note attributed to the wrong element.
 - State written where another user on the machine can read it: outside the state directory, with a mode other than `0600` in a `0700` directory on POSIX, or on Windows with any ACL entry beyond the current user (`src/state-dir.js`).
 - Any outbound connection opened by the process.
