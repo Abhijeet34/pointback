@@ -303,6 +303,33 @@ test(
       "oklch(0.78 0.12 230)",
     );
     assert.equal(await page.eval("getComputedStyle(document.body).colorScheme"), "dark");
+    // The house is vendored in order and actually parses: a commented-out link or a dead
+    // rule would still pass a source grep, so read the CSSOM the browser built instead.
+    assert.deepEqual(
+      await page.eval("[...document.styleSheets].map((s) => new URL(s.href).pathname)"),
+      ["/house/brand.tokens.css", "/house/roles.css", "/house/scales.css", "/chrome.css"],
+    );
+    assert.equal(
+      await page.eval("[...document.styleSheets].every((s) => s.cssRules.length > 0)"),
+      true,
+    );
+    const houseRoles = await page.eval(`(() => {
+      const sheet = [...document.styleSheets].find((s) => new URL(s.href).pathname === "/chrome.css");
+      const names = new Set();
+      const walk = (rules) => {
+        for (const rule of rules) {
+          if (rule.cssRules) walk(rule.cssRules);
+          if (rule.style) {
+            for (const m of rule.style.cssText.matchAll(/var\\((--hw-[\\w-]+)\\)/g)) names.add(m[1]);
+          }
+        }
+      };
+      walk(sheet.cssRules);
+      const style = getComputedStyle(document.documentElement);
+      return { count: names.size, missing: [...names].filter((name) => style.getPropertyValue(name).trim() === "") };
+    })()`);
+    assert.ok(houseRoles.count > 0);
+    assert.deepEqual(houseRoles.missing, []);
 
     await page.waitFor(
       "document.querySelectorAll('.mark.sent').length === 4 && document.querySelectorAll('.mark:not(.sent)').length === 0",

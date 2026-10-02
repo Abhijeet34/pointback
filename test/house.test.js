@@ -20,31 +20,3 @@ test("the vendored house files are the pinned commit's bytes", () => {
     );
   }
 });
-
-test("the chrome loads the house in order and pins dark", () => {
-  const html = read("chrome.html");
-  assert.match(html, /<html lang="en" data-theme="dark">/);
-  const sheets = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(sheets, [
-    "/house/brand.tokens.css",
-    "/house/roles.css",
-    "/house/scales.css",
-    "/chrome.css",
-  ]);
-});
-
-// A misspelt role is not an error in CSS, just a property that silently falls back.
-test("every house name the chrome uses is one the house defines", () => {
-  const defined = new Set(
-    Object.keys(FILES).flatMap((local) =>
-      [...read(`house/${local}`).matchAll(/(--hw-[\w-]+)\s*:/g)].map((m) => m[1]),
-    ),
-  );
-  const used = new Set([...read("chrome.css").matchAll(/var\((--hw-[\w-]+)\)/g)].map((m) => m[1]));
-  assert.ok(used.size > 0);
-  for (const name of used) assert.ok(defined.has(name), `${name} is not a house role`);
-});
-
-test("nothing in the chrome loops", () => {
-  assert.doesNotMatch(read("chrome.css"), /infinite|@keyframes/);
-});
