@@ -142,12 +142,13 @@ const CURSOR_FILE = "poll-cursor.json";
  * canonical path, so two spellings of one file share a cursor. A session evicted and opened again
  * restarts its uids under a new epoch, and the server ignores a cursor naming an older one.
  * Client-side state: a wrong or missing cursor only costs a safe redelivery, never a lost note.
+ * `outline` is the digest of the page outline last delivered, so an unchanged one is not repeated.
  */
 export function readPollCursor(dir, file) {
   const value = readJson(join(dir, CURSOR_FILE), {})?.[file];
-  return typeof value?.uid === "number" && typeof value.epoch === "string"
-    ? { uid: value.uid, epoch: value.epoch }
-    : undefined;
+  if (typeof value?.uid !== "number" || typeof value.epoch !== "string") return undefined;
+  const outline = typeof value.outline === "string" ? value.outline : undefined;
+  return { uid: value.uid, epoch: value.epoch, outline };
 }
 
 export function writePollCursor(dir, file, cursor) {
@@ -155,6 +156,6 @@ export function writePollCursor(dir, file, cursor) {
   const all = readJson(path, {});
   const next = { ...(all && typeof all === "object" ? all : {}) };
   // A computed key sets an own property (never the prototype), and `file` is always an absolute path.
-  next[file] = { uid: cursor.uid, epoch: cursor.epoch };
+  next[file] = { uid: cursor.uid, epoch: cursor.epoch, outline: cursor.outline };
   writeJsonAtomic(path, next);
 }

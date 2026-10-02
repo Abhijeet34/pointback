@@ -6,7 +6,8 @@
     <script>
       // A page under review that proposes a target on its own, with no gesture and whatever the
       // chrome's Annotate state, every 40 ms from the moment it learns the nonce, and claims the
-      // reviewer pressed the first note's pin, until a test sets `quiet` to make its own gesture.
+      // reviewer pressed the first note's pin and the review's Annotate and send keys, until a
+      // test sets `quiet` to make its own gesture.
       let nonce = "";
       addEventListener("message", (e) => {
         if (e.data?.type !== "init" || nonce) return;
@@ -14,6 +15,8 @@
         setInterval(() => {
           if (globalThis.quiet) return;
           parent.postMessage({ type: "pin", nonce, n: 1 }, "*");
+          parent.postMessage({ type: "key", nonce, action: "annotate" }, "*");
+          parent.postMessage({ type: "key", nonce, action: "send" }, "*");
           parent.postMessage(
             {
               type: "target",

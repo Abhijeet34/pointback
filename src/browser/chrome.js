@@ -76,6 +76,7 @@ let pending = [];
 let shownNote = 0;
 let editingNote = null;
 let missingPins = new Set();
+const SEND_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘Enter" : "Ctrl+Enter";
 
 const api = (method, path, body) => {
   // The token goes only to the server this page proved holds it; a lost connection may mean the
@@ -361,11 +362,11 @@ function render() {
                     ? "Your agent is working on your last notes. Anything you send now waits for its next check."
                     : chat.length === 0 && count === 0
                       ? annotate
-                        ? "Click or select anything on the page to note it, or Tab to it and press Enter."
-                        : "Turn on Annotate to point at the page."
+                        ? `Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, ${SEND_KEY} sends.`
+                        : "Turn on Annotate, or press A, to point at the page."
                       : count === 0
                         ? "Every note has been sent."
-                        : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
+                        : `${count} ${count === 1 ? "note" : "notes"} ready to send. ${SEND_KEY} sends.`,
   );
 }
 
@@ -599,7 +600,11 @@ function editor(entry, n) {
     editingNote.value = box.value;
   });
   box.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      // Send saves the note being edited first, so this is save and send in one.
+      event.preventDefault();
+      sendNow();
+    } else if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       form.requestSubmit();
     } else if (event.key === "Escape") {
@@ -703,7 +708,9 @@ function describe(entry) {
   if (entry.tag === "text") return `“${entry.text}”`;
   const cell = entry.target?.type === "table-cell" ? entry.target : null;
   const where = cell ? [cell.row, cell.column].filter(Boolean).join(" › ") : "";
-  return where ? `${entry.text} · ${where}` : entry.text;
+  // A control or a picture is told apart by its name, then its text, alt or source.
+  const text = entry.target?.name || entry.text || entry.target?.alt || entry.target?.src || "";
+  return where ? `${text} · ${where}` : text;
 }
 
 function post(message) {
@@ -806,6 +813,12 @@ window.addEventListener("message", (event) => {
       data.structure,
       data.rects,
     );
+  } else if (data.type === "key") {
+    // The review's keys pressed in the page. Like a target, a key is heard only under the
+    // reviewer's own press in the frame; the controls it reaches are the ones the bar offers.
+    if (!gesture()) return;
+    if (data.action === "annotate") annotateSwitch.click();
+    else if (data.action === "send") sendNow();
   } else if (data.type === "pin" && Number.isInteger(data.n)) {
     // Only the number crosses back; the note it names is the chrome's own, and focusing it is all
     // a pin can do, and only under the reviewer's own press.
@@ -873,7 +886,34 @@ endDialog.addEventListener("close", async () => {
   notesChanged();
 });
 
-document.getElementById("sendForm").addEventListener("submit", async (event) => {
+const sendForm = /** @type {HTMLFormElement} */ (document.getElementById("sendForm"));
+
+/** The send key: adds the note being written, if any, then sends whatever Send would. */
+async function sendNow() {
+  if (composing && cardText.value.trim() !== "" && !(await addNote())) return;
+  if (!sendButton.disabled) sendForm.requestSubmit();
+}
+
+// The same keys in the chrome itself, outside the fields it has the reviewer type in.
+document.addEventListener("keydown", (event) => {
+  if (event.defaultPrevented || event.isComposing || event.altKey || endDialog.open) return;
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    sendNow();
+  } else if (
+    event.key === "a" &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    // Annotate off closes the card, so A never fires while a note is being written.
+    !composing &&
+    !(event.target instanceof HTMLTextAreaElement)
+  ) {
+    event.preventDefault();
+    annotateSwitch.click();
+  }
+});
+
+sendForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (pending.length === 0) return;
   if (!(await saveEdit())) return;
@@ -890,10 +930,15 @@ document.getElementById("sendForm").addEventListener("submit", async (event) => 
 });
 
 let adding = false;
-card.addEventListener("submit", async (event) => {
+card.addEventListener("submit", (event) => {
   event.preventDefault();
+  addNote();
+});
+
+/** Adds the note in the card; true when the server kept it and the card closed. */
+async function addNote() {
   const prompt = cardText.value.trim();
-  if (!composing || prompt === "" || adding) return;
+  if (!composing || prompt === "" || adding) return false;
   // The instruction is this textarea's value; the other fields are copied by name from the target
   // the artifact proposed, so nothing else it sent rides along and nothing it sent can displace
   // `prompt`. This is the only path that adds a note, and it runs only on the reviewer's submit;
@@ -907,9 +952,13 @@ card.addEventListener("submit", async (event) => {
   adding = false;
   // A note the server did not take stays in the card, still typed, beside the reason.
   if (kept) closeCompose(true);
-});
+  return kept;
+}
 cardText.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    sendNow();
+  } else if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     card.requestSubmit();
   } else if (event.key === "Escape") {
