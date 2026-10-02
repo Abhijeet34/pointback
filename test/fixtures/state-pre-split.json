@@ -1,0 +1,176 @@
+{
+  "sessions": {
+    "41e147dba9f14927": {
+      "key": "41e147dba9f14927",
+      "file": "/private/tmp/pointback-fixture/review.html",
+      "root": "/private/tmp/pointback-fixture",
+      "assetToken": "11111111111111111111111111111111",
+      "epoch": "8e9d1668a252318d",
+      "nextUid": 4,
+      "revision": 1,
+      "pending": [
+        {
+          "uid": 3,
+          "at": "2026-10-02T13:30:05.531Z",
+          "prompt": "And a date",
+          "selector": "h1",
+          "tag": "h1",
+          "text": "review"
+        }
+      ],
+      "drafts": [
+        {
+          "id": "b6c2104cc4d9dc46",
+          "prompt": "Product owns it",
+          "selector": "h1",
+          "tag": "h1",
+          "text": "review",
+          "answers": 2,
+          "at": "2026-10-02T13:30:05.531Z"
+        },
+        {
+          "id": "2b64aecf059ba702",
+          "prompt": "Also bold the date",
+          "selector": "h1",
+          "tag": "h1",
+          "text": "review",
+          "at": "2026-10-02T13:30:05.531Z"
+        }
+      ],
+      "chat": [
+        {
+          "role": "user",
+          "uid": 1,
+          "at": "2026-10-02T13:30:05.529Z",
+          "prompt": "Make the title shorter",
+          "selector": "h1",
+          "tag": "h1",
+          "text": "review",
+          "target": {
+            "type": "text-range",
+            "start": 0,
+            "end": 6,
+            "before": "",
+            "after": ""
+          },
+          "reply": {
+            "status": "done",
+            "message": "Shortened to one line.",
+            "at": "2026-10-02T13:30:05.530Z"
+          }
+        },
+        {
+          "role": "user",
+          "uid": 2,
+          "at": "2026-10-02T13:30:05.529Z",
+          "prompt": "Name the owner",
+          "selector": "p",
+          "tag": "p",
+          "text": "body",
+          "target": {
+            "type": "table-cell",
+            "row": "Q3",
+            "column": "Owner"
+          },
+          "reply": {
+            "status": "question",
+            "message": "Which owner, product or eng?",
+            "at": "2026-10-02T13:30:05.530Z"
+          }
+        },
+        {
+          "role": "user",
+          "uid": 3,
+          "at": "2026-10-02T13:30:05.531Z",
+          "prompt": "And a date",
+          "selector": "h1",
+          "tag": "h1",
+          "text": "review"
+        }
+      ],
+      "createdAt": "2026-10-02T13:30:05.527Z",
+      "lastActive": "2026-10-02T13:30:05.531Z",
+      "structure": "h1 review",
+      "unacked": {
+        "prompts": [
+          {
+            "uid": 1,
+            "at": "2026-10-02T13:30:05.529Z",
+            "prompt": "Make the title shorter",
+            "selector": "h1",
+            "tag": "h1",
+            "text": "review",
+            "target": {
+              "type": "text-range",
+              "start": 0,
+              "end": 6,
+              "before": "",
+              "after": ""
+            }
+          },
+          {
+            "uid": 2,
+            "at": "2026-10-02T13:30:05.529Z",
+            "prompt": "Name the owner",
+            "selector": "p",
+            "tag": "p",
+            "text": "body",
+            "target": {
+              "type": "table-cell",
+              "row": "Q3",
+              "column": "Owner"
+            }
+          }
+        ],
+        "structure": "h1 review\np body",
+        "receipt": 2
+      },
+      "draftStructure": "h1 review\np body"
+    },
+    "013f5a5ed18ca21e": {
+      "key": "013f5a5ed18ca21e",
+      "file": "/private/tmp/pointback-fixture/site/page.html",
+      "root": "/private/tmp/pointback-fixture",
+      "assetToken": "22222222222222222222222222222222",
+      "epoch": "382dc98bd21ff219",
+      "nextUid": 2,
+      "revision": 0,
+      "pending": [],
+      "drafts": [],
+      "chat": [
+        {
+          "role": "user",
+          "uid": 1,
+          "at": "2026-10-02T13:30:05.532Z",
+          "prompt": "Drop this section",
+          "selector": "p",
+          "tag": "p",
+          "text": "nested",
+          "reply": {
+            "status": "declined",
+            "message": "It carries the legal text.",
+            "at": "2026-10-02T13:30:05.545Z"
+          }
+        }
+      ],
+      "createdAt": "2026-10-02T13:30:05.532Z",
+      "lastActive": "2026-10-02T13:30:05.545Z",
+      "endedAt": "2026-10-02T13:30:05.546Z",
+      "endedBy": "agent"
+    },
+    "1e05ce60c7420871": {
+      "key": "1e05ce60c7420871",
+      "file": "/private/tmp/pointback-fixture/blank.html",
+      "root": "/private/tmp/pointback-fixture",
+      "assetToken": "33333333333333333333333333333333",
+      "epoch": "d2f4a2bdd0afaa36",
+      "nextUid": 1,
+      "revision": 0,
+      "pending": [],
+      "drafts": [],
+      "chat": [],
+      "createdAt": "2026-10-02T13:30:05.546Z",
+      "lastActive": "2026-10-02T13:30:05.546Z"
+    }
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "sessions": {
+    "41e147dba9f14927": {
+      "key": "41e147dba9f14927",
+      "file": "/private/tmp/pointback-fixture/review.html",
+      "assetToken": "11111111111111111111111111111111",
+      "nextUid": 4,
+      "revision": 1,
+      "pending": [
+        {
+          "uid": 3,
+          "at": "2026-10-02T13:30:05.421Z",
+          "prompt": "And a date",
+          "selector": "h1",
+          "tag": "h1",
+          "text": "review"
+        }
+      ],
+      "chat": [
+        {
+          "role": "user",
+          "uid": 1,
+          "at": "2026-10-02T13:30:05.420Z",
+          "prompt": "Make the title shorter",
+          "selector": "h1",
+          "tag": "h1",
+          "text": "review",
+          "target": {
+            "type": "text-range",
+            "start": 0,
+            "end": 6,
+            "before": "",
+            "after": ""
+          }
+        },
+        {
+          "role": "user",
+          "uid": 2,
+          "at": "2026-10-02T13:30:05.420Z",
+          "prompt": "Name the owner",
+          "selector": "p",
+          "tag": "p",
+          "text": "body",
+          "target": {
+            "type": "table-cell",
+            "row": "Q3",
+            "column": "Owner"
+          }
+        },
+        {
+          "role": "user",
+          "uid": 3,
+          "at": "2026-10-02T13:30:05.421Z",
+          "prompt": "And a date",
+          "selector": "h1",
+          "tag": "h1",
+          "text": "review"
+        }
+      ],
+      "createdAt": "2026-10-02T13:30:05.418Z",
+      "lastActive": "2026-10-02T13:30:05.421Z",
+      "structure": "h1 review",
+      "unacked": {
+        "prompts": [
+          {
+            "uid": 1,
+            "at": "2026-10-02T13:30:05.420Z",
+            "prompt": "Make the title shorter",
+            "selector": "h1",
+            "tag": "h1",
+            "text": "review",
+            "target": {
+              "type": "text-range",
+              "start": 0,
+              "end": 6,
+              "before": "",
+              "after": ""
+            }
+          },
+          {
+            "uid": 2,
+            "at": "2026-10-02T13:30:05.420Z",
+            "prompt": "Name the owner",
+            "selector": "p",
+            "tag": "p",
+            "text": "body",
+            "target": {
+              "type": "table-cell",
+              "row": "Q3",
+              "column": "Owner"
+            }
+          }
+        ],
+        "structure": "h1 review\np body",
+        "receipt": 2
+      }
+    },
+    "38b8dbeefe78a68b": {
+      "key": "38b8dbeefe78a68b",
+      "file": "/private/tmp/pointback-fixture/notes.html",
+      "assetToken": "22222222222222222222222222222222",
+      "nextUid": 2,
+      "revision": 0,
+      "pending": [],
+      "chat": [
+        {
+          "role": "user",
+          "uid": 1,
+          "at": "2026-10-02T13:30:05.422Z",
+          "prompt": "Drop this section",
+          "selector": "h1",
+          "tag": "h1",
+          "text": "review"
+        }
+      ],
+      "createdAt": "2026-10-02T13:30:05.421Z",
+      "lastActive": "2026-10-02T13:30:05.422Z",
+      "endedAt": "2026-10-02T13:30:05.436Z",
+      "endedBy": "user"
+    },
+    "1e05ce60c7420871": {
+      "key": "1e05ce60c7420871",
+      "file": "/private/tmp/pointback-fixture/blank.html",
+      "assetToken": "33333333333333333333333333333333",
+      "nextUid": 1,
+      "revision": 0,
+      "pending": [],
+      "chat": [],
+      "createdAt": "2026-10-02T13:30:05.437Z",
+      "lastActive": "2026-10-02T13:30:05.437Z"
+    }
+  }
+}

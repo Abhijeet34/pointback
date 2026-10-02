@@ -42,7 +42,9 @@ test("open starts a detached server, records a session and returns a token-beari
   );
   assert.match(out.next_step, /poll/);
   assertPrivate(lab.dir, 0o700);
-  for (const file of readdirSync(lab.dir)) assertPrivate(join(lab.dir, file), 0o600);
+  // Each session's file is under `sessions/`, so the walk goes down into it.
+  for (const entry of readdirSync(lab.dir, { recursive: true, withFileTypes: true }))
+    assertPrivate(join(entry.parentPath, entry.name), entry.isDirectory() ? 0o700 : 0o600);
   // Reported, not asserted. What a millisecond budget on a shared CI runner measures is the
   // runner: `cli()` already kills and names a command that has not exited in 30 s, which is
   // the bound that catches an `open` that hangs. A budget between the two only fails when
@@ -317,7 +319,7 @@ async function recordServer(dir, port) {
 }
 
 // An older daemon cannot prove it holds the token, so stopping it shows the token to something that
-// proved nothing. It is stopped all the same, so two daemons never share one state.json, and the
+// proved nothing. It is stopped all the same, so two daemons never share one set of sessions, and the
 // token is retired: when it gives the port back, the new daemon takes the port and a fresh token.
 for (const [how, args] of [
   ["opening a file", [fixture]],

@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { basename, dirname, relative, sep } from "node:path";
+import { existsSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join, relative, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   KEY_PATTERN,
   TOKEN_PATTERN,
@@ -12,12 +13,12 @@ import {
 } from "./artifact-path.js";
 import { HttpError } from "./http-guard.js";
 import { limits } from "./limits.js";
-import { readJson, writeJsonAtomic } from "./state-dir.js";
+import { pastSharingViolations, privateDir, readJson, writeJsonAtomic } from "./state-dir.js";
 
 /**
  * Sessions live in a Map keyed by the path hash, so a key can only ever find a session
- * that was put there: no lookup reaches an inherited property. Every mutation is
- * written through to disk atomically, so a restarted server resumes where it stopped.
+ * that was put there: no lookup reaches an inherited property. Every mutation writes its own
+ * session's file through atomically, so a restarted server resumes where it stopped.
  *
  * A note the reviewer has added but not sent is a draft, kept on its session here rather than in
  * the tab, so closing the tab or restarting the daemon loses none of it; Send promotes every draft
@@ -30,41 +31,84 @@ import { readJson, writeJsonAtomic } from "./state-dir.js";
 export const EPOCH_PATTERN = /^[0-9a-f]{16}$/;
 export const DRAFT_ID_PATTERN = /^[0-9a-f]{16}$/;
 const newEpoch = () => randomBytes(8).toString("hex");
+/** The one file every session lived in before each got its own. */
+const LEGACY_FILE = "state.json";
 
 export class SessionStore {
-  #file;
+  #dir;
   #sessions = new Map();
   #events = new EventEmitter();
   #activePolls = 0;
   #pollsByKey = new Map();
   #working = new Map();
 
-  constructor(file) {
-    this.#file = file;
+  /**
+   * `stateDir` holds one file per session under `sessions/`, so a mutation rewrites only the session
+   * it changed: a file save costs the same with one review held as with the cap.
+   */
+  constructor(stateDir) {
+    this.#dir = privateDir(join(stateDir, "sessions"));
     this.#events.setMaxListeners(0);
-    const stored = readJson(file, { sessions: {} });
-    let upgraded = false;
-    for (const [key, session] of Object.entries(stored.sessions ?? {})) {
-      if (KEY_PATTERN.test(key) && TOKEN_PATTERN.test(session?.assetToken ?? "")) {
-        // A session stored before epochs existed gets one now, and keeps it: without one, no
-        // cursor could ever match it and its outstanding batch would be redelivered forever.
-        if (!EPOCH_PATTERN.test(session.epoch ?? "")) {
-          session.epoch = newEpoch();
-          upgraded = true;
-        }
-        // A session stored before roots existed resolved its assets in the file's own folder.
-        if (typeof session.root !== "string") {
-          session.root = dirname(session.file);
-          upgraded = true;
-        }
-        this.#sessions.set(key, session);
-      }
+    for (const name of readdirSync(this.#dir)) {
+      const path = join(this.#dir, name);
+      // A temp file is a write that died before its rename; the session file it was replacing is
+      // still whole, so the temp is only litter, and it can be as large as the session.
+      if (name.endsWith(".tmp")) rmSync(path, { force: true });
+      else if (name.endsWith(".json")) this.#load(name.slice(0, -".json".length), readJson(path));
     }
-    if (upgraded) this.#persist();
+    this.#split(join(stateDir, LEGACY_FILE));
   }
 
-  #persist() {
-    writeJsonAtomic(this.#file, { sessions: Object.fromEntries(this.#sessions) });
+  /** Holds a stored session if it is well formed, upgrading what older versions did not record. */
+  #load(key, session) {
+    if (!KEY_PATTERN.test(key) || session?.key !== key) return false;
+    if (!TOKEN_PATTERN.test(session.assetToken ?? "")) return false;
+    let upgraded = false;
+    // A session stored before epochs existed gets one now, and keeps it: without one, no
+    // cursor could ever match it and its outstanding batch would be redelivered forever.
+    if (!EPOCH_PATTERN.test(session.epoch ?? "")) {
+      session.epoch = newEpoch();
+      upgraded = true;
+    }
+    // A session stored before roots existed resolved its assets in the file's own folder.
+    if (typeof session.root !== "string") {
+      session.root = dirname(session.file);
+      upgraded = true;
+    }
+    this.#sessions.set(key, session);
+    if (upgraded) this.#persist(session);
+    return true;
+  }
+
+  /**
+   * Splits the single `state.json` every earlier version kept into one file per session. Its copy
+   * wins over a session file already there, which only an interrupted split or a downgrade leaves.
+   * The old file is renamed, never deleted, and only once every session reads back as written; until
+   * then it stays where it is and the next start splits it again.
+   */
+  #split(legacy) {
+    const stored = readJson(legacy);
+    if (!stored) return;
+    const moved = Object.entries(stored.sessions ?? {}).filter(([key, session]) =>
+      this.#load(key, session),
+    );
+    for (const [, session] of moved) this.#persist(session);
+    const lost = moved.filter(
+      ([key]) => !isDeepStrictEqual(readJson(this.#path(key)), this.get(key)),
+    );
+    if (lost.length > 0)
+      throw new Error(
+        `${legacy} was not split cleanly (${lost.length} sessions); it is left in place`,
+      );
+    pastSharingViolations(() => renameSync(legacy, `${legacy}.migrated`));
+  }
+
+  #path(key) {
+    return join(this.#dir, `${key}.json`);
+  }
+
+  #persist(session) {
+    writeJsonAtomic(this.#path(session.key), session);
   }
 
   /**
@@ -101,7 +145,7 @@ export class SessionStore {
       session.lastActive = now;
       session.root = assets;
     }
-    this.#persist();
+    this.#persist(session);
     return session;
   }
 
@@ -130,6 +174,7 @@ export class SessionStore {
     });
     const victim = evictable[0];
     this.#sessions.delete(victim.key);
+    rmSync(this.#path(victim.key), { force: true });
     this.#clearWorking(victim.key);
   }
 
@@ -199,7 +244,7 @@ export class SessionStore {
   queue(key, prompts, structure) {
     const session = this.get(key);
     const accepted = this.#accept(session, prompts, structure);
-    this.#persist();
+    this.#persist(session);
     this.#events.emit(key, { type: "feedback" });
     return { status: "queued", pending_prompts: session.pending.length, accepted };
   }
@@ -245,7 +290,7 @@ export class SessionStore {
     session.drafts = drafts;
     if (drafts.length === 0) delete session.draftStructure;
     session.lastActive = new Date().toISOString();
-    this.#persist();
+    this.#persist(session);
     // Every tab on the review shows the same unsent notes, whichever of them changed the list.
     this.#events.emit(session.key, { type: "drafts", drafts });
     return { drafts };
@@ -287,7 +332,7 @@ export class SessionStore {
       return session.revision;
     }
     session.revision += 1;
-    this.#persist();
+    this.#persist(session);
     this.#events.emit(key, { type: "reload", revision: session.revision });
     return session.revision;
   }
@@ -318,7 +363,7 @@ export class SessionStore {
     }
     const endedBy = session.endedBy;
     this.#clearWorking(key);
-    this.#persist();
+    this.#persist(session);
     this.#events.emit(key, { type: "ended", by: endedBy, queued });
     return { status: "ended", ended_by: endedBy, queued };
   }
@@ -335,7 +380,7 @@ export class SessionStore {
     if (!note) throw new HttpError(404, `no note ${uid} in this review`);
     note.reply = { ...validateReply(raw), at: new Date().toISOString() };
     session.lastActive = note.reply.at;
-    this.#persist();
+    this.#persist(session);
     this.#events.emit(key, { type: "reply", uid, reply: note.reply });
     return { status: "replied", uid, reply: note.reply };
   }
@@ -346,7 +391,7 @@ export class SessionStore {
     if (!session.endedAt) return;
     delete session.endedAt;
     delete session.endedBy;
-    this.#persist();
+    this.#persist(session);
     this.#events.emit(key, { type: "reopened" });
   }
 
@@ -355,7 +400,7 @@ export class SessionStore {
     const session = this.get(key);
     const prompts = session.pending;
     session.pending = [];
-    if (prompts.length > 0) this.#persist();
+    if (prompts.length > 0) this.#persist(session);
     return prompts;
   }
 
@@ -379,7 +424,7 @@ export class SessionStore {
       cursor.uid >= session.unacked.receipt
     ) {
       delete session.unacked;
-      this.#persist();
+      this.#persist(session);
     }
     const ended = session.endedAt ? { ended_by: session.endedBy } : null;
     // Notes already taken or queued are still delivered after the file goes; once there is
@@ -408,7 +453,7 @@ export class SessionStore {
       session.pending = [];
       const receipt = prompts[prompts.length - 1].uid;
       session.unacked = { prompts, structure: session.structure ?? "", receipt };
-      this.#persist();
+      this.#persist(session);
       return {
         status: "feedback",
         prompts,

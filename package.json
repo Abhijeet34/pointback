@@ -50,7 +50,8 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p src/browser/tsconfig.json",
     "deps": "node scripts/check-deps.js",
     "test": "node --test --test-timeout=60000 --test-force-exit --experimental-test-coverage --test-coverage-include=src/** --test-coverage-include=bin/** --test-coverage-exclude=src/browser/** --test-coverage-lines=85 --test-coverage-branches=80 --test-coverage-functions=85 test/*.test.js",
-    "smoke": "node test/engine-smoke.js"
+    "smoke": "node test/engine-smoke.js",
+    "bench": "node scripts/bench-state.js"
   },
   "dependencies": {
     "parse5": "8.0.1"

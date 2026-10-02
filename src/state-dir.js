@@ -66,7 +66,11 @@ function restrictDir(dir, { onceOnly = false } = {}) {
 
 /** The state directory, created private to the user; the env override serves tests and isolation. */
 export function stateDir(environment = process.env) {
-  const dir = env("STATE_DIR", environment) ?? join(homedir(), stateDirName);
+  return privateDir(env("STATE_DIR", environment) ?? join(homedir(), stateDirName));
+}
+
+/** Creates a directory only this user can reach, or re-tightens one that already exists. */
+export function privateDir(dir) {
   mkdirSync(dir, { recursive: true, mode: DIR_MODE });
   // mkdir honours the mode only on creation, so an older or foreign directory is re-tightened.
   restrictDir(dir);

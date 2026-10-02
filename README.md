@@ -224,14 +224,17 @@ It cannot read the chrome, cannot call the API, and talks to the chrome only thr
 The review script is inserted into the artifact as a DOM node through a real HTML parser, so nothing in the page's own markup can swallow or reshape it.
 Assets resolve within the review's root through a path check that survives encoded traversal, backslashes, unicode lookalikes, null bytes, absolute paths and symlink escape.
 A font (`.woff2`, `.woff`, `.ttf`, `.otf`) is the one asset served with `Access-Control-Allow-Origin`, because the opaque origin makes every `@font-face` load a CORS request; any other file under the root, and the API, stay unreadable to the page's own script, so a stray `.env` beside the artifact cannot be read and sent out.
-State is written to a temporary file and renamed, and nothing but the owning user can read it.
+Each session is its own file under `sessions/` in the state directory, so a file save rewrites the one review it belongs to rather than every review the daemon holds.
+`npm run bench` times exactly that save at 200 notes a session: when every session shared one `state.json` it wrote 0.22 MB in about 0.4 ms with 1 session held and 14.05 MB in about 17.5 ms with 64, and now it writes 0.21 MB in about 0.4 ms at every count from 1 to 64.
+A `state.json` from an earlier version is split on the first start, and renamed to `state.json.migrated` only once every session in it reads back from its own file.
+State is written to a temporary file and renamed, a temporary file a crash left behind is removed on the next start, and nothing but the owning user can read it.
 POSIX says that in the mode bits, `0600` in a `0700` directory.
 Windows has no such bits, so the state directory's ACL is reset to a single full-control entry for the current user and every file written inside inherits it.
 
 A review is a bounded thing that ends, not state that piles up.
 The daemon idles out after `POINTBACK_IDLE_MS` of no activity, and a review tab keeps it alive only while the reviewer is on it: the tab heartbeats while its page is visible and stops when it is hidden, so a review left open and walked away from releases the process rather than pinning it open for good.
-Sessions are capped at `sessions` in `src/limits.js`; opening past the cap disposes the least-recently-active session, an ended review before a live one, so `state.json` holds at most that many sessions no matter how many files have been reviewed.
-After a hundred reviews on a long-lived machine, then, there is one small loopback daemon that exits on its own when idle, and a `state.json` bounded to the most recent sessions, each holding that session's path and the notes sent in it.
+Sessions are capped at `sessions` in `src/limits.js`; opening past the cap disposes the least-recently-active session, an ended review before a live one, so `sessions/` holds at most that many files no matter how many files have been reviewed.
+After a hundred reviews on a long-lived machine, then, there is one small loopback daemon that exits on its own when idle, and a `sessions/` directory bounded to the most recent sessions, each holding that session's path and the notes sent in it.
 
 The process opens no outbound connection, ever; `test/egress.test.js` proves it across the whole slice.
 
