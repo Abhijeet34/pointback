@@ -4,6 +4,7 @@
 // no browser means a loud skip, never a silent pass.
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
@@ -293,11 +294,8 @@ test(
       await page.eval("document.getElementById('presenceSince').textContent"),
       /^\d+:\d\d$/,
     );
-    assert.equal(
-      await page.eval("document.getElementById('send').textContent"),
-      "Agent is working…",
-    );
-    assert.equal(await page.eval("document.getElementById('send').disabled"), true);
+    // Nothing is waiting to go, so Send has nothing to do; it is not locked by the agent working.
+    assert.equal(await page.eval("document.getElementById('send').textContent"), "Send to agent");
     // Working is a still dot. Ask for motion explicitly, or a machine with Reduce Motion on
     // would pass this with the old 1.4 s pulse still in the stylesheet.
     await page.send("Emulation.setEmulatedMedia", {
@@ -496,14 +494,18 @@ test(
     await page.enter();
     await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
     assert.equal(await page.eval("document.querySelector('.mark .mark-note').textContent"), typed);
-    const kept = await page.eval(
-      "JSON.stringify(Object.keys(JSON.parse(sessionStorage.getItem('pending:' + location.pathname.split('/').pop())).prompts[0]).sort())",
-    );
+    // The note is kept by the server as a draft, and only with the fields a note has.
+    const { port, token } = lab.serverInfo();
+    const key = new URL(session.url).pathname.split("/").pop();
+    const { drafts } = await fetch(`http://127.0.0.1:${port}/api/${key}/session`, {
+      headers: { authorization: `Bearer ${token}` },
+    }).then((r) => r.json());
     assert.deepEqual(
-      JSON.parse(kept),
-      ["at", "prompt", "selector", "tag", "target", "text"],
-      "the chrome keeps only the fields a note has",
+      Object.keys(drafts[0]).sort(),
+      ["at", "id", "prompt", "selector", "tag", "target", "text"],
+      "the server keeps only the fields a note has",
     );
+    assert.equal(drafts[0].prompt, typed);
 
     await page.eval("document.getElementById('send').click()");
     await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
@@ -614,20 +616,20 @@ test(
   "a presence change leaves a reviewer who scrolled up in the notes where they were",
   { skip: !executable && "no browser found" },
   async () => {
-    // Enough notes to overflow the margin at 800x600, queued in one request under the cap.
+    // Enough notes to overflow the margin at 800x600: a full send's worth, drafted and sent.
     const { port, token } = lab.serverInfo();
     const key = new URL(opened.session.url).pathname.split("/").pop();
-    const prompts = Array.from({ length: limits.promptsPerRequest }, (_, i) => ({
-      prompt: `Note ${i + 1}`,
-      selector: "#p1",
-      tag: "p",
-      text: "Move the queue worker",
-    }));
-    const res = await fetch(`http://127.0.0.1:${port}/api/${key}/prompts`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ prompts }),
-    });
+    const call = (method, path, body) =>
+      fetch(`http://127.0.0.1:${port}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    for (let i = 0; i < limits.promptsPerRequest; i += 1) {
+      const draft = { prompt: `Note ${i + 1}`, selector: "#p1", tag: "p", text: "Move the queue" };
+      assert.equal((await call("POST", `/api/${key}/drafts`, { draft })).status, 200);
+    }
+    const res = await call("POST", `/api/${key}/prompts`, {});
     assert.equal(res.status, 200, await res.text());
     assert.equal(
       (await cli(["poll", fixture, "--timeout-ms", "0"], lab.env)).json().status,
@@ -909,5 +911,240 @@ test(
     console.log(
       `browser lifecycle: file save to reloaded page, five saves ${latencies.join("/")} ms, median ${reloadMs} ms`,
     );
+  },
+);
+
+/** Opens a review in a fresh tab, with the artifact attached and Annotate on. */
+async function openReview(url) {
+  const page = await browser.page(url);
+  const attaching = page.frame();
+  await page.waitFor("document.body.dataset.ready === '1'");
+  const artifact = await attaching;
+  await artifact.waitFor("document.readyState === 'complete'");
+  await page.eval("document.getElementById('annotate').click()");
+  await page.waitFor("document.body.dataset.annotate === '1'");
+  return { page, artifact };
+}
+
+/** Adds a note the way a reviewer does: point at the element, type, press Enter. */
+async function noteOn(page, artifact, selector, text) {
+  const unsent = "document.querySelectorAll('.mark:not(.sent)').length";
+  const before = Number(await page.eval(unsent));
+  const frameBox = JSON.parse(
+    await page.eval("JSON.stringify(document.getElementById('artifact').getBoundingClientRect())"),
+  );
+  const box = JSON.parse(
+    await artifact.eval(
+      `JSON.stringify(document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect())`,
+    ),
+  );
+  const point = {
+    x: frameBox.left + box.left + Math.min(30, box.width / 2),
+    y: frameBox.top + box.top + box.height / 2,
+  };
+  await page.pointerInto(artifact, point);
+  await page.click(point.x, point.y);
+  await page.waitFor(
+    "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+  );
+  await page.type(text);
+  await page.enter();
+  await page.waitFor(`${unsent} === ${before + 1}`);
+}
+
+/** What the reviewer sees of the agent and of Send, read from what paints. */
+const SEND_PAINT = `JSON.stringify((() => {
+  const send = document.getElementById('send');
+  return {
+    presence: document.getElementById('presenceText').textContent,
+    send: send.textContent,
+    disabled: send.disabled,
+    cursor: getComputedStyle(send).cursor,
+  };
+})())`;
+const unsentNotes =
+  "JSON.stringify([...document.querySelectorAll('.mark:not(.sent) .mark-note')].map((e) => e.textContent))";
+
+test(
+  "two unsent notes survive the tab closing, and the review opened again sends them",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Name the queue in the title");
+    await noteOn(page, artifact, "#p1", "Say how long each step takes");
+    await page.close();
+
+    const reopened = await browser.page((await cli([file], lab.env)).json().session.url);
+    await reopened.waitFor("document.body.dataset.ready === '1'");
+    assert.deepEqual(
+      JSON.parse(await reopened.eval(unsentNotes)),
+      ["Name the queue in the title", "Say how long each step takes"],
+      "both notes are still there, unsent",
+    );
+    assert.equal(
+      await reopened.eval("document.getElementById('send').textContent"),
+      "Send 2 notes to agent",
+    );
+    await reopened.eval("document.getElementById('send').click()");
+    await reopened.waitFor("document.querySelectorAll('.mark.sent').length === 2");
+    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => [p.prompt, p.selector]),
+      [
+        ["Name the queue in the title", "#title"],
+        ["Say how long each step takes", "#p1"],
+      ],
+    );
+    await reopened.close();
+  },
+);
+
+test(
+  "a stopped daemon leaves the tab saying so with Send off, and the agent's next poll brings it back to deliver",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    try {
+      const { file } = copyOfFixture();
+      const session = (await cli([file], own.env)).json().session;
+      const { page, artifact } = await openReview(session.url);
+      await noteOn(page, artifact, "#title", "Name the queue in the title");
+      const live = JSON.parse(await page.eval(SEND_PAINT));
+      assert.equal(live.disabled, false);
+
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      await page.waitFor("document.getElementById('notice').checkVisibility()");
+      const offline = JSON.parse(await page.eval(SEND_PAINT));
+      assert.deepEqual(
+        offline,
+        { presence: "Not connected", send: "Not connected", disabled: true, cursor: "default" },
+        "a page that cannot reach the daemon says so, and offers no Send that cannot work",
+      );
+      assert.match(
+        await page.eval("document.getElementById('noticeText').textContent"),
+        /Not connected\. Your notes are kept/,
+      );
+      assert.deepEqual(JSON.parse(await page.eval(unsentNotes)), ["Name the queue in the title"]);
+
+      // The agent's next step starts a daemon, which comes back where the tab is looking.
+      const polling = cli(["poll", file, "--timeout-ms", "30000"], own.env, { timeoutMs: 40_000 });
+      await page.waitFor("document.getElementById('presence').dataset.state === 'listening'", {
+        timeoutMs: 20_000,
+      });
+      assert.equal(await page.eval("document.getElementById('notice').checkVisibility()"), false);
+      assert.deepEqual(JSON.parse(await page.eval(SEND_PAINT)), {
+        presence: "Agent listening",
+        send: "Send 1 note to agent",
+        disabled: false,
+        cursor: "pointer",
+      });
+      await page.eval("document.getElementById('send').click()");
+      const polled = (await polling).json();
+      assert.equal(polled.status, "feedback");
+      assert.deepEqual(
+        polled.prompts.map((p) => p.prompt),
+        ["Name the queue in the title"],
+      );
+      await page.close();
+    } finally {
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a note sent while the agent works is delivered on its next poll",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Name the queue in the title");
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    const first = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    assert.deepEqual(
+      first.prompts.map((p) => p.prompt),
+      ["Name the queue in the title"],
+    );
+    await page.waitFor("document.getElementById('presence').dataset.state === 'working'");
+
+    await noteOn(page, artifact, "#p1", "Say how long each step takes");
+    assert.deepEqual(
+      JSON.parse(await page.eval(SEND_PAINT)),
+      {
+        presence: "Agent working",
+        send: "Send 1 note to agent",
+        disabled: false,
+        cursor: "pointer",
+      },
+      "the agent working shows in presence and does not lock Send",
+    );
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 2");
+    const next = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    assert.equal(next.status, "feedback");
+    assert.deepEqual(
+      next.prompts.map((p) => p.prompt),
+      ["Say how long each step takes"],
+    );
+    await page.close();
+  },
+);
+
+/**
+ * A stand-in for the platform's opener, first on PATH, writing down every URL it is asked to open.
+ * Windows opens through cmd.exe's `start`, which PATH cannot shadow, so there the test reads only
+ * what the command reports and keeps the real opener off.
+ */
+function fakeOpener() {
+  if (process.platform === "win32") return null;
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-opener-"));
+  const log = join(dir, "opened.log");
+  writeFileSync(log, "");
+  for (const command of ["open", "xdg-open"]) {
+    writeFileSync(join(dir, command), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\n`);
+    chmodSync(join(dir, command), 0o755);
+  }
+  return {
+    env: {
+      ...lab.env,
+      [`${envPrefix}NO_OPEN`]: undefined,
+      PATH: `${dir}${delimiter}${process.env.PATH}`,
+    },
+    opened: () => readFileSync(log, "utf8").split("\n").filter(Boolean),
+  };
+}
+
+test(
+  "opening the file again while a tab shows the review opens no second tab",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const page = await browser.page(session.url);
+    await page.waitFor("document.body.dataset.ready === '1'");
+    const opener = fakeOpener();
+    const env = opener?.env ?? lab.env;
+
+    const again = (await cli([file], env)).json();
+    assert.match(again.next_step, /already open in the reviewer's browser, so no new tab/);
+    if (opener) {
+      // A negative: the opener is a detached child, so give it the time a launch would take.
+      await new Promise((r) => setTimeout(r, 1000));
+      assert.deepEqual(opener.opened(), [], "no browser was asked to open anything");
+    }
+
+    // Not vacuous: with the tab gone, the same command opens one.
+    await page.close();
+    await until(async () => !/already open/.test((await cli([file], lab.env)).json().next_step), {
+      what: "the server to see the tab close",
+    });
+    const third = (await cli([file], env)).json();
+    assert.doesNotMatch(third.next_step, /already open/);
+    if (opener) {
+      await until(() => opener.opened().length === 1, { what: "the opener to be asked once" });
+      assert.deepEqual(opener.opened(), [third.session.url]);
+    }
   },
 );

@@ -15,7 +15,7 @@ import { join, relative } from "node:path";
 import { after, test } from "node:test";
 import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
-import { cli, fixture, isolatedEnv } from "./helpers/env.js";
+import { cli, fixture, isolatedEnv, sendNote } from "./helpers/env.js";
 import { assertPrivate } from "./helpers/private.js";
 
 const lab = isolatedEnv();
@@ -60,16 +60,11 @@ test("poll waits for feedback and returns it with its target intact", async () =
     .session.url.match(/session\/([0-9a-f]{16})/)[1];
   const polling = cli(["poll", fixture, "--timeout-ms", "10000"], lab.env);
   await new Promise((r) => setTimeout(r, 400));
-  const res = await fetch(`http://127.0.0.1:${info.port}/api/${key}/prompts`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${info.token}`,
-      "content-type": "application/json",
-      origin: `http://127.0.0.1:${info.port}`,
-    },
-    body: JSON.stringify({
-      prompts: [{ prompt: "Shorter", selector: "#title", tag: "h1", text: "Rollout" }],
-    }),
+  const res = await sendNote(info, key, {
+    prompt: "Shorter",
+    selector: "#title",
+    tag: "h1",
+    text: "Rollout",
   });
   assert.equal(res.status, 200);
   const polled = await polling;
@@ -142,8 +137,11 @@ function daemon(env) {
   return {
     call,
     note: async (key, prompt) => {
-      const res = await call("POST", `/api/${key}/prompts`, {
-        prompts: [{ prompt, selector: "#title", tag: "h1", text: "Rollout" }],
+      const res = await sendNote(info, key, {
+        prompt,
+        selector: "#title",
+        tag: "h1",
+        text: "Rollout",
       });
       assert.equal(res.status, 200, await res.text());
     },
@@ -283,29 +281,106 @@ test("a daemon that cannot start is reported by what it said, not by where it wr
   }
 });
 
-test("a server of another version is replaced", async () => {
-  const other = isolatedEnv();
-  let shutdownAsked = false;
-  const impostor = createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/shutdown") shutdownAsked = true;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: true, app: name, version: "0.0.0-other" }));
-  });
-  await new Promise((r) => impostor.listen(0, "127.0.0.1", r));
+/** A token in the shape the daemon mints, recorded for a test to watch where it travels. */
+const RECORDED_TOKEN = "ab".repeat(24);
+
+async function recordServer(dir, port) {
   const { writeJsonAtomic } = await import("../src/state-dir.js");
-  writeJsonAtomic(join(other.dir, "server.json"), {
+  writeJsonAtomic(join(dir, "server.json"), {
     pid: 1,
-    port: impostor.address().port,
-    token: "t",
+    port,
+    token: RECORDED_TOKEN,
     version: "0.0.0-other",
   });
+}
+
+// An older daemon cannot prove it holds the token, so stopping it shows the token to something that
+// proved nothing. It is stopped all the same, so two daemons never share one state.json, and the
+// token is retired: when it gives the port back, the new daemon takes the port and a fresh token.
+for (const [how, args] of [
+  ["opening a file", [fixture]],
+  ["stop", ["stop"]],
+]) {
+  test(`a server of another version is replaced by ${how}, and the token it was shown is retired`, async () => {
+    const other = isolatedEnv();
+    let shutdownAsked = false;
+    const impostor = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.method === "POST" && req.url === "/shutdown") {
+        shutdownAsked = true;
+        res.end(JSON.stringify({ status: "stopping" }));
+        impostor.close();
+        impostor.closeAllConnections();
+        return;
+      }
+      res.end(JSON.stringify({ ok: true, app: name, version: "0.0.0-other" }));
+    });
+    await new Promise((r) => impostor.listen(0, "127.0.0.1", r));
+    const port = impostor.address().port;
+    await recordServer(other.dir, port);
+    try {
+      const ran = await cli(args, other.env);
+      assert.equal(ran.code, 0, ran.stderr);
+      assert.equal(shutdownAsked, true);
+      if (args[0] === "stop") assert.deepEqual(ran.json(), { status: "stopped" });
+      const opened = await cli([fixture], other.env);
+      assert.equal(opened.code, 0, opened.stderr);
+      assert.equal(other.serverInfo().port, port, "the port it gave back is taken up again");
+      assert.notEqual(
+        other.serverInfo().token,
+        RECORDED_TOKEN,
+        "the token it saw is worth nothing",
+      );
+    } finally {
+      impostor.close();
+      await other.stop();
+    }
+  });
+}
+
+// The port a daemon left behind can be taken by anything, and the token outlives the daemon, so
+// it is presented only to a server that answers a fresh challenge keyed by it.
+test("a listener on the recorded port that cannot prove it holds the token is never sent it", async () => {
+  const other = isolatedEnv();
+  const seen = [];
+  const squatter = createServer((req, res) => {
+    seen.push(`${req.method} ${req.url} ${req.headers.authorization ?? "-"}`);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ ok: true, app: "something-else", proof: "0".repeat(64) }));
+  });
+  await new Promise((r) => squatter.listen(0, "127.0.0.1", r));
+  const port = squatter.address().port;
+  await recordServer(other.dir, port);
   try {
+    assert.deepEqual((await cli(["stop"], other.env)).json(), { status: "not-running" });
     const opened = await cli([fixture], other.env);
     assert.equal(opened.code, 0, opened.stderr);
-    assert.equal(shutdownAsked, true);
-    assert.notEqual(other.serverInfo().port, impostor.address().port);
+    const info = other.serverInfo();
+    assert.notEqual(info.port, port);
+    assert.notEqual(info.token, RECORDED_TOKEN);
+    assert.ok(seen.length >= 2, `the squatter was asked who it is: ${seen.join("; ")}`);
+    for (const request of seen) {
+      assert.match(request, /^GET \/health\?challenge=[0-9a-f]{32} -$/, "and shown nothing else");
+    }
   } finally {
-    impostor.close();
+    squatter.close();
     await other.stop();
+  }
+});
+
+test("a stopped daemon comes back on the address and token an open tab already holds", async () => {
+  const own = isolatedEnv();
+  try {
+    const url = (await cli([fixture], own.env)).json().session.url;
+    const before = own.serverInfo();
+    assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+    const polled = await cli(["poll", fixture, "--timeout-ms", "50"], own.env);
+    assert.equal(polled.code, 0, polled.stderr);
+    const after = own.serverInfo();
+    assert.notEqual(after.pid, before.pid, "a new daemon answered the poll");
+    assert.deepEqual([after.port, after.token], [before.port, before.token]);
+    assert.equal((await cli([fixture], own.env)).json().session.url, url, "the same link works");
+  } finally {
+    await own.stop();
   }
 });

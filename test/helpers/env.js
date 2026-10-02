@@ -59,3 +59,20 @@ export function cli(args, env, { timeoutMs = 30_000 } = {}) {
     });
   });
 }
+
+/** Sends a note the way the chrome does, kept as a draft and then sent, straight to the daemon. */
+export async function sendNote(info, key, note) {
+  const call = (path, body) =>
+    fetch(`http://127.0.0.1:${info.port}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${info.token}`,
+        "content-type": "application/json",
+        origin: `http://127.0.0.1:${info.port}`,
+      },
+      body: JSON.stringify(body),
+    });
+  const kept = await call(`/api/${key}/drafts`, { draft: note });
+  if (!kept.ok) throw new Error(`the draft was refused: ${kept.status} ${await kept.text()}`);
+  return call(`/api/${key}/prompts`, {});
+}

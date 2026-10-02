@@ -367,6 +367,16 @@ body {
   background: var(--hw-accent);
 }
 
+/* Not connected says nothing about the agent, only that this page cannot reach it: a warning,
+   in the label as well as the ring, so it is not mistaken for the ordinary "away". */
+.presence[data-state="offline"] {
+  color: var(--hw-warning);
+}
+
+.presence[data-state="offline"] .presence-dot {
+  border-color: var(--hw-warning);
+}
+
 .presence-since:empty {
   display: none;
 }

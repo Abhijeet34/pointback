@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { cli, fixture, isolatedEnv } from "./helpers/env.js";
+import { cli, fixture, isolatedEnv, sendNote } from "./helpers/env.js";
 
 const trap = new URL("./helpers/egress-trap.mjs", import.meta.url).href;
 const lab = isolatedEnv();
@@ -19,15 +19,7 @@ test("the whole slice opens no connection that leaves the loopback interface", a
   const info = lab.serverInfo();
   const polling = cli(["poll", fixture, "--timeout-ms", "10000"], lab.env);
   await new Promise((r) => setTimeout(r, 400));
-  await fetch(`http://127.0.0.1:${info.port}/api/${key}/prompts`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${info.token}`,
-      "content-type": "application/json",
-      origin: `http://127.0.0.1:${info.port}`,
-    },
-    body: JSON.stringify({ prompts: [{ prompt: "x", selector: "#t", tag: "h1", text: "t" }] }),
-  });
+  await sendNote(info, key, { prompt: "x", selector: "#t", tag: "h1", text: "t" });
   assert.equal((await polling).json().status, "feedback");
   await cli(["stop"], lab.env);
 

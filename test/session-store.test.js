@@ -200,7 +200,8 @@ test("the page outline is bounded, replaced with each batch, and delivered with 
   );
 
   // Send-and-end carries a last batch, so it carries the outline that batch was written against.
-  store.end(key, "user", [prompt()], "main\n  #last");
+  store.addDraft(key, prompt(), "main\n  #last");
+  store.end(key, "user", "send");
   const final = await store.waitForFeedback(key, 20, undefined, cursor(store, key, 3));
   assert.equal(final.structure, "main\n  #last");
   assert.equal(final.session_ended, true);
@@ -315,6 +316,24 @@ test("a session with undelivered notes is never disposed, even when it is the ol
     () => store.get(emptyKeys[0]),
     (e) => e.status === 404,
     "the oldest fully-delivered, empty session was disposed instead",
+  );
+});
+
+test("a session holding unsent notes is never disposed, even when it is the oldest", () => {
+  const { file, artifact, dir } = lab();
+  const store = new SessionStore(file);
+  const drafted = store.open(artifact).key;
+  store.addDraft(drafted, prompt("not sent yet"));
+  for (let i = 1; i <= limits.sessions; i += 1) {
+    const extra = join(dir, `extra-${i}.html`);
+    writeFileSync(extra, "<p></p>");
+    store.open(extra);
+  }
+  assert.equal(store.count, limits.sessions);
+  assert.deepEqual(
+    store.status(drafted).drafts.map((d) => d.prompt),
+    ["not sent yet"],
+    "the reviewer's unsent note outlived the cap",
   );
 });
 
@@ -514,18 +533,19 @@ test("ending queues the last prompts in the same step, wakes a waiting poll, and
   const store = new SessionStore(file);
   const { key } = store.open(artifact);
   assert.throws(
-    () => store.end(key, "user", [{ ...prompt(), prompt: "" }]),
+    () => store.addDraft(key, { ...prompt(), prompt: "" }),
     (e) => e.status === 400,
   );
-  assert.equal(store.status(key).ended, null, "a refused prompt does not end the session");
+  store.addDraft(key, prompt("last"));
   const events = [];
   store.on(key, (event) => events.push(event.type));
-  assert.deepEqual(store.end(key, "user", [prompt("last")]), {
+  assert.deepEqual(store.end(key, "user", "send"), {
     status: "ended",
     ended_by: "user",
     queued: 1,
   });
-  assert.deepEqual(events, ["ended"]);
+  assert.deepEqual(events, ["drafts", "ended"], "every tab sees the notes leave, then the end");
+  assert.deepEqual(store.status(key).drafts, []);
   const final = await store.waitForFeedback(key, 5000);
   assert.equal(final.status, "feedback");
   assert.equal(final.prompts[0].prompt, "last");

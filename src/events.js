@@ -22,6 +22,11 @@ export class EventStreams {
     return this.#count;
   }
 
+  /** Whether a tab is showing this review right now, so opening the file again need not open another. */
+  live(key) {
+    return (this.#groups.get(key)?.streams.length ?? 0) > 0;
+  }
+
   /** Attaches a writer to a session's channel; returns the function that detaches it. */
   open(key, write) {
     const session = this.#store.get(key);
