@@ -1,23 +1,15 @@
-/* One accent, non-photo blue, means the annotation channel and nothing else. */
+/* Colour, space and motion are the house roles (src/browser/house/, pinned in pin.json); dark is
+   pinned by data-theme on <html>. One accent means the annotation channel and nothing else. */
 :root {
-  --ink: oklch(22% 0.02 260);
-  --graphite: oklch(30% 0.015 260);
-  --line: oklch(40% 0.015 260);
-  --text: oklch(93% 0.01 90);
-  --muted: oklch(72% 0.02 260);
+  /* The page under review, not chrome: it shows only until the artifact paints its own ground. */
   --paper: oklch(96% 0.005 90);
-  --pencil: oklch(78% 0.12 230);
-  --pencil-ink: oklch(20% 0.05 230);
-  --danger: oklch(72% 0.15 25);
   --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --s1: 4px;
-  --s2: 8px;
-  --s3: 12px;
-  --s4: 16px;
-  --s5: 24px;
   --radius: 6px;
   --z-card: 10;
+}
+
+[data-theme="dark"] {
   color-scheme: dark;
 }
 
@@ -38,8 +30,8 @@ body {
   grid-template-areas:
     "bar bar"
     "mount margin";
-  background: var(--ink);
-  color: var(--text);
+  background: var(--hw-surface);
+  color: var(--hw-text);
   font: 15px/1.4 var(--font);
 }
 
@@ -47,27 +39,27 @@ body {
   grid-area: bar;
   display: flex;
   align-items: center;
-  gap: var(--s3);
-  padding: 0 var(--s4);
-  border-bottom: 1px solid var(--line);
+  gap: var(--hw-space-12);
+  padding: 0 var(--hw-space-16);
+  border-bottom: 1px solid var(--hw-line);
 }
 
 /* The mark and the wordmark are one unit: the mark keeps the identity when the name is dropped. */
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: var(--s2);
+  gap: var(--hw-space-8);
 }
 
 .brand-mark {
   width: 18px;
   height: 18px;
   flex: none;
-  stroke: var(--text);
+  stroke: var(--hw-text);
 }
 
 .brand-mark .dot {
-  fill: var(--pencil);
+  fill: var(--hw-accent);
 }
 
 .bar-name {
@@ -81,20 +73,20 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--muted);
+  color: var(--hw-text-muted);
   font: 13px var(--mono);
 }
 
 .switch {
   display: inline-flex;
   align-items: center;
-  gap: var(--s2);
+  gap: var(--hw-space-8);
   min-height: 32px;
-  padding: 0 var(--s3);
-  border: 1px solid var(--line);
+  padding: 0 var(--hw-space-12);
+  border: 1px solid var(--hw-line-strong);
   border-radius: var(--radius);
   background: transparent;
-  color: var(--text);
+  color: var(--hw-text);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
@@ -104,9 +96,9 @@ body {
   width: 28px;
   height: 16px;
   border-radius: 8px;
-  background: var(--line);
+  background: var(--hw-line-strong);
   position: relative;
-  transition: background 120ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: background var(--hw-duration-fast) var(--hw-ease-out);
 }
 
 .switch-track::after {
@@ -117,17 +109,17 @@ body {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: var(--text);
-  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+  background: var(--hw-text);
+  transition: transform var(--hw-duration-fast) var(--hw-ease-out);
 }
 
 .switch[aria-checked="true"] .switch-track {
-  background: var(--pencil);
+  background: var(--hw-accent);
 }
 
 .switch[aria-checked="true"] .switch-track::after {
   transform: translateX(12px);
-  background: var(--pencil-ink);
+  background: var(--hw-on-accent);
 }
 
 .mount {
@@ -141,19 +133,19 @@ body {
    element: the reviewer types the instruction here, where the page under review cannot forge it. */
 .card {
   position: absolute;
-  width: min(360px, calc(100% - var(--s5)));
+  width: min(360px, calc(100% - var(--hw-space-24)));
   margin: 0;
-  padding: var(--s3);
+  padding: var(--hw-space-12);
   border-radius: var(--radius);
-  background: var(--ink);
-  color: var(--text);
+  background: var(--hw-surface-raised);
+  color: var(--hw-text);
   box-shadow: 0 8px 24px oklch(0% 0 0 / 0.35);
   z-index: var(--z-card);
 }
 .card-target {
-  margin: 0 0 var(--s2);
+  margin: 0 0 var(--hw-space-8);
   font: 12px var(--mono);
-  color: var(--pencil);
+  color: var(--hw-accent-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -162,19 +154,19 @@ body {
   width: 100%;
   min-height: 64px;
   box-sizing: border-box;
-  padding: var(--s2);
-  border: 1px solid var(--line);
+  padding: var(--hw-space-8);
+  border: 1px solid var(--hw-line-strong);
   border-radius: var(--radius);
-  background: var(--graphite);
+  background: var(--hw-surface);
   color: inherit;
   font: inherit;
   resize: vertical;
 }
 .card-row {
   display: flex;
-  gap: var(--s2);
+  gap: var(--hw-space-8);
   justify-content: flex-end;
-  margin-top: var(--s2);
+  margin-top: var(--hw-space-8);
 }
 .card .send-button {
   width: auto;
@@ -194,13 +186,13 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-left: 1px solid var(--line);
+  border-left: 1px solid var(--hw-line);
 }
 
 .margin-status {
   margin: 0;
-  padding: var(--s3) var(--s4);
-  color: var(--muted);
+  padding: var(--hw-space-12) var(--hw-space-16);
+  color: var(--hw-text-muted);
   font-size: 13px;
   text-wrap: pretty;
 }
@@ -209,15 +201,15 @@ body {
   flex: 1;
   min-height: 72px;
   margin: 0;
-  padding: 0 var(--s4) var(--s3) var(--s4);
+  padding: 0 var(--hw-space-16) var(--hw-space-12) var(--hw-space-16);
   overflow-y: auto;
   list-style: none;
 }
 
 .mark {
   position: relative;
-  padding: var(--s2) 0 var(--s2) var(--s5);
-  border-left: 2px solid var(--pencil);
+  padding: var(--hw-space-8) 0 var(--hw-space-8) var(--hw-space-24);
+  border-left: 2px solid var(--hw-accent);
 }
 
 .mark::before {
@@ -228,12 +220,12 @@ body {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  border: 2px solid var(--pencil);
-  background: var(--ink);
+  border: 2px solid var(--hw-accent);
+  background: var(--hw-surface);
 }
 
 .mark.sent::before {
-  background: var(--pencil);
+  background: var(--hw-accent);
 }
 
 .mark:not(.sent) {
@@ -242,15 +234,15 @@ body {
 
 .mark-target {
   display: flex;
-  gap: var(--s2);
+  gap: var(--hw-space-8);
   align-items: baseline;
-  color: var(--muted);
+  color: var(--hw-text-muted);
   font-size: 12px;
 }
 
 .mark-tag {
   font: 12px var(--mono);
-  color: var(--pencil);
+  color: var(--hw-accent-text);
 }
 
 .mark-text {
@@ -261,33 +253,33 @@ body {
 }
 
 .mark-note {
-  margin: var(--s1) 0 0;
+  margin: var(--hw-space-4) 0 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .mark-remove {
   position: absolute;
-  top: var(--s2);
+  top: var(--hw-space-8);
   right: 0;
   width: 24px;
   height: 24px;
   border: 0;
   border-radius: var(--radius);
   background: transparent;
-  color: var(--muted);
+  color: var(--hw-text-muted);
   font: 15px var(--font);
   cursor: pointer;
 }
 
 .mark-remove:hover {
-  color: var(--danger);
-  background: var(--graphite);
+  color: var(--hw-danger);
+  background: var(--hw-fill-hover);
 }
 
 .send {
-  padding: var(--s3) var(--s4) var(--s4);
-  border-top: 1px solid var(--line);
+  padding: var(--hw-space-12) var(--hw-space-16) var(--hw-space-16);
+  border-top: 1px solid var(--hw-line);
 }
 
 .send-button {
@@ -295,50 +287,50 @@ body {
   min-height: 36px;
   border: 0;
   border-radius: var(--radius);
-  background: var(--pencil);
-  color: var(--pencil-ink);
+  background: var(--hw-accent);
+  color: var(--hw-on-accent);
   font: 600 14px var(--font);
   cursor: pointer;
 }
 
 .send-button:disabled {
-  background: var(--graphite);
-  color: var(--muted);
+  background: var(--hw-fill);
+  color: var(--hw-text-muted);
   cursor: default;
 }
 
 /* A quiet control: the bar's second action and the dialog's non-default choices. */
 .quiet {
   min-height: 32px;
-  padding: 0 var(--s3);
-  border: 1px solid var(--line);
+  padding: 0 var(--hw-space-12);
+  border: 1px solid var(--hw-line-strong);
   border-radius: var(--radius);
   background: transparent;
-  color: var(--text);
+  color: var(--hw-text);
   font: 13px var(--font);
   cursor: pointer;
 }
 
 .quiet:hover:not(:disabled) {
-  background: var(--graphite);
+  background: var(--hw-fill-hover);
 }
 
 .quiet:disabled {
-  color: var(--muted);
+  color: var(--hw-text-muted);
   cursor: default;
 }
 
 .quiet.danger {
-  color: var(--danger);
-  border-color: var(--danger);
+  color: var(--hw-danger);
+  border-color: var(--hw-danger);
 }
 
 /* Presence is a fact about the agent, so it reads as a label, never as something to press. */
 .presence {
   display: inline-flex;
   align-items: center;
-  gap: var(--s2);
-  color: var(--muted);
+  gap: var(--hw-space-8);
+  color: var(--hw-text-muted);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -349,36 +341,28 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  border: 2px solid var(--muted);
+  border: 2px solid var(--hw-text-muted);
 }
 
+/* Working is the same still dot as listening: the label and its clock say which, and the house
+   allows no loop that is not determinate progress. */
 .presence[data-state="listening"] .presence-dot,
 .presence[data-state="working"] .presence-dot {
-  border-color: var(--pencil);
-  background: var(--pencil);
+  border-color: var(--hw-accent);
+  background: var(--hw-accent);
 }
 
 .presence-since:empty {
   display: none;
 }
 
-.presence[data-state="working"] .presence-dot {
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-
 .notice {
   display: flex;
   align-items: center;
-  gap: var(--s3);
-  padding: var(--s3) var(--s4);
-  border-bottom: 1px solid var(--line);
-  background: var(--graphite);
+  gap: var(--hw-space-12);
+  padding: var(--hw-space-12) var(--hw-space-16);
+  border-bottom: 1px solid var(--hw-line);
+  background: var(--hw-fill);
 }
 
 .notice-text {
@@ -389,16 +373,16 @@ body {
 }
 
 .dialog {
-  width: min(380px, calc(100vw - var(--s5)));
-  padding: var(--s4);
-  border: 1px solid var(--line);
+  width: min(380px, calc(100vw - var(--hw-space-24)));
+  padding: var(--hw-space-16);
+  border: 1px solid var(--hw-line);
   border-radius: var(--radius);
-  background: var(--ink);
-  color: var(--text);
+  background: var(--hw-surface-raised);
+  color: var(--hw-text);
 }
 
 .dialog::backdrop {
-  background: oklch(0% 0 0 / 0.5);
+  background: var(--hw-scrim);
 }
 
 .dialog-title {
@@ -407,8 +391,8 @@ body {
 }
 
 .dialog-text {
-  margin: var(--s2) 0 var(--s4);
-  color: var(--muted);
+  margin: var(--hw-space-8) 0 var(--hw-space-16);
+  color: var(--hw-text-muted);
   font-size: 13px;
   text-wrap: pretty;
 }
@@ -416,7 +400,7 @@ body {
 .dialog-row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--s2);
+  gap: var(--hw-space-8);
   justify-content: flex-end;
 }
 
@@ -424,12 +408,12 @@ body {
 .dialog-go {
   width: auto;
   min-height: 32px;
-  padding: 0 var(--s4);
+  padding: 0 var(--hw-space-16);
   font-size: 13px;
 }
 
 :focus-visible {
-  outline: 2px solid var(--pencil);
+  outline: 2px solid var(--hw-focus);
   outline-offset: 2px;
 }
 
@@ -453,20 +437,23 @@ body {
 
   .margin {
     border-left: 0;
-    border-top: 1px solid var(--line);
+    border-top: 1px solid var(--hw-line);
   }
 
   .margin-status {
-    padding-block: var(--s2);
+    padding-block: var(--hw-space-8);
   }
 
   .send {
-    padding: var(--s2) var(--s4);
+    padding: var(--hw-space-8) var(--hw-space-16);
   }
 }
 
+/* Stricter than the house's own block, which keeps colour transitions: nothing here moves at all. */
 @media (prefers-reduced-motion: reduce) {
-  * {
+  *,
+  *::before,
+  *::after {
     transition: none !important;
     animation: none !important;
   }

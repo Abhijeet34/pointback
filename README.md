@@ -190,6 +190,11 @@ It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROW
 The product name lives in `package.json` and is derived everywhere else through `src/identity.js`; `test/identity.test.js` fails if it appears anywhere else under `src/`.
 The mark is `src/browser/icon.svg`, a point and the return that carries it back, drawn on a 16px grid so the tab icon stays crisp; it follows the tab strip's light or dark scheme, and the same paths are inlined in `chrome.html` beside the wordmark.
 `src/browser/icon-32.png` is the fallback for browsers that take no SVG tab icon, rendered from the SVG with `rsvg-convert -w 32 -h 32 src/browser/icon.svg -o src/browser/icon-32.png`; regenerate it whenever the SVG changes.
+The chrome's colour, space and motion are the roles of the house design system, [halderworks-design](https://github.com/Abhijeet34/halderworks-design), and `chrome.css` paints the chrome with those roles alone; its only colour literals are the note card's shadow, which the house has no role for, and `--paper`, which stands in for the page under review until that page paints its own ground.
+Its brand ramps, `roles.css` and `scales.css` are vendored byte for byte into `src/browser/house/`, and `src/browser/house/pin.json` records the commit they came from and each file's SHA-256.
+A copy rather than a package, because the house publishes no package and the chrome makes no request off the daemon; a commit rather than a branch, because a look that changes when someone else merges is not one anybody reviewed.
+`test/house.test.js` fails if a vendored file differs from its recorded digest, so a hand edit there is drift: change the house and move the pin with `node scripts/sync-house.js ../halderworks-design`, which refuses a checkout with uncommitted ramps.
+Dark is pinned by `data-theme="dark"` on `chrome.html`; the light theme resolves from the same roles and is deliberately not offered.
 `docs/GIT-WORKFLOW.md` covers how a change reaches `main`, how a release is cut, and what npm does and does not permit when one has to be withdrawn.
 
 ## Contributing, security and support

@@ -290,6 +290,19 @@ test(
       "Agent is working…",
     );
     assert.equal(await page.eval("document.getElementById('send').disabled"), true);
+    // Working is a still dot. Ask for motion explicitly, or a machine with Reduce Motion on
+    // would pass this with the old 1.4 s pulse still in the stylesheet.
+    await page.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+    });
+    assert.equal(await page.eval("document.getAnimations().length"), 0);
+    await page.send("Emulation.setEmulatedMedia", { features: [] });
+    // The house roles arrived: the accent is the pinned brand's pencil, and dark is pinned.
+    assert.equal(
+      await page.eval("getComputedStyle(document.querySelector('.presence-dot')).backgroundColor"),
+      "oklch(0.78 0.12 230)",
+    );
+    assert.equal(await page.eval("getComputedStyle(document.body).colorScheme"), "dark");
 
     await page.waitFor(
       "document.querySelectorAll('.mark.sent').length === 4 && document.querySelectorAll('.mark:not(.sent)').length === 0",

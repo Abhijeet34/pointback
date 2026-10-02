@@ -30,6 +30,9 @@ const staticFiles = new Map(
     "/sdk.js": "text/javascript; charset=utf-8",
     "/chrome.js": "text/javascript; charset=utf-8",
     "/chrome.css": "text/css; charset=utf-8",
+    "/house/brand.tokens.css": "text/css; charset=utf-8",
+    "/house/roles.css": "text/css; charset=utf-8",
+    "/house/scales.css": "text/css; charset=utf-8",
     "/icon.svg": "image/svg+xml",
     "/icon-32.png": "image/png",
   }).map(([path, type]) => [

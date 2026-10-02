@@ -37,6 +37,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The state directory's owner-only protection is a security property with two platform spellings, both in `src/state-dir.js`: POSIX mode bits, and on Windows an ACL reset to one full-control entry for the current user that every file inside inherits.
   `/inheritance:r` alone is not enough, because a directory an administrator creates carries SYSTEM and `BUILTIN\Administrators` as its own explicit entries.
   Assert the property through `test/helpers/private.js`, never `statSync(...).mode` directly, and keep the re-tightening test's `loosen()` call so it cannot pass vacuously.
+- `src/browser/chrome.css` uses only the house design system's `--hw-*` roles, vendored byte for byte into `src/browser/house/` and pinned by commit and SHA-256 in `pin.json` (`README.md`, "Develop"). Never edit those files or give the chrome a colour that is not a role: move the pin with `node scripts/sync-house.js <halderworks-design checkout>`. `test/house.test.js` refuses a drifted file, an undefined role and any looping animation.
+  Headless Chromium inherits the OS Reduce Motion setting, which the maintainer's Mac has on, so an animation assertion passes vacuously unless the test emulates `prefers-reduced-motion: no-preference` first, as `test/browser.test.js` does.
 - The page outline the SDK sends with every batch is capped in characters at both ends (`MAX_OUTLINE_CHARS` in `src/browser/sdk.js`, `structureChars` in `src/limits.js`) because it lands in an agent's context window on every delivery; `README.md` carries the measured before and after.
 
 ## Delivery

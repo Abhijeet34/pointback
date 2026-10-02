@@ -35,7 +35,9 @@ test("env reads only the prefixed variable and treats empty as unset", () => {
 test("the product name appears in src only inside identity.js", () => {
   let hits = "";
   try {
-    hits = execFileSync("git", ["grep", "-l", "-i", name, "--", "src", ":!src/identity.js"], {
+    // The house files are upstream's bytes, pinned by digest, and name upstream's brand file.
+    const pathspec = ["src", ":!src/identity.js", ":!src/browser/house"];
+    hits = execFileSync("git", ["grep", "-l", "-i", name, "--", ...pathspec], {
       cwd: root,
       encoding: "utf8",
     }).trim();
