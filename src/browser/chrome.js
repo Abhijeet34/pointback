@@ -132,7 +132,6 @@ async function boot() {
   document.getElementById("appName").textContent = appName;
   document.title = `${session.fileName} · ${app.app}`;
   document.getElementById("fileName").textContent = session.fileName;
-  chat = session.chat;
   sync(session);
   render();
   listen();
@@ -146,6 +145,8 @@ function sync(state) {
   session.artifactUrl = state.artifactUrl;
   presence = state.presence;
   ended = state.ended;
+  // The sent notes come with every hello, so a reply that landed while this page was away shows.
+  chat = state.chat;
   pending = state.drafts;
   marksDirty = true;
   // A gone file has no page to load; the last one shown stays up under the notice.
@@ -258,16 +259,25 @@ function apply(event) {
     presence = { state: event.state, since: event.since };
   } else if (event.type === "ended") {
     ended = { by: event.by };
+    marksDirty = true;
     setAnnotate(false);
   } else if (event.type === "reopened") {
     ended = null;
+    marksDirty = true;
   } else if (event.type === "reload-off") {
     liveReload = false;
   } else if (event.type === "drafts") {
     pending = event.drafts;
     marksDirty = true;
+  } else if (event.type === "reply") {
+    const note = chat.find((entry) => entry.uid === event.uid);
+    if (note) note.reply = event.reply;
+    marksDirty = true;
   }
   render();
+  // A question waits on the reviewer, so it is brought into view; any other reply stays put.
+  if (event.type === "reply" && event.reply.status === "question")
+    marks.querySelector(`[data-uid="${event.uid}"]`)?.scrollIntoView({ block: "nearest" });
 }
 
 /** Adopts the server's answer to a change of the unsent notes, or says why it was refused. */
@@ -295,6 +305,8 @@ function render() {
   // which is worth more than a tidy disabled button and a queue nobody can do anything with.
   // So do notes written while the agent works: the server queues them behind its batch.
   const count = pending.length;
+  const asking = chat.some((entry) => unanswered(entry));
+  const replied = chat.length > 0 && chat.every((entry) => entry.reply);
   sendButton.disabled = count === 0 || fileGone || offline;
   sendButton.textContent = fileGone
     ? "File is gone"
@@ -324,15 +336,19 @@ function render() {
             ? count === 0
               ? "Nothing can be sent until this page reconnects."
               : `${count} ${count === 1 ? "note is" : "notes are"} kept, and Send opens again when this page reconnects.`
-            : working && count === 0
-              ? "Your agent is working on your last notes. Anything you send now waits for its next check."
-              : deferredReload
-                ? "The file changed. This page updates as soon as you finish this note."
-                : chat.length === 0 && count === 0
-                  ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
-                  : count === 0
-                    ? "Every note has been sent."
-                    : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
+            : deferredReload
+              ? "The file changed. This page updates as soon as you finish this note."
+              : asking
+                ? "Your agent asked you a question. Answer it on its note, then send."
+                : replied && count === 0
+                  ? "Your agent has answered every note."
+                  : working && count === 0
+                    ? "Your agent is working on your last notes. Anything you send now waits for its next check."
+                    : chat.length === 0 && count === 0
+                      ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
+                      : count === 0
+                        ? "Every note has been sent."
+                        : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
   );
 }
 
@@ -414,11 +430,12 @@ function renderNotice() {
 function mark(entry, sent) {
   const li = document.createElement("li");
   li.className = sent ? "mark sent" : "mark";
+  if (sent) li.dataset.uid = String(entry.uid);
   const target = document.createElement("div");
   target.className = "mark-target";
   const tag = document.createElement("span");
   tag.className = "mark-tag";
-  tag.textContent = entry.tag;
+  tag.textContent = entry.answers === undefined ? entry.tag : "answer";
   const text = document.createElement("span");
   text.className = "mark-text";
   text.textContent = describe(entry);
@@ -427,6 +444,7 @@ function mark(entry, sent) {
   note.className = "mark-note";
   note.textContent = entry.prompt;
   li.append(target, note);
+  if (entry.reply) li.append(replyLine(entry));
   if (!sent) {
     const remove = document.createElement("button");
     remove.type = "button";
@@ -439,6 +457,52 @@ function mark(entry, sent) {
     li.append(remove);
   }
   return li;
+}
+
+const REPLY_LABELS = { done: "Done", declined: "Declined", question: "Question" };
+
+/** The agent's answer, set as text: the agent wrote it, so markup in it shows as typed. */
+function replyLine(entry) {
+  const line = document.createElement("p");
+  line.className = "mark-reply";
+  line.dataset.status = entry.reply.status;
+  const label = document.createElement("span");
+  label.className = "mark-reply-label";
+  label.textContent = REPLY_LABELS[entry.reply.status] ?? entry.reply.status;
+  line.append(label);
+  if (entry.reply.message) line.append(` ${entry.reply.message}`);
+  if (unanswered(entry)) {
+    const answer = document.createElement("button");
+    answer.type = "button";
+    answer.className = "quiet mark-answer";
+    answer.textContent = "Answer";
+    answer.addEventListener("click", () => {
+      if (composing) return cardText.focus();
+      const box = line.getBoundingClientRect();
+      const frameBox = frame.getBoundingClientRect();
+      const { selector, tag, text, target } = entry;
+      // The answer points where the question's note did, and names the note it answers.
+      openCompose(
+        { selector, tag, text, target, answers: entry.uid },
+        `Answer: ${entry.reply.message}`,
+        undefined,
+        [{ left: Infinity, bottom: box.top - frameBox.top }],
+        answer,
+      );
+    });
+    line.append(answer);
+  }
+  return line;
+}
+
+/** A question still waiting on the reviewer: no answer to it is sent or waiting to be. */
+function unanswered(entry) {
+  return (
+    entry.reply?.status === "question" &&
+    !ended &&
+    !chat.some((other) => other.answers === entry.uid) &&
+    !pending.some((other) => other.answers === entry.uid)
+  );
 }
 
 // Two notes on one element have to be told apart in the margin, so a passage is quoted
@@ -467,8 +531,8 @@ function setAnnotate(on) {
 // hostile page cannot put words in the reviewer's mouth. `composing` holds the pending note.
 let composing = null;
 
-function openCompose(note, label, outline, rects) {
-  composing = { note, structure: typeof outline === "string" ? outline : "" };
+function openCompose(note, label, outline, rects, from) {
+  composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
   // A half-typed note is worth more than a live reload; the reload lands when the card closes.
   editing = true;
   cardTarget.textContent = label;
@@ -482,13 +546,15 @@ function openCompose(note, label, outline, rects) {
 function closeCompose(refocus) {
   if (card.hidden) return;
   card.hidden = true;
+  const from = composing?.from;
   composing = null;
   editing = false;
   if (deferredReload) show();
   // Tell the artifact the target is done so it drops the highlight; hand keyboard focus back to
   // the frame and, for the keyboard path, ask it to refocus the element the reviewer came from.
-  post({ type: "compose", on: false, refocus });
-  if (refocus) frame.focus();
+  // An answer came from the margin, so focus goes back there, or on to Send once it is added.
+  post({ type: "compose", on: false, refocus: refocus && !from });
+  if (refocus) (from ? (from.isConnected ? from : sendButton) : frame).focus();
   render();
 }
 
@@ -527,8 +593,10 @@ window.addEventListener("message", (event) => {
     // A proposal is heard only while the reviewer has Annotate on and no card open: the page can
     // send one at any moment, and must not pop the card, take focus, or wipe a note being typed.
     if (!annotate || composing) return;
+    // Only what the reviewer pointed at: `answers` is the chrome's to set, from the margin.
+    const { selector, tag, text, target } = data.note;
     openCompose(
-      data.note,
+      { selector, tag, text, target },
       typeof data.label === "string" ? data.label : "",
       data.structure,
       data.rects,
@@ -608,10 +676,10 @@ card.addEventListener("submit", async (event) => {
   // the artifact proposed, so nothing else it sent rides along and nothing it sent can displace
   // `prompt`. This is the only path that adds a note, and it runs only on the reviewer's submit;
   // the server stamps it, so the moment the reviewer wrote it survives a batched send.
-  const { selector, tag, text, target } = composing.note;
+  const { selector, tag, text, target, answers } = composing.note;
   adding = true;
   const kept = await changeDrafts("add the note", "POST", `/api/${key}/drafts`, {
-    draft: { selector, tag, text, target, prompt },
+    draft: { selector, tag, text, target, answers, prompt },
     structure: composing.structure,
   });
   adding = false;

@@ -273,6 +273,36 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* The agent's answer hangs under the note it answers; the label alone carries the status colour. */
+.mark-reply {
+  margin: var(--hw-space-8) 0 0;
+  padding-left: var(--hw-space-8);
+  border-left: 2px solid var(--hw-line-strong);
+  color: var(--hw-text-muted);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mark-reply-label {
+  font-weight: 600;
+  color: var(--hw-text);
+}
+
+.mark-reply[data-status="done"] .mark-reply-label {
+  color: var(--hw-success);
+}
+
+.mark-reply[data-status="question"] .mark-reply-label {
+  color: var(--hw-warning);
+}
+
+.mark-answer {
+  display: block;
+  margin-top: var(--hw-space-8);
+  min-height: 28px;
+}
+
 .mark-remove {
   position: absolute;
   top: var(--hw-space-8);

@@ -248,7 +248,7 @@ async function api(req, res, url, ctx) {
     return sendJson(res, 200, ctx.store.removeDraft(draft[1], draft[2]));
   }
 
-  const keyed = pathname.match(/^\/api\/([^/]+)\/(session|prompts|drafts|events|end)$/);
+  const keyed = pathname.match(/^\/api\/([^/]+)\/(session|prompts|drafts|events|end|replies)$/);
   if (!keyed) throw new HttpError(404, "not found");
   const [, key, action] = keyed;
   if (req.method === "GET" && action === "session")
@@ -262,6 +262,10 @@ async function api(req, res, url, ctx) {
   if (req.method === "POST" && action === "prompts") {
     await readJsonBody(req);
     return sendJson(res, 200, ctx.store.send(key));
+  }
+  if (req.method === "POST" && action === "replies") {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, ctx.store.reply(key, body.uid, body));
   }
   if (req.method === "POST" && action === "end") {
     const body = await readJsonBody(req);

@@ -165,12 +165,14 @@ export class SessionStore {
       key,
       file: session.file,
       fileName: basename(session.file),
-      chat: session.chat,
       ...this.status(key),
     };
   }
 
-  /** What a freshly connected tab must know to be current: revision, presence, whether it ended, whether its file is gone, and the unsent notes. */
+  /**
+   * What a freshly connected tab must know to be current: revision, presence, whether it ended,
+   * whether its file is gone, and the notes, sent with the agent's replies and unsent.
+   */
   status(key) {
     const session = this.get(key);
     // The page's own address is its path under the root, so `../` in its markup climbs the root's
@@ -179,6 +181,7 @@ export class SessionStore {
     return {
       artifactUrl: `/artifact/${key}/${session.assetToken}/${path}`,
       revision: session.revision,
+      chat: session.chat,
       drafts: session.drafts ?? [],
       presence: this.presence(key),
       ended: session.endedAt ? { by: session.endedBy, at: session.endedAt } : null,
@@ -212,6 +215,8 @@ export class SessionStore {
       throw new HttpError(429, `${drafts.length} notes are waiting to be sent; send them first`);
     const note = validatePrompt(raw);
     delete note.at;
+    if (note.answers !== undefined && !session.chat.some((entry) => entry.uid === note.answers))
+      throw new HttpError(400, `prompt.answers names no note in this review: ${note.answers}`);
     const outline = structure === undefined ? undefined : validateStructure(structure);
     drafts.push({ id: randomBytes(8).toString("hex"), ...note, at: new Date().toISOString() });
     if (outline !== undefined) session.draftStructure = outline;
@@ -316,6 +321,23 @@ export class SessionStore {
     this.#persist();
     this.#events.emit(key, { type: "ended", by: endedBy, queued });
     return { status: "ended", ended_by: endedBy, queued };
+  }
+
+  /**
+   * The agent's answer to one note, which the reviewer reads on that note: done, declined or a
+   * question. A later reply replaces an earlier one, so a question answered can become done.
+   */
+  reply(key, uid, raw) {
+    const session = this.get(key);
+    if (!Number.isInteger(uid) || uid < 1)
+      throw new HttpError(400, "uid must be a positive integer");
+    const note = session.chat.find((entry) => entry.uid === uid);
+    if (!note) throw new HttpError(404, `no note ${uid} in this review`);
+    note.reply = { ...validateReply(raw), at: new Date().toISOString() };
+    session.lastActive = note.reply.at;
+    this.#persist();
+    this.#events.emit(key, { type: "reply", uid, reply: note.reply });
+    return { status: "replied", uid, reply: note.reply };
   }
 
   /** Reopens an ended review, so a tab still showing the ended notice comes back to life. */
@@ -530,7 +552,25 @@ function validatePrompt(raw) {
   if (prompt.prompt.trim() === "") throw new HttpError(400, "prompt.prompt is empty");
   if (raw.at !== undefined) prompt.at = str(raw, "prompt", "at", 40);
   if (raw.target !== undefined) prompt.target = validateTarget(raw.target);
+  if (raw.answers !== undefined) {
+    if (!Number.isInteger(raw.answers) || raw.answers < 1)
+      throw new HttpError(400, "prompt.answers must be a note's uid");
+    prompt.answers = raw.answers;
+  }
   return prompt;
+}
+
+export const REPLY_STATUSES = ["done", "declined", "question"];
+
+/** The message is the agent's and is shown to the reviewer, so it is bounded; the chrome sets it as text. */
+function validateReply(raw) {
+  if (raw === null || typeof raw !== "object") throw new HttpError(400, "reply must be an object");
+  if (!REPLY_STATUSES.includes(raw.status))
+    throw new HttpError(400, `reply.status must be one of ${REPLY_STATUSES.join(", ")}`);
+  const message = raw.message === undefined ? "" : str(raw, "reply", "message", limits.replyChars);
+  if (raw.status === "question" && message.trim() === "")
+    throw new HttpError(400, "a question needs its text in reply.message");
+  return message.trim() === "" ? { status: raw.status } : { status: raw.status, message };
 }
 
 /**

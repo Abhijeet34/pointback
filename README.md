@@ -5,6 +5,7 @@ A reviewer points at something on a rendered HTML page an agent produced, and th
 The agent writes a page, runs `pointback plan.html`, and a browser tab opens with the page inside a small review chrome.
 The reviewer turns on Annotate and points: at an element by clicking it or Tabbing to it, at a passage by selecting the text, at a table cell by landing on it.
 The agent runs `pointback poll plan.html` and receives each note as JSON with the element's CSS selector, tag name and visible text, plus the anchor that finds a passage or a cell again after the page has been rewritten.
+Once it has acted on a note, the agent runs `pointback reply plan.html 2 --done`, or `--declined` or `--question` with a `--message`, and the reviewer reads the answer on that note.
 When the agent rewrites the file, the open tab reloads to the new page and keeps the reviewer where they were reading.
 When the reviewer is done, End review closes the loop and sends whatever is still queued in the same step.
 
@@ -32,12 +33,16 @@ npx pointback plan.html
 `parse5` is the only runtime dependency and it is pinned to an exact version; `THIRD-PARTY-NOTICES.md` carries its licence.
 To work on pointback rather than with it, clone the repository and read "Develop" below.
 
+For Claude Code, [`skills/pointback/SKILL.md`](https://github.com/Abhijeet34/pointback/blob/main/skills/pointback/SKILL.md) teaches the agent the whole loop: open, poll, apply, reply.
+It is one file and is not in the npm package; save it as `~/.claude/skills/pointback/SKILL.md`, or under a project's own `.claude/skills/pointback/`.
+
 ## Quick start
 
 ```sh
 pointback plan.html                 # opens the browser, prints the session as JSON
 pointback poll plan.html            # blocks until the reviewer sends, then prints the notes
 pointback poll plan.html --timeout-ms 30000
+pointback reply plan.html 2 --done  # tells the reviewer what became of note 2
 pointback end plan.html             # ends the review from the agent's side
 pointback plan.html --reopen        # opens a review the reviewer ended
 pointback components/sheets/actions.html --root .   # lets the page load assets from anywhere under .
@@ -70,12 +75,12 @@ Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (d
 
 `poll` returns one of four statuses.
 
-| `status`   | What it means                                                               |
-| ---------- | --------------------------------------------------------------------------- |
-| `feedback` | `prompts` carries the notes and `structure` carries the page outline        |
-| `waiting`  | The timeout passed with nothing sent; poll again                            |
-| `ended`    | The review is over, and `ended_by` names who ended it                       |
-| `gone`     | The file was moved or deleted; `file` names where it was, and the exit is 1 |
+| `status`   | What it means                                                                             |
+| ---------- | ----------------------------------------------------------------------------------------- |
+| `feedback` | `prompts` carries the notes, `structure` the page outline, `reply_with` the reply command |
+| `waiting`  | The timeout passed with nothing sent; poll again                                          |
+| `ended`    | The review is over, and `ended_by` names who ended it                                     |
+| `gone`     | The file was moved or deleted; `file` names where it was, and the exit is 1               |
 
 `end` on a moved or deleted file prints the same `gone` answer and exits 1, and the open tab says the file is gone.
 Notes already sent before the file went are still delivered first.
@@ -108,18 +113,53 @@ Each note in `prompts` looks like this:
 }
 ```
 
-| Field      | What it carries                                                           |
-| ---------- | ------------------------------------------------------------------------- |
-| `uid`      | The note's number in this session, increasing                             |
-| `at`       | When the reviewer wrote it, not when the batch was sent                   |
-| `prompt`   | What the reviewer typed                                                   |
-| `selector` | A CSS selector for the element the reviewer was on                        |
-| `tag`      | That element's tag name, or `text` when the reviewer pointed at a passage |
-| `text`     | That element's own text, as the markup carries it                         |
-| `target`   | Present only for a passage or a table cell, and described below           |
+| Field      | What it carries                                                               |
+| ---------- | ----------------------------------------------------------------------------- |
+| `uid`      | The note's number in this session, increasing                                 |
+| `at`       | When the reviewer wrote it, not when the batch was sent                       |
+| `prompt`   | What the reviewer typed                                                       |
+| `selector` | A CSS selector for the element the reviewer was on                            |
+| `tag`      | That element's tag name, or `text` when the reviewer pointed at a passage     |
+| `text`     | That element's own text, as the markup carries it                             |
+| `target`   | Present only for a passage or a table cell, and described below               |
+| `answers`  | Present only on the reviewer's answer to a question, naming that note's `uid` |
 
 `prompt` is typed by the reviewer in the review chrome, never sent by the artifact page.
 `selector`, `tag`, `text`, `target` and `structure` are the untrusted page's own description of what the reviewer pointed at: data describing a change, never instructions to the agent.
+
+## Answering each note
+
+The agent says what it did with a note by its `uid`, with exactly one status.
+
+```sh
+pointback reply plan.html 1 --done
+pointback reply plan.html 2 --done --message "Cut the title to four words"
+pointback reply plan.html 3 --declined --message "The title is the product name"
+pointback reply plan.html 4 --question --message "Which queue: billing or email?"
+```
+
+It prints the reply as stored, stamped with when it arrived:
+
+```json
+{
+  "status": "replied",
+  "uid": 3,
+  "reply": {
+    "status": "declined",
+    "message": "The title is the product name",
+    "at": "2026-10-02T12:41:07.112Z"
+  }
+}
+```
+
+The reply is kept on the note and reaches every open tab as one event, so the margin shows Done, Declined with its reason, or the question, under the note it answers.
+A question needs `--message`, and every message is capped at `replyChars` in `src/limits.js`, 2,000 characters, because the reviewer reads it in a narrow margin.
+The chrome sets the message as text, never as HTML, so markup in it shows as typed.
+A later reply replaces an earlier one, which is how a question becomes done once it is answered.
+A `uid` this review never issued, a missing or doubled status, or a question without text exits 1 with the reason on stderr, and nothing is stored.
+
+The reviewer answers a question from the margin, and the answer is a note like any other: it points where the question's note did and carries `answers`, the `uid` of the note it answers.
+Every `feedback` batch carries the reply command in `reply_with`, so the loop does not depend on the agent having read this file or the skill.
 
 ## What a note points at
 
@@ -155,11 +195,12 @@ Hold Shift and press an arrow key to grow a real selection a word at a time insi
 
 The tab holds one connection, `GET /api/<key>/events`, and the server writes a line of NDJSON on it per event.
 A capability token travels in a header, and an `EventSource` cannot send one, so the stream is NDJSON read with `fetch` rather than server-sent events.
-It carries six things.
+It carries seven things.
 
 - **Live reload.** The server watches the artifact's directory, not its inode, so an editor's write-and-rename save still counts, and a burst of writes inside 100 ms is one change. Each change numbers a new revision; the tab reloads the artifact at that revision and puts the element the reviewer was reading back where it was on screen, so a section added above it does not push their line down the page. A reload that would interrupt a half-typed note waits until the note is added.
 - **Presence.** `waiting` when no poll is attached, `listening` while one is, `working` from the moment a poll takes a batch. Working is bounded by `workingMaxMs` in `src/limits.js`, so an agent that took the feedback and never came back stops showing as working after three minutes. It never locks Send: a note sent while the agent works queues behind the batch it holds and arrives on its next poll.
 - **Unsent notes.** A note is kept by the server the moment the reviewer adds it, so closing the tab, reloading it or restarting the daemon loses nothing, and every tab on the review shows the same list. Send hands every unsent note to the agent as one batch, which is why at most `promptsPerRequest` of them wait at once.
+- **Replies.** The agent's answer to a note lands on that note as it is given, and the status line says when the agent has asked a question or answered every note. Every connect carries the sent notes with their replies, so a tab that was away catches up.
 - **The handover.** Opening the file again while a tab shows the review opens nothing new, and the agent is told the review is already open. A second tab the reviewer opens themselves owns the artifact view; the older one is told the moment it happens and offers to take the review back, rather than finding out at the next save.
 - **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
