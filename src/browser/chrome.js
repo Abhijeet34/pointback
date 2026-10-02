@@ -10,6 +10,7 @@ const statusLine = document.getElementById("status");
 const notice = document.getElementById("notice");
 const noticeText = document.getElementById("noticeText");
 const takeOverButton = /** @type {HTMLButtonElement} */ (document.getElementById("takeOver"));
+const backButton = /** @type {HTMLButtonElement} */ (document.getElementById("back"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const annotateSwitch = /** @type {HTMLInputElement} */ (document.getElementById("annotate"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
@@ -57,6 +58,10 @@ let shownUrl = "";
 let presence = { state: "waiting" };
 let ended = null;
 let fileGone = false;
+// The frame's page announced itself as the one under review; one that loads without doing so is a
+// link the reviewer followed or a missing page the server answered for, and the frame has strayed.
+let announced = false;
+let strayed = false;
 let current = true;
 let liveReload = true;
 let connection = "live";
@@ -367,21 +372,23 @@ function render() {
             ? count === 0
               ? "Nothing can be sent until this page reconnects."
               : `${count} ${count === 1 ? "note is" : "notes are"} kept, and Send opens again when this page reconnects.`
-            : deferredReload
-              ? "The file changed. This page updates as soon as you finish this note."
-              : asking
-                ? "Your agent asked you a question. Answer it on its note, then send."
-                : replied && count === 0
-                  ? "Your agent has answered every note."
-                  : working && count === 0
-                    ? "Your agent is working on your last notes. Anything you send now waits for its next check."
-                    : chat.length === 0 && count === 0
-                      ? annotate
-                        ? `Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, ${SEND_KEY} sends.`
-                        : "Turn on Annotate, or press A, to point at the page."
-                      : count === 0
-                        ? "Every note has been sent."
-                        : `${count} ${count === 1 ? "note" : "notes"} ready to send. ${SEND_KEY} sends.`,
+            : strayed && count === 0
+              ? "Go back to the page under review to point at it again."
+              : deferredReload
+                ? "The file changed. This page updates as soon as you finish this note."
+                : asking
+                  ? "Your agent asked you a question. Answer it on its note, then send."
+                  : replied && count === 0
+                    ? "Your agent has answered every note."
+                    : working && count === 0
+                      ? "Your agent is working on your last notes. Anything you send now waits for its next check."
+                      : chat.length === 0 && count === 0
+                        ? annotate
+                          ? `Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, ${SEND_KEY} sends.`
+                          : "Turn on Annotate, or press A, to point at the page."
+                        : count === 0
+                          ? "Every note has been sent."
+                          : `${count} ${count === 1 ? "note" : "notes"} ready to send. ${SEND_KEY} sends.`,
   );
 }
 
@@ -496,7 +503,7 @@ function renderNotice() {
     : ended
       ? [ended.by === "user" ? "You ended this review." : "Your agent ended this review.", false]
       : !current
-        ? ["Another tab took over this review, so this page has stopped updating.", true]
+        ? ["Another tab took over this review, so this page has stopped updating.", "takeover"]
         : connection === "gone"
           ? [
               `This page can no longer reach its review. Run ${appName} on this file again for a fresh page; your notes are kept there.`,
@@ -507,15 +514,22 @@ function renderNotice() {
                 `Not connected. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
                 false,
               ]
-            : !liveReload
+            : strayed
               ? [
-                  "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
-                  false,
+                  `The frame went to a page that is missing or is not ${session.fileName}, so nothing on it can be noted.`,
+                  "back",
                 ]
-              : [null, false];
+              : !liveReload
+                ? [
+                    "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                    false,
+                  ]
+                : [null, false];
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
-  takeOverButton.hidden = !action;
+  takeOverButton.hidden = action !== "takeover";
+  backButton.hidden = action !== "back";
+  if (action === "back") setText(backButton, `Back to ${session.fileName}`);
 }
 
 function mark(entry, sent, n) {
@@ -866,6 +880,11 @@ window.addEventListener("message", (event) => {
     nonce = crypto.randomUUID();
     post({ type: "init", annotate, scroll: lastScroll, pins: pinData() });
     document.body.dataset.ready = "1";
+    announced = true;
+    if (strayed) {
+      strayed = false;
+      render();
+    }
     return;
   }
   if (data?.nonce !== nonce) return;
@@ -916,6 +935,15 @@ annotateSwitch.addEventListener("click", () => {
   wantAnnotate = !annotate;
   setAnnotate(wantAnnotate);
 });
+
+frame.addEventListener("load", () => {
+  if (!shownUrl) return;
+  strayed = !announced;
+  announced = false;
+  render();
+});
+
+backButton.addEventListener("click", show);
 
 takeOverButton.addEventListener("click", () => {
   retaking = true;
@@ -1035,6 +1063,9 @@ cardText.addEventListener("keydown", (event) => {
     event.preventDefault();
     card.requestSubmit();
   } else if (event.key === "Escape") {
+    // Handled here, so said to be: an Escape left unhandled goes on to the browser, which on macOS
+    // offers it to its menus, and a headless browser froze whole doing so on the second Escape.
+    event.preventDefault();
     closeCompose(true);
   }
 });
