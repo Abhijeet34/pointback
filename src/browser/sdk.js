@@ -48,6 +48,8 @@
   const PIN = 24;
   // A pin stands GAP clear of the line or box it is beside.
   const GAP = 4;
+  // The widest ring a pin paints around its box, the active one.
+  const HALO = 5;
   const MAX_TEXT_NODES = 20000;
   const CONTROLS = "button, input, select, textarea";
   const SOLID = `${CONTROLS}, img, svg, video, canvas, iframe, pre, table`;
@@ -700,7 +702,8 @@
   // is tall, the pin moves beside the line's end, before its start, under its end, then to the right
   // of the block; failing all of those, to whichever covers least.
   // A table cell has no room above its words, so its pin stays inside the cell, off the rows around it.
-  function pinSpot(anchor, avoid, bounds) {
+  // Every note on one target is placed as one row `width` wide, so a second pin stands beside the first.
+  function pinSpot(anchor, avoid, bounds, width) {
     let rects;
     if (anchor instanceof Range) rects = [...anchor.getClientRects()];
     else if (ownText(anchor) && !anchor.matches(CONTROLS)) {
@@ -725,7 +728,7 @@
       // Beside the words rather than above them, so it clears them by its widest ring, 5 px.
       const box = cell.getBoundingClientRect();
       return {
-        left: Math.max(box.left, Math.min(right + 5, box.right - PIN)),
+        left: Math.max(box.left, Math.min(right + 5, box.right - width)),
         top: Math.max(box.top, Math.min(lineTop - PIN, box.bottom - PIN)),
       };
     }
@@ -735,11 +738,11 @@
       // The pin's point is its lower left corner, so it stands on the line's top right corner.
       { left: right + 1, top: lineTop - PIN },
       { left: right + GAP, top: beside },
-      { left: Math.min(...line.map((r) => r.left)) - PIN - GAP, top: beside },
-      { left: right - PIN, top: lineBottom + GAP },
+      { left: Math.min(...line.map((r) => r.left)) - width - GAP, top: beside },
+      { left: right - width, top: lineBottom + GAP },
       { left: element.getBoundingClientRect().right + GAP, top: beside },
     ].map(({ left, top }) => ({
-      left: Math.min(Math.max(left, bounds.left), bounds.right - PIN),
+      left: Math.min(Math.max(left, bounds.left), bounds.right - width),
       top: Math.max(top, bounds.top),
     }));
     // A box of the target's own, or one holding it, is the pin's ground, not something it covers.
@@ -748,7 +751,7 @@
       for (const { rect, owner } of avoid) {
         if (owner && (owner === element || owner.contains(element) || element.contains(owner)))
           continue;
-        const w = Math.min(spot.left + PIN, rect.right) - Math.max(spot.left, rect.left);
+        const w = Math.min(spot.left + width, rect.right) - Math.max(spot.left, rect.left);
         const h = Math.min(spot.top + PIN, rect.bottom) - Math.max(spot.top, rect.top);
         if (w > 0.5 && h > 0.5) area += w * h;
       }
@@ -791,28 +794,61 @@
 
   function placePins() {
     const origin = pinHost.getBoundingClientRect();
-    const bounds = { left: 0, right: document.documentElement.clientWidth, top: origin.top };
+    // Inside the frame by the pin's halo, so no edge of the frame cuts its ring.
+    const bounds = {
+      left: HALO,
+      right: document.documentElement.clientWidth - HALO,
+      top: origin.top + HALO,
+    };
     const avoid = obstacles();
     const placed = [];
     const missing = [];
     for (const pin of pins) {
       if (!pin.anchor || !attached(pin.anchor)) pin.anchor = findAnchor(pin);
-      const spot = pin.anchor && pinSpot(pin.anchor, avoid, bounds);
-      pin.button.hidden = !spot;
+    }
+    // The notes on one element, in number order, form one row and are placed together, and so does
+    // a passage that starts on that element's first line, which would otherwise want the same spot.
+    const firstTop = (target) => target.getClientRects()[0]?.top;
+    const rowOf = (pin) => {
+      if (!(pin.anchor instanceof Range)) return pin.anchor ?? pin;
+      const node = pin.anchor.commonAncestorContainer;
+      const element = node instanceof Element ? node : node.parentElement;
+      const whole = document.createRange();
+      whole.selectNodeContents(element);
+      return Math.abs(firstTop(pin.anchor) - firstTop(whole)) < 1 ? element : pin;
+    };
+    const rows = new Map();
+    for (const pin of pins) {
+      const key = rowOf(pin);
+      rows.set(key, [...(rows.get(key) ?? []), pin]);
+    }
+    for (const row of rows.values()) {
+      const { anchor } = row[0];
+      const width = row.length * PIN + (row.length - 1) * GAP;
+      const spot = anchor && pinSpot(anchor, avoid, bounds, width);
+      for (const pin of row) pin.button.hidden = !spot;
       if (!spot) {
-        missing.push(pin.n);
+        missing.push(...row.map((pin) => pin.n));
         continue;
       }
       let x = spot.left - origin.left;
-      const y = spot.top - origin.top;
-      // Two notes on one spot stand side by side rather than one hiding the other.
-      while (placed.some((p) => Math.abs(p.x - x) < PIN && Math.abs(p.y - y) < PIN)) x += PIN + 4;
-      placed.push({ x, y });
-      // A placed pin is in the way of the next one, as words are.
-      avoid.push({ rect: new DOMRect(x + origin.left, y + origin.top, PIN, PIN), owner: null });
-      pin.button.style.left = `${x}px`;
-      pin.button.style.top = `${y}px`;
+      let y = spot.top - origin.top;
+      // Two rows on one spot stand side by side rather than one hiding the other, and a row with
+      // no room left beside it in the frame starts again under it.
+      const right = bounds.right - origin.left - width;
+      while (placed.some((p) => p.x - width < x && x < p.x + p.width && Math.abs(p.y - y) < PIN)) {
+        if (x + PIN + GAP <= right) x += PIN + GAP;
+        else y += PIN + GAP;
+      }
+      placed.push({ x, y, width });
+      // A placed row is in the way of the next one, as words are.
+      avoid.push({ rect: new DOMRect(x + origin.left, y + origin.top, width, PIN), owner: null });
+      for (const [i, pin] of row.entries()) {
+        pin.button.style.left = `${x + i * (PIN + GAP)}px`;
+        pin.button.style.top = `${y}px`;
+      }
     }
+    missing.sort((a, b) => a - b);
     // The chrome says in the margin which notes no longer have anything on the page to point at.
     const report = JSON.stringify(missing);
     if (report !== missingSent) {

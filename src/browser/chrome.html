@@ -32,36 +32,72 @@
           <span id="presenceText" role="status"></span>
           <span class="presence-since" id="presenceSince"></span>
         </span>
-        <!-- The house's text-size setting, its five steps on <html>; radiogroup.js gives it arrow keys. -->
-        <span class="hw-segmented text-size" id="textSize" role="radiogroup" aria-label="Text size">
-          <button type="button" role="radio" aria-checked="false" data-size="s" aria-label="Small">
-            S
-          </button>
-          <button type="button" role="radio" aria-checked="true" data-size="m" aria-label="Medium">
-            M
-          </button>
-          <button type="button" role="radio" aria-checked="false" data-size="l" aria-label="Large">
-            L
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked="false"
-            data-size="xl"
-            aria-label="Extra large"
+        <!-- The house's text-size setting, its five steps on <html>: one button in the bar opens them
+             in a house popover, and radiogroup.js gives the segments their arrow keys. -->
+        <button
+          class="hw-btn hw-btn--quiet text-size-button"
+          id="textSizeButton"
+          type="button"
+          popovertarget="textSizePanel"
+          aria-label="Text size"
+        >
+          Aa
+        </button>
+        <div class="hw-popover text-size-panel" id="textSizePanel" popover>
+          <p class="hw-label" id="textSizeLabel">Text size</p>
+          <span
+            class="hw-segmented"
+            id="textSize"
+            role="radiogroup"
+            aria-labelledby="textSizeLabel"
           >
-            XL
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked="false"
-            data-size="xxl"
-            aria-label="Largest"
-          >
-            XXL
-          </button>
-        </span>
+            <button
+              type="button"
+              role="radio"
+              aria-checked="false"
+              data-size="s"
+              aria-label="Small"
+            >
+              S
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked="true"
+              data-size="m"
+              aria-label="Medium"
+            >
+              M
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked="false"
+              data-size="l"
+              aria-label="Large"
+            >
+              L
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked="false"
+              data-size="xl"
+              aria-label="Extra large"
+            >
+              XL
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked="false"
+              data-size="xxl"
+              aria-label="Largest"
+            >
+              XXL
+            </button>
+          </span>
+        </div>
         <label class="hw-switch annotate">
           <input id="annotate" type="checkbox" role="switch" checked aria-keyshortcuts="A" />
           Annotate

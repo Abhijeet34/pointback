@@ -124,15 +124,28 @@ body {
   gap: var(--hw-space-12);
 }
 
-/* Five steps in the space of a short label: the house segments, at the bar's quiet small size. */
-.text-size {
-  flex-wrap: nowrap;
+/* The house popover opens under its button, named as its anchor since not every engine takes the
+   invoker for one, and lines up with the button's right edge, which sits near the window's. An
+   engine without anchor positioning gets it under the bar at the right. */
+.text-size-button {
+  anchor-name: --text-size;
 }
 
-.text-size > button {
-  min-width: 1.75rem;
-  padding: 0 var(--hw-space-4);
-  font-size: var(--hw-text-xs);
+.text-size-panel {
+  position-anchor: --text-size;
+  width: max-content;
+}
+
+.text-size-panel[popover] {
+  left: auto;
+  right: anchor(right);
+}
+
+@supports not (top: anchor(bottom)) {
+  .text-size-panel[popover] {
+    top: var(--hw-row-h);
+    right: var(--hw-gutter-sm);
+  }
 }
 
 /* The house switch has no disabled track: an ended review's switch must stop reading as live. */
@@ -508,12 +521,6 @@ body {
   .bar-tools {
     flex-basis: 100%;
     justify-content: space-between;
-  }
-
-  /* No room for five steps beside End review; a phone's own text size moves the chrome already,
-     because the house root is a share of the browser's default. */
-  .text-size {
-    display: none;
   }
 }
 

@@ -2463,6 +2463,20 @@ async function wordsUnderPins(artifact, pins) {
 }
 
 /**
+ * The pins whose box, with the widest ring a pin paints (5 px), leaves the frame's visible width or
+ * runs above the top of the page. Read with the page scrolled to its top, as the pins were.
+ */
+async function pinsOffFrame(artifact, pins) {
+  const width = Number(await artifact.eval("document.documentElement.clientWidth"));
+  return pins
+    .filter((pin) => pin.left - 5 < 0 || pin.right + 5 > width || pin.top - 5 < 0)
+    .map(
+      (pin) =>
+        `${pin.name} paints at ${pin.left}..${pin.right}, ${pin.top}, past the frame's 0..${width}`,
+    );
+}
+
+/**
  * Notes every element `selectors` names, and a passage of `passage.length` characters from the
  * start of `passage.selector` selected by dragging over it, then waits for one pin each.
  */
@@ -2505,11 +2519,12 @@ async function pinsOnEach(page, artifact, selectors, passage) {
 }
 
 test(
-  "no pin covers a word of the page, on running prose, headings, lists, code, figures and buttons",
+  "no pin covers a word of the page or leaves the frame, and a target's pins stand side by side",
   { skip: !executable && "no browser found" },
   async () => {
     const covered = {};
     for (const viewport of [
+      { width: 390, height: 844 },
       { width: 800, height: 600 },
       { width: 1440, height: 900 },
     ]) {
@@ -2540,7 +2555,19 @@ test(
         "#approve",
         "#reject",
       ]);
-      covered[`html at ${viewport.width}`] = await wordsUnderPins(artifact, onHtml);
+      // The two notes on Approve stand side by side, one pin and a gap apart, not on another button.
+      const [first, second] = onHtml.slice(11, 13);
+      const apart =
+        Math.abs(second.top - first.top) < 0.5 && Math.abs(second.left - first.right - 4) < 0.5;
+      covered[`html at ${viewport.width}`] = [
+        ...(await wordsUnderPins(artifact, onHtml)),
+        ...(await pinsOffFrame(artifact, onHtml)),
+        ...(apart
+          ? []
+          : [
+              `${second.name} at ${second.left}, ${second.top} is not beside ${first.name} at ${first.right}, ${first.top}`,
+            ]),
+      ];
       await page.close();
 
       // Rendered Markdown holds paragraphs 16 px apart, closer than a pin is tall.
@@ -2567,12 +2594,17 @@ test(
         ],
         { selector: "main > p:nth-of-type(3)", length: 42 },
       );
-      covered[`markdown at ${viewport.width}`] = await wordsUnderPins(review.artifact, onMarkdown);
+      covered[`markdown at ${viewport.width}`] = [
+        ...(await wordsUnderPins(review.artifact, onMarkdown)),
+        ...(await pinsOffFrame(review.artifact, onMarkdown)),
+      ];
       await review.page.close();
       rmSync(dirname(readme.file), { recursive: true, force: true });
       rmSync(dirname(file), { recursive: true, force: true });
     }
     assert.deepEqual(covered, {
+      "html at 390": [],
+      "markdown at 390": [],
       "html at 800": [],
       "markdown at 800": [],
       "html at 1440": [],
@@ -3125,6 +3157,11 @@ test(
       "document.querySelector('#textSize [aria-checked=true]')?.getAttribute('aria-label')";
     assert.equal(await page.eval(checked), "Medium", "the house default, M, to start");
     const at = JSON.parse(await page.eval(SIZES));
+    // One button in the bar opens the five steps; closed, they take no room in it.
+    const panel = "document.getElementById('textSizePanel')";
+    assert.equal(await page.eval(`${panel}.checkVisibility()`), false, "the steps start closed");
+    await clickOn(page, "document.getElementById('textSizeButton')");
+    await page.waitFor(`${panel}.matches(':popover-open') && ${panel}.checkVisibility()`);
     await clickOn(page, step("xl"));
     await page.waitFor(`${checked} === "Extra large"`);
     const xl = JSON.parse(await page.eval(SIZES));
@@ -3153,6 +3190,8 @@ test(
       `Math.abs(${fontOf("#status")} - ${at[3][1] * (17 / 15) * (20 / 16)}) < 0.01`,
     );
     await page.send("Page.setFontSizes", { fontSizes: { standard: 16, fixed: 13 } });
+    await clickOn(page, "document.getElementById('textSizeButton')");
+    await page.waitFor(`${panel}.matches(':popover-open')`);
     await clickOn(page, step("m"));
     await page.waitFor(`${checked} === "Medium"`);
     await page.close();
