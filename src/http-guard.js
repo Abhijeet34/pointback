@@ -107,6 +107,13 @@ export const ARTIFACT_HEADERS = {
   "content-security-policy": "sandbox allow-scripts allow-forms allow-popups",
 };
 
+/**
+ * A font is the one artifact asset the frame may read cross-origin. Its opaque origin makes every
+ * @font-face load a CORS request, so without this the page paints in fallback fonts; any wider
+ * grant would let a hostile page read and send out whatever else sits under the root.
+ */
+export const FONT_HEADERS = { ...ARTIFACT_HEADERS, "access-control-allow-origin": "*" };
+
 export const STATIC_HEADERS = COMMON_HEADERS;
 
 export function sendJson(res, status, value, headers = COMMON_HEADERS) {
