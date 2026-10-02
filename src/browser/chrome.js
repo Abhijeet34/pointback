@@ -434,6 +434,9 @@ window.addEventListener("message", (event) => {
   } else if (data.type === "target" && data.note && typeof data.note === "object") {
     // The artifact proposes a target; the reviewer's instruction is composed in the chrome, never
     // sent by the page. A `queue` message carrying note text is deliberately not accepted here.
+    // A proposal is heard only while the reviewer has Annotate on and no card open: the page can
+    // send one at any moment, and must not pop the card, take focus, or wipe a note being typed.
+    if (!annotate || composing) return;
     openCompose(
       data.note,
       typeof data.label === "string" ? data.label : "",
@@ -512,11 +515,12 @@ card.addEventListener("submit", (event) => {
   event.preventDefault();
   const prompt = cardText.value.trim();
   if (!composing || prompt === "") return;
-  // The instruction is this textarea's value; every other field describes the target the artifact
-  // proposed. This is the only path that adds a note, and it runs only on the reviewer's submit.
-  // Stamped here, after the target spread, so the moment the reviewer wrote it survives a send
-  // that batches ten minutes of notes into one instant, and no proposed `at` can displace it.
-  pending.push({ prompt, ...composing.note, at: new Date().toISOString() });
+  // The instruction is this textarea's value; the other fields are copied by name from the target
+  // the artifact proposed, so nothing else it sent rides along and nothing it sent can displace
+  // `prompt` or `at`. This is the only path that adds a note, and it runs only on the reviewer's
+  // submit. Stamped here so the moment the reviewer wrote it survives a batched send.
+  const { selector, tag, text, target } = composing.note;
+  pending.push({ selector, tag, text, target, prompt, at: new Date().toISOString() });
   structure = composing.structure;
   savePending();
   // The one path that adds a note, so the one that must mark the list stale: closeCompose's own
