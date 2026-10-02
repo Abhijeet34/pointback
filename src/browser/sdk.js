@@ -848,14 +848,18 @@
         missing.push(...row.map((pin) => pin.n));
         continue;
       }
-      let x = spot.left - origin.left;
+      const naturalX = spot.left - origin.left;
+      let x = naturalX;
       let y = spot.top - origin.top;
       // Two rows on one spot stand side by side rather than one hiding the other, and a row with
-      // no room left beside it in the frame starts again under it.
+      // no room left beside it in the frame starts again under it, at its own natural column.
       const right = bounds.right - origin.left - width;
       while (placed.some((p) => p.x - width < x && x < p.x + p.width && Math.abs(p.y - y) < PIN)) {
         if (x + PIN + GAP <= right) x += PIN + GAP;
-        else y += PIN + GAP;
+        else {
+          x = naturalX;
+          y += PIN + GAP;
+        }
       }
       placed.push({ x, y, width });
       // A placed row is in the way of the next one, as words are.
