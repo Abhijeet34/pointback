@@ -15,7 +15,10 @@ function lab() {
   return { dir, file };
 }
 
-/** fs.watch needs a moment after creation before the kernel delivers events for the path. */
+/**
+ * fs.watch needs a moment after creation before the kernel delivers events for the path, and has no
+ * ready event to wait on; a test that can absorb one extra change settles on a write instead.
+ */
 const armed = () => sleep(150);
 
 /**
@@ -45,6 +48,7 @@ test("a burst of writes is one change, delivered after the debounce", async () =
   // for a change this test caused, and then clearing, leaves the watcher quiet and armed.
   writeFileSync(file, "<p>settle</p>");
   if (!watching) {
+    // A negative as well as a report: no change may arrive in the windows one would fire in.
     await sleep(DEBOUNCE_MS * 4);
     assertReportedRatherThanQuiet(errors, changes.length);
     stop();
@@ -78,12 +82,14 @@ test("a rename-replace save and a sibling's change are told apart", async () => 
   const stop = watchFile(file, () => (changes += 1), { onError: (error) => errors.push(error) });
   await armed();
   writeFileSync(join(dir, "other.css"), "p{}");
+  // A negative: three debounce windows outlast the one a delivered change would have fired in.
   await sleep(DEBOUNCE_MS * 3);
   assert.equal(changes, 0, "a sibling file is not the artifact");
   const tmp = join(dir, ".plan.html.tmp");
   writeFileSync(tmp, "<p>two</p>");
   renameSync(tmp, file);
   if (!watching) {
+    // A negative as well as a report: no change may arrive in the windows one would fire in.
     await sleep(DEBOUNCE_MS * 3);
     assertReportedRatherThanQuiet(errors, changes);
     stop();
@@ -108,12 +114,14 @@ test("a stopped watcher stays silent, and a vanished directory reports instead o
   await armed();
   stop();
   writeFileSync(file, "<p>after</p>");
+  // A negative: three debounce windows outlast the one a delivered change would have fired in.
   await sleep(DEBOUNCE_MS * 3);
   assert.equal(changes, 0);
   const errors = [];
   assert.throws(() => watchFile(join(dir, "missing", "x.html"), () => {}), /ENOENT/);
   const stopAgain = watchFile(file, () => {}, { onError: (e) => errors.push(e) });
   rmSync(dir, { recursive: true, force: true });
+  // A negative: the vanished directory must report, not throw, within the windows it would fire in.
   await sleep(DEBOUNCE_MS * 3);
   stopAgain();
 });
