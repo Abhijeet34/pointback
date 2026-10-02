@@ -354,7 +354,7 @@ export class SessionStore {
     const session = this.#sessions.get(key);
     if (!session) return 0;
     if (!existsSync(session.file)) {
-      this.#events.emit(key, { type: "gone" });
+      this.#gone(session);
       return session.revision;
     }
     session.revision += 1;
@@ -408,6 +408,11 @@ export class SessionStore {
     session.lastActive = note.reply.at;
     this.#persist(session);
     this.#events.emit(key, { type: "reply", uid, reply: note.reply });
+    // Working means notes taken and not yet answered; an answer to the last of them ends it, or a
+    // tab reads "working" beside "answered every note" until the agent's next poll or the bound.
+    const taken = session.unacked?.prompts ?? [];
+    const answered = (prompt) => session.chat.find((entry) => entry.uid === prompt.uid)?.reply;
+    if (taken.length > 0 && taken.every(answered)) this.#clearWorking(key);
     return { status: "replied", uid, reply: note.reply };
   }
 
@@ -495,6 +500,8 @@ export class SessionStore {
   /** Tells every open tab the file is gone, and returns the answer the CLI prints for it. */
   #gone(session) {
     this.#events.emit(session.key, { type: "gone" });
+    // Nothing the page can do waits on the agent any more, so it no longer shows it working.
+    this.#clearWorking(session.key);
     return { status: "gone", file: session.file };
   }
 

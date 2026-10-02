@@ -139,10 +139,12 @@ body {
 /* The page sits inset in a frame on a ground of its own, so a page darker than the chrome still has
    an edge: the frame is a control boundary, 3:1 on every dark ground the house has. */
 .mount {
+  /* The frame's inset, which the cover over a strayed frame matches exactly. */
+  --inset: var(--hw-space-12);
   grid-area: mount;
   position: relative;
   min-height: 0;
-  padding: var(--hw-space-12);
+  padding: var(--inset);
   background: var(--hw-bg-subtle);
 }
 
@@ -153,6 +155,29 @@ body {
   border: var(--hw-border-w) solid var(--hw-line-strong);
   border-radius: var(--hw-radius-lg);
   background: var(--paper);
+}
+
+/* A frame that strayed from the page under review is covered where the reviewer is looking: the
+   page it went to is not the review's to show, and Back is the one thing to do there. */
+.cover {
+  position: absolute;
+  inset: var(--inset);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--hw-space-16);
+  padding: var(--hw-space-24);
+  border: var(--hw-border-w) solid var(--hw-line-strong);
+  border-radius: var(--hw-radius-lg);
+  background: var(--hw-surface);
+  text-align: center;
+}
+
+.cover-text {
+  max-width: 32rem;
+  margin: 0;
+  text-wrap: pretty;
 }
 
 /* The note card floats over the artifact at the spot the reviewer pointed at, but it is a chrome
@@ -200,6 +225,15 @@ body {
   color: var(--hw-text-muted);
   font-size: var(--hw-text-sm);
   text-wrap: pretty;
+}
+
+/* With nothing to say the line goes, and the notes keep the space it gave them. */
+.margin-status:empty {
+  display: none;
+}
+
+.margin-status:empty + .marks {
+  padding-top: var(--hw-space-12);
 }
 
 .marks {
@@ -435,7 +469,7 @@ body {
   }
 
   .mount {
-    padding: var(--hw-space-8);
+    --inset: var(--hw-space-8);
   }
 
   .margin {

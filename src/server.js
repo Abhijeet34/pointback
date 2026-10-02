@@ -52,6 +52,7 @@ const staticFiles = new Map(
   ]),
 );
 const chromeHtml = readFileSync(new URL("chrome.html", browserDir), "utf8");
+const missingHtml = readFileSync(new URL("missing.html", browserDir), "utf8");
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -362,7 +363,10 @@ function serveArtifact(res, store, match) {
     throw new HttpError(404, "not found");
   }
   const file = resolveAsset(session.root, rest);
-  if (!file) throw new HttpError(404, "not found");
+  if (!file) {
+    res.writeHead(404, { ...ARTIFACT_HEADERS, "content-type": contentTypes[".html"] });
+    return res.end(missingHtml);
+  }
   const type = contentTypes[extname(file).toLowerCase()] ?? "application/octet-stream";
   if (file === session.file) {
     // A session opened before other files were refused still names one; it shows nothing.

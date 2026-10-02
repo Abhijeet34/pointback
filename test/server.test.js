@@ -152,6 +152,19 @@ test("the artifact is served injected and sandboxed, its siblings confined, its 
   assert.match(html, /<script src="\/sdk.js"><\/script><\/body>/);
   assert.equal(await status(`${dirname(artifactUrl)}/plan.css`), 200);
   assert.equal(await status(`${dirname(artifactUrl)}/missing.css`), 404);
+  // A page the frame can land on, so it answers as a page: a sentence in the house's styles, still
+  // sandboxed, never the JSON an API caller gets.
+  const missing = await fetch(`${base}${dirname(artifactUrl)}/plan-v2.html`);
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.equal(
+    missing.headers.get("content-security-policy"),
+    "sandbox allow-scripts allow-forms allow-popups",
+  );
+  const page = await missing.text();
+  assert.match(page, /<p[^>]*>There is no file at this address in the review\.<\/p>/);
+  assert.match(page, /<link rel="stylesheet" href="\/house\/roles\.css" \/>/);
+  assert.doesNotMatch(page, /"error"/);
   const wrongToken = artifactUrl.replace(/\/[0-9a-f]{32}\//, `/${"0".repeat(32)}/`);
   assert.equal(await status(wrongToken), 404);
   assert.equal(await status(`/artifact/${key}/short/plan.html`), 404);

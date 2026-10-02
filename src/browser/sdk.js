@@ -688,8 +688,10 @@
 
   // A pin sits like a footnote mark on the top right of the first line of what it marks, so it
   // reads as attached to the words without covering them; a target with no text of its own, such
-  // as an image or a table, gets its box.
-  function anchorRect(anchor) {
+  // as an image or a table, gets its box. The first line is every box on it, so a paragraph that
+  // opens with a code chip is marked where its line ends rather than where the chip does. A table
+  // cell has no room above its words, so its pin stays inside the cell, off the rows around it.
+  function pinSpot(anchor) {
     let rects;
     if (anchor instanceof Range) rects = [...anchor.getClientRects()];
     else if (ownText(anchor)) {
@@ -697,7 +699,25 @@
       range.selectNodeContents(anchor);
       rects = [...range.getClientRects()];
     } else rects = [anchor.getBoundingClientRect()];
-    return rects.find((r) => r.width > 0 && r.height > 0) ?? null;
+    rects = rects.filter((r) => r.width > 0 && r.height > 0);
+    const [first] = rects;
+    if (!first) return null;
+    const line = rects.filter((r) => {
+      const middle = r.top + r.height / 2;
+      return middle > first.top && middle < first.bottom;
+    });
+    let left = Math.max(...line.map((r) => r.right)) + 1;
+    // The pin's point is its lower left corner, so it stands on the line's top right corner.
+    let top = Math.min(...line.map((r) => r.top)) - PIN;
+    const node = anchor instanceof Range ? anchor.commonAncestorContainer : anchor;
+    const cell = (node instanceof Element ? node : node.parentElement)?.closest("td, th");
+    if (cell) {
+      // Beside the words rather than above them, so it clears them by its widest ring, 5 px.
+      const box = cell.getBoundingClientRect();
+      left = Math.max(box.left, Math.min(left + 4, box.right - PIN));
+      top = Math.max(box.top, Math.min(top, box.bottom - PIN));
+    }
+    return { left, top };
   }
 
   const attached = (anchor) =>
@@ -712,16 +732,14 @@
     const missing = [];
     for (const pin of pins) {
       if (!pin.anchor || !attached(pin.anchor)) pin.anchor = findAnchor(pin);
-      const rect = pin.anchor && anchorRect(pin.anchor);
-      pin.button.hidden = !rect;
-      if (!rect) {
+      const spot = pin.anchor && pinSpot(pin.anchor);
+      pin.button.hidden = !spot;
+      if (!spot) {
         missing.push(pin.n);
         continue;
       }
-      let x = Math.min(Math.max(rect.right + 1, 0), width - PIN) - origin.left;
-      // The pin's point is its lower left corner, so it stands on the target's top right corner
-      // and clears the line of text it sits beside.
-      const y = Math.max(rect.top - PIN - origin.top, 0);
+      let x = Math.min(Math.max(spot.left, 0), width - PIN) - origin.left;
+      const y = Math.max(spot.top - origin.top, 0);
       // Two notes on one spot stand side by side rather than one hiding the other.
       while (placed.some((p) => Math.abs(p.x - x) < PIN && Math.abs(p.y - y) < PIN)) x += PIN + 4;
       placed.push({ x, y });
