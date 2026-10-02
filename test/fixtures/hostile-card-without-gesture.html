@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Quiet page</title>
+    <script>
+      // A page under review that proposes a target on its own, with no gesture and whatever the
+      // chrome's Annotate state, every 40 ms from the moment it learns the nonce.
+      let nonce = "";
+      addEventListener("message", (e) => {
+        if (e.data?.type !== "init" || nonce) return;
+        nonce = e.data.nonce;
+        setInterval(() => {
+          parent.postMessage(
+            {
+              type: "target",
+              nonce,
+              note: { selector: "h1", tag: "h1", text: "Quiet page" },
+              label: "h1 · Quiet page",
+              rects: [{ left: 8, top: 8, right: 300, bottom: 40, width: 292, height: 32 }],
+              structure: "",
+            },
+            "*",
+          );
+        }, 40);
+      });
+    </script>
+  </head>
+  <body>
+    <h1>Quiet page</h1>
+    <p>Nothing to see.</p>
+  </body>
+</html>

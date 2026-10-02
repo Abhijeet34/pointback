@@ -469,6 +469,88 @@ setInterval(() => {
 );
 
 test(
+  "the instruction a note delivers is the one the reviewer typed, whatever the page proposes",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // The property, not one exploit: the page proposes every field a delivered note has and some
+    // it does not, and the agent still receives the textarea's value, stamped when it was submitted.
+    const file = join(dirname(fixture), "hostile-prompt-override.html");
+    const session = (await cli([file], lab.env)).json().session;
+    const page = await browser.page(session.url);
+    await page.waitFor("document.body.dataset.ready === '1'");
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor(
+      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+    );
+    await page.type("Say one region, name it");
+    const typed = await page.eval("document.getElementById('cardText').value");
+    const submitted = Date.now();
+    await page.enter();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    assert.equal(await page.eval("document.querySelector('.mark .mark-note').textContent"), typed);
+    const kept = await page.eval(
+      "JSON.stringify(Object.keys(JSON.parse(sessionStorage.getItem('pending:' + location.pathname.split('/').pop())).prompts[0]).sort())",
+    );
+    assert.deepEqual(
+      JSON.parse(kept),
+      ["at", "prompt", "selector", "tag", "target", "text"],
+      "the chrome keeps only the fields a note has",
+    );
+
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    assert.equal(polled.status, "feedback");
+    assert.equal(polled.prompts.length, 1);
+    const [note] = polled.prompts;
+    assert.equal(note.prompt, typed, "the delivered instruction is the textarea's value");
+    assert.ok(Date.parse(note.at) >= submitted, `stamped at submit, not ${note.at}`);
+    assert.equal(note.role, undefined);
+    await page.close();
+  },
+);
+
+test(
+  "a page cannot open the note card or take focus while Annotate is off",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const file = join(dirname(fixture), "hostile-card-without-gesture.html");
+    const session = (await cli([file], lab.env)).json().session;
+    const page = await browser.page(session.url);
+    await page.waitFor("document.body.dataset.ready === '1'");
+    await page.eval("document.getElementById('annotate').focus()");
+    const state = async () =>
+      JSON.parse(
+        await page.eval(
+          "JSON.stringify({ hidden: document.getElementById('card').hidden, focus: document.activeElement.id, typed: document.getElementById('cardText').value })",
+        ),
+      );
+    // The page proposes a target every 40 ms; this is ample time for many of them to arrive.
+    await new Promise((r) => setTimeout(r, 700));
+    assert.deepEqual(
+      await state(),
+      { hidden: true, focus: "annotate", typed: "" },
+      "with Annotate off a proposed target leaves the card hidden and focus where it was",
+    );
+
+    // Not vacuous: the same proposals open the card as soon as the reviewer turns Annotate on.
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor(
+      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+    );
+    // A proposal arriving while the card is open does not replace the note being typed.
+    await page.type("Keep this");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal((await state()).typed, "Keep this", "an open card is not re-targeted");
+
+    await page.eval("document.getElementById('annotate').click()");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal((await state()).hidden, true, "turning Annotate off closes the card for good");
+    await page.close();
+  },
+);
+
+test(
   "a hidden tab stops heartbeating so the daemon idles out, a visible one keeps it alive",
   { skip: !executable && "no browser found" },
   async () => {
