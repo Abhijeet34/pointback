@@ -712,8 +712,9 @@
     const node = anchor instanceof Range ? anchor.commonAncestorContainer : anchor;
     const cell = (node instanceof Element ? node : node.parentElement)?.closest("td, th");
     if (cell) {
+      // Beside the words rather than above them, so it clears them by its widest ring, 5 px.
       const box = cell.getBoundingClientRect();
-      left = Math.max(box.left, Math.min(left, box.right - PIN));
+      left = Math.max(box.left, Math.min(left + 4, box.right - PIN));
       top = Math.max(box.top, Math.min(top, box.bottom - PIN));
     }
     return { left, top };
