@@ -138,11 +138,17 @@ blockquote {
   color: var(--hw-text-muted);
 }
 
+/* A chip is one unit: it moves whole to the next line rather than splitting at a hyphen, and only
+   one longer than the line wraps inside itself. Its side padding stays under a word space, so the
+   comma after it does not read as set off by one. */
 code {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font: 400 max(0.88em, 11px) / 1 var(--hw-font-mono);
   background: var(--hw-fill);
   border-radius: var(--hw-radius-sm);
-  padding: 0.12em 0.32em;
+  padding: 0.12em 0.16em;
 }
 
 pre {
@@ -154,6 +160,7 @@ pre {
 }
 
 pre code {
+  display: inline;
   font: 400 var(--hw-text-sm) / 1.6 var(--hw-font-mono);
   background: none;
   padding: 0;

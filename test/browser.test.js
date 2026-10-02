@@ -3345,6 +3345,76 @@ test(
   },
 );
 
+/**
+ * Every inline code chip in the rendered page, as it paints: the ones a line break splits though
+ * they would fit on one line, and the ones whose punctuation after them stands further off than a
+ * word space of the text around them, read from the glyph boxes of the chip's text and the next.
+ */
+const CHIPS = `JSON.stringify((() => {
+  const rectsOf = (node, start = 0, end = node.data.length) => {
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, end);
+    return [...range.getClientRects()].filter((r) => r.width > 0);
+  };
+  const wordSpace = (block) => {
+    const widthOf = (words) => {
+      const probe = document.createElement("span");
+      probe.style.cssText = "position: absolute; white-space: pre";
+      probe.textContent = words;
+      block.append(probe);
+      const width = probe.getBoundingClientRect().width;
+      probe.remove();
+      return width;
+    };
+    return widthOf("a b") - widthOf("ab");
+  };
+  const split = [];
+  const spaced = [];
+  for (const code of document.querySelectorAll(":not(pre) > code")) {
+    const text = code.firstChild;
+    if (!(text instanceof Text)) continue;
+    const block = code.closest("p, li, td, th, blockquote");
+    const style = getComputedStyle(block);
+    const room = block.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const probe = code.cloneNode(true);
+    probe.style.cssText = "position: absolute; white-space: nowrap; display: inline-block; max-width: none";
+    block.append(probe);
+    const natural = probe.getBoundingClientRect().width;
+    probe.remove();
+    const lines = new Set(rectsOf(text).map((r) => Math.round(r.top)));
+    if (natural <= room && lines.size > 1) split.push(code.textContent);
+    const next = code.nextSibling;
+    if (next instanceof Text && /^[,.;:)!?]/.test(next.data)) {
+      const gap = rectsOf(next, 0, 1)[0].left - rectsOf(text).at(-1).right;
+      const space = wordSpace(block);
+      if (gap >= space) spaced.push(code.textContent + next.data[0] + " " + gap.toFixed(1) + " px off, a word space is " + space.toFixed(1));
+    }
+  }
+  return { split, spaced: spaced.slice(0, 3), of: spaced.length };
+})())`;
+
+test(
+  "inline code in Markdown stays whole on its line, and the punctuation after it sits close",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const chips = {};
+    for (const width of [390, 800, 1440]) {
+      const { file } = copyOfReadme();
+      const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+        width,
+        height: 900,
+      });
+      await artifact.eval("document.fonts.ready.then(() => true)");
+      chips[width] = JSON.parse(await artifact.eval(CHIPS));
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    const whole = { split: [], spaced: [], of: 0 };
+    assert.deepEqual(chips, { 390: whole, 800: whole, 1440: whole });
+  },
+);
+
 test(
   "a save to the Markdown keeps the reviewer's place and the pin, and a new note has the new lines",
   { skip: !executable && "no browser found" },
