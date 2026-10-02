@@ -320,11 +320,15 @@ function apply(event) {
       ?.scrollIntoView({ block: "nearest" });
 }
 
-/** Adopts the server's answer to a change of the unsent notes, or says why it was refused. */
+/**
+ * Asks the server to change the unsent notes, or says why it was refused. The new list reaches
+ * this tab on the event stream, like every other change to it: a slow response here raced a
+ * later "drafts" event and overwrote it with its own stale list, same bug Send already had.
+ */
 async function changeDrafts(what, method, path, body) {
   problem = null;
   try {
-    pending = (await api(method, path, body)).drafts;
+    await api(method, path, body);
     return true;
   } catch (error) {
     problem = `Could not ${what}: ${error.message}`;
