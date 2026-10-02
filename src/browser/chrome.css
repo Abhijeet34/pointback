@@ -1,12 +1,36 @@
-/* Colour, space and motion are the house roles (src/browser/house/, pinned in pin.json); dark is
-   pinned by data-theme on <html>. One accent means the annotation channel and nothing else. */
+/* Colour, type, space and motion are the house's roles and scales, and the controls its components
+   (src/browser/house/, pinned in pin.json); dark is pinned by data-theme on <html>. Every size is
+   rem, so the house text-size setting on <html> grows the whole chrome. One accent means the
+   annotation channel and nothing else. */
+
+/* The two house faces the chrome sets, served by the daemon itself: the review makes no request off
+   loopback. The descriptors are the house's own fonts/fonts.css; Literata is not shipped. */
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  src: url("/house/fonts/archivo/archivo-latin-wdth-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("/house/fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("/house/fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+}
+
 :root {
   /* The page under review, not chrome: it shows only until the artifact paints its own ground. */
   --paper: oklch(96% 0.005 90);
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --radius: 6px;
-  --z-card: 10;
 }
 
 [data-theme="dark"] {
@@ -17,6 +41,11 @@
   box-sizing: border-box;
 }
 
+/* The house components set display on themselves, which outranks the UA's [hidden] rule. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
@@ -25,35 +54,47 @@ body {
 
 body {
   display: grid;
-  grid-template-rows: 44px 1fr;
-  grid-template-columns: minmax(0, 1fr) clamp(280px, 28vw, 380px);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) var(--hw-panel-w);
   grid-template-areas:
     "bar bar"
     "mount margin";
-  background: var(--hw-surface);
+  background: var(--hw-bg);
   color: var(--hw-text);
-  font: 15px/1.4 var(--font);
+  font: var(--hw-text-md) / var(--hw-leading) var(--hw-font-sans);
 }
 
 .bar {
   grid-area: bar;
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--hw-space-4) var(--hw-space-12);
+  min-height: var(--hw-row-h);
+  padding: var(--hw-space-4) var(--hw-gutter-sm);
+  border-bottom: var(--hw-border-w) solid var(--hw-line);
+  font-size: var(--hw-text-sm);
+}
+
+/* Which review this is: the mark, the name and the file, the one part of the bar that may shrink. */
+.bar-id {
+  display: flex;
+  flex: 1 1 0;
   align-items: center;
   gap: var(--hw-space-12);
-  padding: 0 var(--hw-space-16);
-  border-bottom: 1px solid var(--hw-line);
+  min-width: 0;
 }
 
 /* The mark and the wordmark are one unit: the mark keeps the identity when the name is dropped. */
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: var(--hw-space-8);
+  gap: var(--hw-icon-gap);
 }
 
 .brand-mark {
-  width: 18px;
-  height: 18px;
+  width: var(--hw-icon);
+  height: var(--hw-icon);
   flex: none;
   stroke: var(--hw-text);
 }
@@ -63,197 +104,144 @@ body {
 }
 
 .bar-name {
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  font-size: var(--hw-text-md);
+  font-weight: 650;
 }
 
 .bar-file {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--hw-text-muted);
-  font: 13px var(--mono);
+  font-family: var(--hw-font-mono);
 }
 
-.switch {
-  display: inline-flex;
+.bar-tools {
+  display: flex;
+  flex: none;
   align-items: center;
-  gap: var(--hw-space-8);
-  min-height: 32px;
-  padding: 0 var(--hw-space-12);
-  border: 1px solid var(--hw-line-strong);
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--hw-text);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
+  gap: var(--hw-space-12);
 }
 
-.switch-track {
-  width: 28px;
-  height: 16px;
-  border-radius: 8px;
-  background: var(--hw-line-strong);
-  position: relative;
-  transition: background var(--hw-duration-fast) var(--hw-ease-out);
+/* The house switch has no disabled track: an ended review's switch must stop reading as live. */
+.hw-switch input:disabled {
+  background: var(--hw-fill);
+  border-color: var(--hw-text-disabled);
+  cursor: not-allowed;
 }
 
-.switch-track::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--hw-text);
-  transition: transform var(--hw-duration-fast) var(--hw-ease-out);
+.hw-switch input:disabled::after {
+  background: var(--hw-text-disabled);
+  box-shadow: none;
 }
 
-.switch[aria-checked="true"] .switch-track {
-  background: var(--hw-accent);
-}
-
-.switch[aria-checked="true"] .switch-track::after {
-  transform: translateX(12px);
-  background: var(--hw-on-accent);
-}
-
-/* An ended review: the label dims like a disabled quiet control and the switch stops reading
-   as one. After the checked rules, at the same specificity, so it wins in either state. */
-.switch:disabled {
-  color: var(--hw-text-muted);
-  cursor: default;
-}
-
-.switch:disabled .switch-track {
-  background: var(--hw-fill-active);
-}
-
-.switch:disabled .switch-track::after {
-  background: var(--hw-text-muted);
-}
-
+/* The page sits inset in a frame on a ground of its own, so a page darker than the chrome still has
+   an edge: the frame is a control boundary, 3:1 on every dark ground the house has. */
 .mount {
   grid-area: mount;
   position: relative;
   min-height: 0;
-  background: var(--paper);
-}
-
-/* The note card floats over the artifact at the spot the reviewer pointed at, but it is a chrome
-   element: the reviewer types the instruction here, where the page under review cannot forge it. */
-.card {
-  position: absolute;
-  width: min(360px, calc(100% - var(--hw-space-24)));
-  margin: 0;
   padding: var(--hw-space-12);
-  border-radius: var(--radius);
-  background: var(--hw-surface-raised);
-  color: var(--hw-text);
-  box-shadow: 0 8px 24px oklch(0% 0 0 / 0.35);
-  z-index: var(--z-card);
-}
-.card-target {
-  margin: 0 0 var(--hw-space-8);
-  font: 12px var(--mono);
-  color: var(--hw-accent-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.card textarea,
-.mark-edit-text {
-  width: 100%;
-  min-height: 64px;
-  box-sizing: border-box;
-  padding: var(--hw-space-8);
-  border: 1px solid var(--hw-line-strong);
-  border-radius: var(--radius);
-  background: var(--hw-surface);
-  color: inherit;
-  font: inherit;
-  resize: vertical;
-}
-.card-row {
-  display: flex;
-  gap: var(--hw-space-8);
-  justify-content: flex-end;
-  margin-top: var(--hw-space-8);
-}
-.card .send-button,
-.mark-editor .send-button {
-  width: auto;
-  min-height: 32px;
-  padding: 0 var(--hw-space-12);
+  background: var(--hw-bg-subtle);
 }
 
 #artifact {
   display: block;
   width: 100%;
   height: 100%;
-  border: 0;
+  border: var(--hw-border-w) solid var(--hw-line-strong);
+  border-radius: var(--hw-radius-lg);
   background: var(--paper);
 }
 
-/* The notes column is the proof's margin: one rule, and every mark hangs from it. */
+/* The note card floats over the artifact at the spot the reviewer pointed at, but it is a chrome
+   element: the reviewer types the instruction here, where the page under review cannot forge it.
+   It is the house popover plus a boundary, because a shadow alone vanishes on a dark page. */
+.card {
+  position: absolute;
+  /* The house note's measure rather than the popover's, so a cell's row and column fit its line. */
+  width: min(24rem, 100% - 2 * var(--hw-space-16));
+  border: var(--hw-border-w) solid var(--hw-line-strong);
+  z-index: var(--hw-z-dropdown);
+}
+
+.card-target {
+  margin: 0;
+  font-size: var(--hw-text-xs);
+}
+
+.card-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--hw-space-8);
+  justify-content: flex-end;
+}
+
+/* The notes column is the proof's margin. Everything but Send scrolls, so Send never leaves it. */
 .margin {
   grid-area: margin;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-left: 1px solid var(--hw-line);
+  overflow: hidden;
+  border-left: var(--hw-border-w) solid var(--hw-line);
+}
+
+.margin-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .margin-status {
   margin: 0;
   padding: var(--hw-space-12) var(--hw-space-16);
   color: var(--hw-text-muted);
-  font-size: 13px;
+  font-size: var(--hw-text-sm);
   text-wrap: pretty;
 }
 
 .marks {
-  flex: 1;
-  min-height: 72px;
+  display: grid;
+  gap: var(--hw-space-8);
   margin: 0;
-  padding: 0 var(--hw-space-16) var(--hw-space-12) var(--hw-space-16);
-  overflow-y: auto;
+  padding: 0 var(--hw-space-16) var(--hw-space-16);
   list-style: none;
 }
 
 .mark {
-  position: relative;
-  padding: var(--hw-space-8) 0 var(--hw-space-8) var(--hw-space-24);
-  border-left: 2px solid var(--hw-accent);
+  max-width: none;
 }
 
 /* The note last shown on the page, from here or from its pin, is the one the eye returns to. */
 .mark.shown {
+  border-color: var(--hw-accent-line);
   background: var(--hw-accent-fill);
 }
 
-/* Queued notes leave room on the right for Edit and ×. */
-.mark:not(.sent, .editing) {
-  padding-right: 72px;
+.mark-head {
+  display: flex;
+  align-items: center;
+  gap: var(--hw-space-4);
+  min-width: 0;
 }
 
 /* The number and target are one button that leads to the place on the page. */
 .mark-target {
   display: flex;
+  flex: 1;
+  align-items: center;
   gap: var(--hw-space-8);
-  align-items: baseline;
-  width: 100%;
-  min-height: 24px;
+  min-width: 0;
+  min-height: var(--hw-control-h-sm);
   padding: 0;
   border: 0;
-  border-radius: var(--radius);
+  border-radius: var(--hw-radius-sm);
   background: transparent;
   color: var(--hw-text-muted);
-  font: 12px var(--font);
+  font: inherit;
+  font-size: var(--hw-text-xs);
   text-align: left;
   cursor: pointer;
 }
@@ -263,88 +251,74 @@ body {
   text-decoration: underline;
 }
 
-/* The number sits on the margin's rule where the dot was, and its fill is the note's state, the
-   same as its pin on the page: an outline while queued, filled once sent, the reply's colour after. */
-.mark-number {
-  position: absolute;
-  top: 9px;
-  left: -12px;
-  width: 22px;
-  height: 22px;
-  box-sizing: border-box;
-  border: 2px solid var(--hw-accent);
-  border-radius: 50%;
-  background: var(--hw-bg);
-  color: var(--hw-accent-text);
-  font: 600 11px/18px var(--font);
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
-.mark.sent .mark-number {
-  background: var(--hw-accent);
-  color: var(--hw-on-accent);
-}
-
-.mark[data-state="done"] .mark-number {
-  border-color: var(--hw-success);
-  background: var(--hw-success);
-  color: var(--hw-bg);
-}
-
-.mark[data-state="question"] .mark-number {
-  border-color: var(--hw-warning);
-  background: var(--hw-warning);
-  color: var(--hw-bg);
-}
-
-.mark[data-state="declined"] .mark-number {
-  border-color: var(--hw-text-muted);
-  background: var(--hw-text-muted);
-  color: var(--hw-bg);
-}
-
-.mark-missing {
-  margin: var(--hw-space-4) 0 0;
-  color: var(--hw-warning);
-  font-size: 12px;
-}
-
-.mark-editor {
-  margin-top: var(--hw-space-4);
+.mark-locator {
+  flex: 1;
+  min-width: 0;
 }
 
 .mark-tag {
-  font: 12px var(--mono);
-  color: var(--hw-accent-text);
+  color: var(--hw-text);
+  font-weight: 560;
 }
 
-.mark-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* The pin's fill is the note's state, the same as its pin on the page: a ring while queued, the
+   accent once sent, the reply's colour after. */
+.mark-number {
+  font-variant-numeric: tabular-nums;
+}
+
+.mark[data-state="queued"] .mark-number {
+  background: var(--hw-surface);
+  color: var(--hw-accent-text);
+  box-shadow:
+    inset 0 0 0 var(--hw-border-w) var(--hw-accent),
+    0 0 0 2px var(--hw-surface);
+}
+
+.mark[data-state="done"] .mark-number {
+  background: var(--hw-green-9);
+  color: var(--hw-green-on-solid);
+}
+
+.mark[data-state="question"] .mark-number {
+  background: var(--hw-amber-9);
+  color: var(--hw-amber-on-solid);
+}
+
+.mark[data-state="declined"] .mark-number {
+  background: var(--hw-gray-9);
+  color: var(--hw-gray-on-solid);
+}
+
+.mark-missing {
+  margin: 0;
+  color: var(--hw-warning);
+  font-size: var(--hw-text-xs);
+}
+
+.mark-editor {
+  display: grid;
+  gap: var(--hw-space-8);
 }
 
 .mark-note {
-  margin: var(--hw-space-4) 0 0;
+  margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 /* The agent's answer hangs under the note it answers; the label alone carries the status colour. */
 .mark-reply {
-  margin: var(--hw-space-8) 0 0;
+  margin: var(--hw-space-4) 0 0;
   padding-left: var(--hw-space-8);
-  border-left: 2px solid var(--hw-line-strong);
+  border-left: var(--hw-border-w) solid var(--hw-line-strong);
   color: var(--hw-text-muted);
-  font-size: 13px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .mark-reply-label {
-  font-weight: 600;
+  font-weight: 650;
   color: var(--hw-text);
 }
 
@@ -357,96 +331,18 @@ body {
 }
 
 .mark-answer {
-  display: block;
+  display: flex;
   margin-top: var(--hw-space-8);
-  min-height: 28px;
-}
-
-.mark-remove {
-  position: absolute;
-  top: var(--hw-space-8);
-  right: 0;
-  width: 24px;
-  height: 24px;
-  border: 0;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--hw-text-muted);
-  font: 15px var(--font);
-  cursor: pointer;
-}
-
-.mark-remove:hover {
-  color: var(--hw-danger);
-  background: var(--hw-fill-hover);
-}
-
-.mark-edit {
-  position: absolute;
-  top: var(--hw-space-8);
-  right: 28px;
-  min-width: 40px;
-  height: 24px;
-  padding: 0 var(--hw-space-8);
-  border: 0;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--hw-text-muted);
-  font: 12px var(--font);
-  cursor: pointer;
-}
-
-.mark-edit:hover {
-  color: var(--hw-text);
-  background: var(--hw-fill-hover);
 }
 
 .send {
+  flex: none;
   padding: var(--hw-space-12) var(--hw-space-16) var(--hw-space-16);
-  border-top: 1px solid var(--hw-line);
+  border-top: var(--hw-border-w) solid var(--hw-line);
 }
 
 .send-button {
   width: 100%;
-  min-height: 36px;
-  border: 0;
-  border-radius: var(--radius);
-  background: var(--hw-accent);
-  color: var(--hw-on-accent);
-  font: 600 14px var(--font);
-  cursor: pointer;
-}
-
-.send-button:disabled {
-  background: var(--hw-fill);
-  color: var(--hw-text-muted);
-  cursor: default;
-}
-
-/* A quiet control: the bar's second action and the dialog's non-default choices. */
-.quiet {
-  min-height: 32px;
-  padding: 0 var(--hw-space-12);
-  border: 1px solid var(--hw-line-strong);
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--hw-text);
-  font: 13px var(--font);
-  cursor: pointer;
-}
-
-.quiet:hover:not(:disabled) {
-  background: var(--hw-fill-hover);
-}
-
-.quiet:disabled {
-  color: var(--hw-text-muted);
-  cursor: default;
-}
-
-.quiet.danger {
-  color: var(--hw-danger);
-  border-color: var(--hw-danger);
 }
 
 /* Presence is a fact about the agent, so it reads as a label, never as something to press. */
@@ -455,25 +351,26 @@ body {
   align-items: center;
   gap: var(--hw-space-8);
   color: var(--hw-text-muted);
-  font-size: 13px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-/* Away is a ring, not a dimmed dot: an outline reads as "not here yet", a faded dot as "off". */
+/* Away is a ring, not a dimmed dot: an outline reads as "not here yet", a faded dot as "off". The
+   dot is the house status dot's size. */
 .presence-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 2px solid var(--hw-text-muted);
+  width: 0.6em;
+  height: 0.6em;
+  flex: none;
+  border-radius: var(--hw-radius-full);
+  box-shadow: inset 0 0 0 var(--hw-focus-w) var(--hw-text-muted);
 }
 
 /* Working is the same still dot as listening: the label and its clock say which, and the house
    allows no loop that is not determinate progress. */
 .presence[data-state="listening"] .presence-dot,
 .presence[data-state="working"] .presence-dot {
-  border-color: var(--hw-accent);
   background: var(--hw-accent);
+  box-shadow: none;
 }
 
 /* Not connected says nothing about the agent, only that this page cannot reach it: a warning,
@@ -483,101 +380,67 @@ body {
 }
 
 .presence[data-state="offline"] .presence-dot {
-  border-color: var(--hw-warning);
+  box-shadow: inset 0 0 0 var(--hw-focus-w) var(--hw-warning);
 }
 
 .presence-since:empty {
   display: none;
 }
 
+/* The notice scrolls with nothing: whatever took the page out of its normal state stays in view
+   above the notes, and the column's own height still holds Send on screen. */
 .notice {
+  position: sticky;
+  top: 0;
+  z-index: var(--hw-z-sticky);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--hw-space-12);
+  gap: var(--hw-space-8) var(--hw-space-12);
   padding: var(--hw-space-12) var(--hw-space-16);
-  border-bottom: 1px solid var(--hw-line);
+  border-bottom: var(--hw-border-w) solid var(--hw-line);
   background: var(--hw-fill);
 }
 
-/* .notice sets display, which outranks the UA's [hidden] rule; without this the hidden notice
-   still paints an empty band at the top of the margin. */
-.notice[hidden] {
-  display: none;
-}
-
 .notice-text {
-  flex: 1;
+  flex: 1 1 12rem;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--hw-text-sm);
   text-wrap: pretty;
 }
 
-.dialog {
-  width: min(380px, calc(100vw - var(--hw-space-24)));
-  padding: var(--hw-space-16);
-  border: 1px solid var(--hw-line);
-  border-radius: var(--radius);
-  background: var(--hw-surface-raised);
-  color: var(--hw-text);
-}
-
-.dialog::backdrop {
-  background: var(--hw-scrim);
-}
-
-.dialog-title {
-  margin: 0;
-  font-size: 16px;
+.dialog-form {
+  display: contents;
 }
 
 .dialog-text {
-  margin: var(--hw-space-8) 0 var(--hw-space-16);
-  color: var(--hw-text-muted);
-  font-size: 13px;
   text-wrap: pretty;
 }
 
-.dialog-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--hw-space-8);
-  justify-content: flex-end;
-}
-
-/* The safe path is the wide one: ending without sending is a deliberate step off it. */
-.dialog-go {
-  width: auto;
-  min-height: 32px;
-  padding: 0 var(--hw-space-16);
-  font-size: 13px;
-}
-
 :focus-visible {
-  outline: 2px solid var(--hw-focus);
-  outline-offset: 2px;
+  outline: var(--hw-focus-w) solid var(--hw-focus);
+  outline-offset: var(--hw-focus-offset);
 }
 
-/* Below 900px the margin becomes a band under the page; the list keeps a two-mark floor. */
-/* The app's own name is the first thing to go when the bar runs out of room. */
-@media (max-width: 699px) {
-  .bar-name {
-    display: none;
-  }
-}
-
-@media (max-width: 899px) {
+/* Below --hw-bp-lg (1024px), where the house rail stops being permanent, the margin becomes a band
+   under the page with a floor of four rows; media queries cannot read a custom property. */
+@media (max-width: 1023px) {
   body {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 44px minmax(0, 1fr) minmax(168px, 34vh);
+    grid-template-rows: auto minmax(0, 1fr) minmax(calc(var(--hw-row-h) * 4), 34vh);
     grid-template-areas:
       "bar"
       "mount"
       "margin";
   }
 
+  .mount {
+    padding: var(--hw-space-8);
+  }
+
   .margin {
     border-left: 0;
-    border-top: 1px solid var(--hw-line);
+    border-top: var(--hw-border-w) solid var(--hw-line);
   }
 
   .margin-status {
@@ -586,6 +449,15 @@ body {
 
   .send {
     padding: var(--hw-space-8) var(--hw-space-16);
+  }
+}
+
+/* Below --hw-bp-sm (600px) the bar takes two lines, the file under review on the first, so a phone
+   reviewer still sees which file this is and no control has to break its label. */
+@media (max-width: 599px) {
+  .bar-tools {
+    flex-basis: 100%;
+    justify-content: space-between;
   }
 }
 

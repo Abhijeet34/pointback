@@ -1,18 +1,42 @@
 {
   "source": "https://github.com/Abhijeet34/halderworks-design",
-  "commit": "df64163afb07178e6aa96e37cc186888fc2df11d",
+  "commit": "fa0c376dfb5e54a58495f93c9b3cd3c3c2c9f70b",
   "files": {
     "brand.tokens.css": {
       "from": "ramps/tokens/pointback.tokens.css",
-      "sha256": "02c3a4fd99e73bf58f17792ff9e6873e4207b4ecae0d220a682fae98a12693ff"
+      "sha256": "3cbef882c63132f4e75e18fd48cc93864122d6ac9c225f0f4e3a344eb480f0cc"
     },
     "roles.css": {
       "from": "ramps/roles.css",
-      "sha256": "76fb7208d8cbc00ac7c5249b9cd0630e3344ef42f5a3d6a7da297d3de8008821"
+      "sha256": "172795239507a9eb43d41e6100c27e7d2c6950a34b7d5e8641399460371b9d4f"
     },
     "scales.css": {
       "from": "ramps/scales.css",
-      "sha256": "8ca639e45ab2be3929bdcee71c3d83a64813bde23438529e0462a27893e00924"
+      "sha256": "298248f8f2f5a0dd8f28b8d2bcf73bafc68a27183af7ae56b9547dee618695ac"
+    },
+    "components.css": {
+      "from": "components/components.css",
+      "sha256": "7870b7a532994e568bde5b51c8ceb59c9a1ff86f31c0ba5eb42b6a53e0afa576"
+    },
+    "fonts/archivo/archivo-latin-wdth-normal.woff2": {
+      "from": "fonts/archivo/archivo-latin-wdth-normal.woff2",
+      "sha256": "e3a28eade21a900c7155a247757f4b2834c07bb7ef07ad7efa55cebaac1e8f5e"
+    },
+    "fonts/archivo/OFL.txt": {
+      "from": "fonts/archivo/OFL.txt",
+      "sha256": "108b4e57c9c796d3d38d0428ca7ee39de47ad93187302718d9b2d8864b9b716b"
+    },
+    "fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2": {
+      "from": "fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2",
+      "sha256": "08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7"
+    },
+    "fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2": {
+      "from": "fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2",
+      "sha256": "01d285447409c8a588692162439a038b8cbd7871309ee20267b0d2d91c6e8e22"
+    },
+    "fonts/ibm-plex-mono/OFL.txt": {
+      "from": "fonts/ibm-plex-mono/OFL.txt",
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
     }
   }
 }

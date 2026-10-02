@@ -86,11 +86,11 @@ const COMMON_HEADERS = {
   "cache-control": "no-store",
 };
 
-/** The chrome page runs only this server's own scripts and styles, and can never be framed. */
+/** The chrome page runs only this server's own scripts, styles and fonts, and can never be framed. */
 export const CHROME_HEADERS = {
   ...COMMON_HEADERS,
   "content-security-policy":
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+    "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; " +
     "connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "x-frame-options": "DENY",
   "cross-origin-opener-policy": "same-origin",

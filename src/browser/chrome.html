@@ -11,35 +11,33 @@
     <link rel="stylesheet" href="/house/brand.tokens.css" />
     <link rel="stylesheet" href="/house/roles.css" />
     <link rel="stylesheet" href="/house/scales.css" />
+    <link rel="stylesheet" href="/house/components.css" />
     <link rel="stylesheet" href="/chrome.css" />
   </head>
   <body>
     <header class="bar">
-      <span class="brand">
-        <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M11 7v4H3M7 7 3 11l4 4" fill="none" stroke-width="2" />
-          <circle class="dot" cx="11" cy="4" r="3" />
-        </svg>
-        <span class="bar-name" id="appName"></span>
+      <span class="bar-id">
+        <span class="brand">
+          <svg class="brand-mark" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M11 7v4H3M7 7 3 11l4 4" fill="none" stroke-width="2" />
+            <circle class="dot" cx="11" cy="4" r="3" />
+          </svg>
+          <span class="bar-name" id="appName"></span>
+        </span>
+        <span class="bar-file" id="fileName"></span>
       </span>
-      <span class="bar-file" id="fileName"></span>
-      <span class="presence" id="presence" data-state="waiting">
-        <span class="presence-dot" aria-hidden="true"></span>
-        <span id="presenceText" role="status"></span>
-        <span class="presence-since" id="presenceSince"></span>
+      <span class="bar-tools">
+        <span class="presence" id="presence" data-state="waiting">
+          <span class="presence-dot" aria-hidden="true"></span>
+          <span id="presenceText" role="status"></span>
+          <span class="presence-since" id="presenceSince"></span>
+        </span>
+        <label class="hw-switch annotate">
+          <input id="annotate" type="checkbox" role="switch" checked aria-keyshortcuts="A" />
+          Annotate
+        </label>
+        <button class="hw-btn" id="end" type="button">End review</button>
       </span>
-      <button
-        class="switch"
-        id="annotate"
-        type="button"
-        role="switch"
-        aria-checked="true"
-        aria-keyshortcuts="A"
-      >
-        <span class="switch-track" aria-hidden="true"></span>
-        Annotate
-      </button>
-      <button class="quiet" id="end" type="button">End review</button>
     </header>
     <main class="mount">
       <iframe
@@ -50,25 +48,34 @@
       ></iframe>
       <!-- The note card lives here, in the chrome, not in the artifact: the reviewer's instruction
            is read from this textarea and never accepted from the page under review. -->
-      <form class="card" id="card" role="dialog" aria-label="Leave a note" hidden>
-        <p class="card-target" id="cardTarget"></p>
-        <textarea id="cardText" placeholder="What should change here?" aria-label="Note"></textarea>
+      <form class="hw-popover card" id="card" role="dialog" aria-label="Leave a note" hidden>
+        <p class="hw-note-locator card-target" id="cardTarget"></p>
+        <textarea
+          class="hw-textarea"
+          id="cardText"
+          placeholder="What should change here?"
+          aria-label="Note"
+        ></textarea>
         <div class="card-row">
-          <button class="quiet" id="cardCancel" type="button">Cancel</button>
-          <button class="send-button" id="cardAdd" type="submit">Add note</button>
+          <button class="hw-btn hw-btn--quiet" id="cardCancel" type="button">Cancel</button>
+          <button class="hw-btn hw-btn--accent" id="cardAdd" type="submit">Add note</button>
         </div>
       </form>
     </main>
     <aside class="margin" aria-label="Notes">
-      <div class="notice" id="notice" role="status" hidden>
-        <p class="notice-text" id="noticeText"></p>
-        <button class="quiet" id="takeOver" type="button" hidden>Take over here</button>
+      <div class="margin-body" id="marginBody">
+        <div class="notice" id="notice" role="status" hidden>
+          <p class="notice-text" id="noticeText"></p>
+          <button class="hw-btn hw-btn--sm" id="takeOver" type="button" hidden>
+            Take over here
+          </button>
+        </div>
+        <p class="margin-status" id="status" role="status"></p>
+        <ol class="marks" id="marks" aria-label="Notes"></ol>
       </div>
-      <p class="margin-status" id="status" role="status"></p>
-      <ol class="marks" id="marks" aria-label="Notes"></ol>
       <form class="send" id="sendForm">
         <button
-          class="send-button"
+          class="hw-btn hw-btn--accent hw-btn--lg send-button"
           id="send"
           type="submit"
           aria-keyshortcuts="Control+Enter Meta+Enter"
@@ -78,16 +85,22 @@
         </button>
       </form>
     </aside>
-    <dialog class="dialog" id="endDialog" aria-labelledby="endTitle">
-      <form method="dialog">
-        <h2 class="dialog-title" id="endTitle">End this review?</h2>
-        <p class="dialog-text" id="endText"></p>
-        <div class="dialog-row">
-          <button class="quiet" value="cancel" type="submit">Cancel</button>
-          <button class="quiet danger" id="endDiscard" value="discard" type="submit" hidden>
+    <dialog class="hw-dialog" id="endDialog" aria-labelledby="endTitle">
+      <form method="dialog" class="dialog-form">
+        <h2 class="hw-subheading" id="endTitle">End this review?</h2>
+        <p class="hw-small dialog-text" id="endText"></p>
+        <div class="hw-dialog-actions">
+          <button class="hw-btn hw-btn--quiet" value="cancel" type="submit">Cancel</button>
+          <button
+            class="hw-btn hw-btn--danger"
+            id="endDiscard"
+            value="discard"
+            type="submit"
+            hidden
+          >
             Discard and end
           </button>
-          <button class="send-button dialog-go" id="endGo" value="end" type="submit">End</button>
+          <button class="hw-btn hw-btn--accent" id="endGo" value="end" type="submit">End</button>
         </div>
       </form>
     </dialog>
