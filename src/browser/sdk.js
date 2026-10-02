@@ -84,7 +84,7 @@
   let activePin = 0;
   let missingSent = "";
 
-  // The parent is pointback's wrapper frame, which relays this to the chrome stamped with whether the
+  // The parent is the review's wrapper frame, which relays this to the chrome stamped with whether the
   // reviewer's own gesture is live. This page's own origin is opaque, but its address is not.
   const { hostname, port } = new URL(location.href);
   const wrapperOrigin = `http://${hostname === "localhost" ? "127.0.0.1" : "localhost"}:${port}`;
