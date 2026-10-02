@@ -205,7 +205,7 @@ It carries seven things.
 - **Unsent notes.** A note is kept by the server the moment the reviewer adds it, so closing the tab, reloading it or restarting the daemon loses nothing, and every tab on the review shows the same list. Send hands every unsent note to the agent as one batch, which is why at most `promptsPerRequest` of them wait at once.
 - **Replies.** The agent's answer to a note lands on that note as it is given, and the status line says when the agent has asked a question or answered every note. Every connect carries the sent notes with their replies, so a tab that was away catches up.
 - **The handover.** Opening the file again while a tab shows the review opens nothing new, and the agent is told the review is already open. A second tab the reviewer opens themselves owns the artifact view; the older one is told the moment it happens and offers to take the review back, rather than finding out at the next save.
-- **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back reloads the review where it was.
+- **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back turns Annotate on again, if the reviewer had wanted it on, and reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
 
 When the stream drops, the tab says it is not connected, in the header and the notice, and turns Send off until it is back.
