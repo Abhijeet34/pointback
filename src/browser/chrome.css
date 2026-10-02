@@ -155,6 +155,29 @@ body {
   background: var(--paper);
 }
 
+/* A frame that strayed from the page under review is covered where the reviewer is looking: the
+   page it went to is not the review's to show, and Back is the one thing to do there. */
+.cover {
+  position: absolute;
+  inset: var(--hw-space-12);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--hw-space-16);
+  padding: var(--hw-space-24);
+  border: var(--hw-border-w) solid var(--hw-line-strong);
+  border-radius: var(--hw-radius-lg);
+  background: var(--hw-surface);
+  text-align: center;
+}
+
+.cover-text {
+  max-width: 32rem;
+  margin: 0;
+  text-wrap: pretty;
+}
+
 /* The note card floats over the artifact at the spot the reviewer pointed at, but it is a chrome
    element: the reviewer types the instruction here, where the page under review cannot forge it.
    It is the house popover plus a boundary, because a shadow alone vanishes on a dark page. */

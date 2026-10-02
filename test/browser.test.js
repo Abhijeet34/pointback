@@ -1784,10 +1784,11 @@ test(
         ),
       ),
     );
+    // The row's own naming cell is not named by its row as well: its words already are the row.
     assert.deepEqual(named, [
-      "Cell · Cutover › Step",
+      "Cell · Step · Cutover",
       "Cell · Cutover › Owner · Sam",
-      "1Cell · Cutover › Step",
+      "1Cell · Step · Cutover",
       "2Cell · Cutover › Owner · Sam",
     ]);
     await page.close();

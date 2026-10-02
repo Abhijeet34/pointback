@@ -10,6 +10,8 @@ const statusLine = document.getElementById("status");
 const notice = document.getElementById("notice");
 const noticeText = document.getElementById("noticeText");
 const takeOverButton = /** @type {HTMLButtonElement} */ (document.getElementById("takeOver"));
+const cover = document.getElementById("cover");
+const coverText = document.getElementById("coverText");
 const backButton = /** @type {HTMLButtonElement} */ (document.getElementById("back"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const annotateSwitch = /** @type {HTMLInputElement} */ (document.getElementById("annotate"));
@@ -331,6 +333,7 @@ function render() {
   if (marksDirty) renderMarks();
   renderPresence();
   renderNotice();
+  renderCover();
   const working = presence.state === "working" && !ended;
   const offline = connection !== "live";
   // Notes the agent's own end left behind stay sendable: they queue for its next check,
@@ -503,7 +506,7 @@ function renderNotice() {
     : ended
       ? [ended.by === "user" ? "You ended this review." : "Your agent ended this review.", false]
       : !current
-        ? ["Another tab took over this review, so this page has stopped updating.", "takeover"]
+        ? ["Another tab took over this review, so this page has stopped updating.", true]
         : connection === "gone"
           ? [
               `This page can no longer reach its review. Run ${appName} on this file again for a fresh page; your notes are kept there.`,
@@ -514,22 +517,26 @@ function renderNotice() {
                 `Not connected. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
                 false,
               ]
-            : strayed
+            : !liveReload
               ? [
-                  `The frame went to a page that is missing or is not ${session.fileName}, so nothing on it can be noted.`,
-                  "back",
+                  "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                  false,
                 ]
-              : !liveReload
-                ? [
-                    "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
-                    false,
-                  ]
-                : [null, false];
+              : [null, false];
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
-  takeOverButton.hidden = action !== "takeover";
-  backButton.hidden = action !== "back";
-  if (action === "back") setText(backButton, `Back to ${session.fileName}`);
+  takeOverButton.hidden = !action;
+}
+
+/** A frame that strayed is covered where the reviewer is looking, with the way back on top. */
+function renderCover() {
+  cover.hidden = !strayed;
+  if (!strayed) return;
+  setText(
+    coverText,
+    `The frame went to a page that is missing or is not ${session.fileName}, so nothing on it can be noted.`,
+  );
+  setText(backButton, `Back to ${session.fileName}`);
 }
 
 function mark(entry, sent, n) {
@@ -882,6 +889,8 @@ window.addEventListener("message", (event) => {
     document.body.dataset.ready = "1";
     announced = true;
     if (strayed) {
+      // Back is about to be hidden under the reviewer, so the focus goes where Back led.
+      if (document.activeElement === backButton) frame.focus();
       strayed = false;
       render();
     }
@@ -941,6 +950,8 @@ frame.addEventListener("load", () => {
   strayed = !announced;
   announced = false;
   render();
+  // The page the focus was in is covered now; Back is the one thing left to press there.
+  if (strayed && document.activeElement === frame) backButton.focus();
 });
 
 backButton.addEventListener("click", show);

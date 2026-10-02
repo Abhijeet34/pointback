@@ -46,6 +46,10 @@
         sandbox="allow-scripts allow-forms allow-popups"
         referrerpolicy="no-referrer"
       ></iframe>
+      <div class="cover" id="cover" hidden>
+        <p class="cover-text" id="coverText" role="status"></p>
+        <button class="hw-btn hw-btn--accent" id="back" type="button"></button>
+      </div>
       <!-- The note card lives here, in the chrome, not in the artifact: the reviewer's instruction
            is read from this textarea and never accepted from the page under review. -->
       <form class="hw-popover card" id="card" role="dialog" aria-label="Leave a note" hidden>
@@ -69,7 +73,6 @@
           <button class="hw-btn hw-btn--sm" id="takeOver" type="button" hidden>
             Take over here
           </button>
-          <button class="hw-btn hw-btn--sm" id="back" type="button" hidden></button>
         </div>
         <p class="margin-status" id="status" role="status"></p>
         <ol class="marks" id="marks" aria-label="Notes"></ol>

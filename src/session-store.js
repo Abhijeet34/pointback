@@ -354,7 +354,7 @@ export class SessionStore {
     const session = this.#sessions.get(key);
     if (!session) return 0;
     if (!existsSync(session.file)) {
-      this.#events.emit(key, { type: "gone" });
+      this.#gone(session);
       return session.revision;
     }
     session.revision += 1;
@@ -500,6 +500,8 @@ export class SessionStore {
   /** Tells every open tab the file is gone, and returns the answer the CLI prints for it. */
   #gone(session) {
     this.#events.emit(session.key, { type: "gone" });
+    // Nothing the page can do waits on the agent any more, so it no longer shows it working.
+    this.#clearWorking(session.key);
     return { status: "gone", file: session.file };
   }
 
