@@ -675,6 +675,24 @@ function validateTarget(raw) {
     if (raw.column !== undefined) cell.column = str(raw, "target", "column", 200);
     return cell;
   }
+  if (raw.type === "control") return { type: "control", name: str(raw, "target", "name", 200) };
+  if (raw.type === "media") {
+    const media = { type: "media" };
+    for (const [field, max] of [
+      ["alt", 200],
+      ["name", 200],
+      ["src", 2000],
+    ]) {
+      if (raw[field] !== undefined) media[field] = str(raw, "target", field, max);
+    }
+    for (const field of ["x", "y", "width", "height"]) {
+      if (raw[field] === undefined) continue;
+      if (!Number.isInteger(raw[field]) || raw[field] < 0)
+        throw new HttpError(400, `target.${field} must be a non-negative integer`);
+      media[field] = raw[field];
+    }
+    return media;
+  }
   throw new HttpError(400, "unknown target.type");
 }
 

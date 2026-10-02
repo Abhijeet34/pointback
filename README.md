@@ -3,7 +3,7 @@
 A reviewer points at something on a rendered HTML page an agent produced, and the pointing comes back to the agent as an instruction.
 
 The agent writes a page, runs `pointback plan.html`, and a browser tab opens with the page inside a small review chrome.
-Annotate is on when the tab opens, and the reviewer points: at an element by clicking it or Tabbing to it, at a passage by selecting the text, at a table cell by landing on it.
+Annotate is on when the tab opens, and the reviewer points: at an element, a button or a field by clicking it or Tabbing to it, at a passage by selecting the text, at a table cell by landing on it, at a spot on a chart by clicking it.
 Each note is a numbered pin on the page and the same number in the margin; pressing either one leads to the other, and a note not yet sent can be edited where it stands.
 The agent runs `pointback poll plan.html` and receives each note as JSON with the element's CSS selector, tag name and visible text, plus the anchor that finds a passage or a cell again after the page has been rewritten.
 Once it has acted on a note, the agent runs `pointback reply plan.html 2 --done`, or `--declined` or `--question` with a `--message`, and the reviewer reads the answer on that note.
@@ -123,7 +123,7 @@ Each note in `prompts` looks like this:
 | `selector` | A CSS selector for the element the reviewer was on                            |
 | `tag`      | That element's tag name, or `text` when the reviewer pointed at a passage     |
 | `text`     | That element's own text, as the markup carries it                             |
-| `target`   | Present only for a passage or a table cell, and described below               |
+| `target`   | Present for a passage, a table cell, a control or a picture, described below  |
 | `answers`  | Present only on the reviewer's answer to a question, naming that note's `uid` |
 
 `prompt` is typed by the reviewer in the review chrome, never sent by the artifact page.
@@ -166,7 +166,7 @@ Every `feedback` batch carries the reply command in `reply_with`, so the loop do
 ## What a note points at
 
 Every note carries `selector`, `tag` and `text`, which name the element the reviewer was looking at.
-Two kinds carry a `target` as well, because the element is not always the thing being pointed at.
+Four kinds carry a `target` as well, because the element's text is not always enough to find or act on it.
 
 `selector` is a position, so it is the part that goes stale: add a section above the one a note is on and `main > h2:nth-of-type(1)` still resolves, to the heading you just wrote.
 `text` is what that element held when the note was written, so check it still matches before you edit there, and find the element by its text when it does not.
@@ -181,17 +181,35 @@ A `target.type` of `table-cell` names the cell by the table's header row and by 
 Both names are the text the markup carries, not the text CSS painted, so a header styled `text-transform: uppercase` is still named `Owner` and still matches the file you are about to edit.
 A table with a `rowspan` or a `colspan` anywhere in it gets neither name: a shifted grid produces a wrong name, and a wrong name is worse than no name.
 
-`structure` is an outline of the page as the reviewer saw it, replaced with every batch: headings, sections, tables, lists, figures and code blocks, each addressed relative to the one above it, nothing that was not rendered, and capped at 2,000 characters.
+A `target.type` of `control` is a link, button, field, select, label or summary, as `{type: "control", name: "Invoice email"}`.
+`name` is what a screen reader would announce: `aria-labelledby`, `aria-label`, the field's `<label>`, the control's own text, then `alt`, `placeholder` or `title`.
+A field has no text of its own, so without the name a note on one arrived as `input` and an empty string.
+In Annotate mode a click on a control notes it and goes no further: the page's own click, press and release handlers never see it, a link does not navigate, a field takes no caret and a select does not open.
+Turning Annotate off hands every control back to the page.
+
+A `target.type` of `media` is an `img`, `svg`, `canvas` or `video`, as `{type: "media", alt: "Weekly trend", src: "trend.svg", x: 50, y: 20, width: 200, height: 80}`.
+An image carries its `alt` and its `src` as the markup wrote them; any other picture carries its accessible `name` when it has one.
+A click adds `x` and `y`, the point in CSS pixels from the picture's top left, beside the `width` and `height` it was drawn at, so a point on a chart scales to its `viewBox` or its data; a picture reached by keyboard has no point.
+A click on a bar or a label inside an `svg` notes the whole `svg`, because an inner `<text>` element would otherwise arrive with the tag `text`, which already means a passage.
+
+`structure` is an outline of the page as the reviewer saw it: headings, sections, tables, lists, figures and code blocks, each addressed relative to the one above it, nothing that was not rendered, and capped at 2,000 characters.
 On `test/fixtures/plan.html` it is 413 bytes, where the shape it replaces (every element to a depth of six with 80 characters of its text) is 2,470 bytes on the same page and also carries the contents of a `hidden` container the reviewer never saw.
-That outline lands in an agent's context window on every delivery.
-It is bounded on purpose.
+That outline lands in an agent's context window, so it is bounded on purpose, and it comes only when the agent does not already have it.
+`pointback poll` sends it with a session's first batch and again only when it differs from the last one it delivered, and the long `next_step` that explains every field likewise comes once per session; later batches carry a one-line `next_step`.
+The poll cursor in the state directory records what was delivered, so a batch whose response was lost is redelivered whole.
+Measured by `test/cli.test.js` on three one-note batches: 1,624 bytes for the first, 445 for a second at the same outline, 569 for a third whose outline changed.
 
 ## By keyboard
 
-Annotate mode gives every element that carries text of its own a Tab stop, so the product's central act needs no mouse.
-Tab to an element, press Enter or Space to open the card, type, and press Enter to add the note; Escape closes the card and returns focus to the element you came from.
-Hold Shift and press an arrow key to grow a real selection a word at a time inside the focused element, then Enter to note that passage rather than the whole element.
-`test/browser.test.js` walks it: five Shift+ArrowRight on the first paragraph, Enter, type, Enter, then eight Tab stops to the owner of the first step and Enter again, with no mouse event anywhere in between.
+Annotate mode gives each block of content a Tab stop, so the product's central act needs no mouse: a heading, a paragraph, a list item, a table cell, a code block, a picture.
+An inline run such as a bold phrase or a link rides with its block, a container of other blocks is not a stop, and the page's own links and controls keep the stops they already had.
+The first version gave every element with text of its own a stop, which put 1,794 on an 81 KB report rendered from Markdown; the same report now has 1,012, plus its 91 links, against 1,243 blocks.
+Tab to a block, press Enter or Space to open the card, type, and press Enter to add the note; Escape closes the card and returns focus to the block you came from.
+Enter on a focused link or control notes it, as a click does.
+Hold Shift and press an arrow key to grow a real selection a word at a time inside the focused block, then Enter to note that passage rather than the whole block.
+H moves to the next heading and Shift+H to the one before, A turns Annotate off and on, and Ctrl+Enter (⌘Enter on a Mac) adds the note being written and sends; the help line in the margin lists them.
+None of them fires in a field the reviewer is typing in, or on a key the page under review has already handled.
+`test/browser.test.js` walks it: five Shift+ArrowRight on the first paragraph, Enter, type, Enter, then five Tab stops to the owner of the first step and Enter again, with no mouse event anywhere in between, and a second case walks every stop of the plan, jumps by heading and sends by key.
 The pins are buttons after the page's own content, each named by its number and state, such as "Note 2, sent"; Enter on one moves focus to its note in the margin, and Enter on a margin note's number scrolls the page to its target and rings its pin.
 
 ## While the review is open

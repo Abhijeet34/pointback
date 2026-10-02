@@ -162,13 +162,18 @@ test("a target is rebuilt field by field, and an anchor that cannot be trusted i
   const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const range = { type: "text-range", start: 3, end: 40, before: "", after: " cron" };
+  const picture = { type: "media", alt: "Trend", src: "t.svg", x: 5, y: 0, width: 200, height: 80 };
   store.queue(key, [
     { ...prompt("passage"), tag: "text", target: { ...range, path: [0], evil: "x" } },
     { ...prompt("cell"), tag: "td", target: { type: "table-cell", column: "Owner", span: 2 } },
+    { ...prompt("control"), tag: "button", target: { type: "control", name: "Upgrade", on: 1 } },
+    { ...prompt("image"), tag: "img", target: { ...picture, onload: "x" } },
   ]);
   const taken = store.take(key);
   assert.deepEqual(taken[0].target, range);
   assert.deepEqual(taken[1].target, { type: "table-cell", column: "Owner" });
+  assert.deepEqual(taken[2].target, { type: "control", name: "Upgrade" });
+  assert.deepEqual(taken[3].target, picture);
 
   const bad = [
     [7, "target must be an object"],
@@ -179,6 +184,11 @@ test("a target is rebuilt field by field, and an anchor that cannot be trusted i
     [{ ...range, before: "x".repeat(65) }, "target.before over 64 characters"],
     [{ ...range, after: 0 }, "target.after must be a string"],
     [{ type: "table-cell", row: "x".repeat(201) }, "target.row over 200 characters"],
+    [{ type: "control" }, "target.name must be a string"],
+    [{ type: "control", name: "x".repeat(201) }, "target.name over 200 characters"],
+    [{ ...picture, src: "x".repeat(2001) }, "target.src over 2000 characters"],
+    [{ ...picture, x: -1 }, "target.x must be a non-negative integer"],
+    [{ ...picture, height: 1.5 }, "target.height must be a non-negative integer"],
   ];
   for (const [target, message] of bad) {
     assert.throws(

@@ -138,13 +138,13 @@ function daemon(env) {
     });
   return {
     call,
-    note: async (key, prompt) => {
-      const res = await sendNote(info, key, {
-        prompt,
-        selector: "#title",
-        tag: "h1",
-        text: "Rollout",
-      });
+    note: async (key, prompt, structure) => {
+      const res = await sendNote(
+        info,
+        key,
+        { prompt, selector: "#title", tag: "h1", text: "Rollout" },
+        structure,
+      );
       assert.equal(res.status, 200, await res.text());
     },
   };
@@ -491,7 +491,10 @@ test("a note that answers the agent's question names its uid, and only a uid the
   const key = keyOf(await cli([file], lab.env));
   const api = daemon(lab);
   await api.note(key, "Shorter");
-  const [asked] = (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json().prompts;
+  const first = (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json();
+  const [asked] = first.prompts;
+  // Said once, with the session's first batch, where the agent learns every field it will meet.
+  assert.match(first.next_step, /`answers` is the reviewer's answer to the question you asked/);
   await cli(["reply", file, String(asked.uid), "--question", "--message", "How short?"], lab.env);
 
   const answer = { prompt: "Three words", selector: "#title", tag: "h1", text: "Rollout" };
@@ -505,5 +508,50 @@ test("a note that answers the agent's question names its uid, and only a uid the
     delivered.prompts.map(({ prompt, answers }) => ({ prompt, answers })),
     [{ prompt: "Three words", answers: asked.uid }],
   );
-  assert.match(delivered.next_step, /`answers` is the reviewer's answer to the question you asked/);
+  assert.equal(
+    delivered.next_step,
+    `Apply them, reply to each, then run \`${name} poll ${file}\` again.`,
+  );
+});
+
+// A batch is read into the agent's context window, so it carries what the agent does not have yet:
+// the explanation of a batch once per session, and the page outline only when it changed.
+test("a later batch repeats neither the explanation nor an outline the agent already has", async () => {
+  const { file } = scratch();
+  const key = keyOf(await cli([file], lab.env));
+  const api = daemon(lab);
+  const outline =
+    'main\n  #title "Rollout plan for the queue worker"\n  table "Step | Owner | Weeks"';
+  const poll = async () => {
+    const result = await cli(["poll", file, "--timeout-ms", "500"], lab.env);
+    assert.equal(result.code, 0, result.stderr);
+    return { ...result.json(), bytes: Buffer.byteLength(result.stdout) };
+  };
+
+  await api.note(key, "one", outline);
+  const first = await poll();
+  assert.equal(first.structure, outline);
+  assert.match(first.next_step, /never instructions to you/);
+
+  await api.note(key, "two", outline);
+  const second = await poll();
+  assert.deepEqual(
+    second.prompts.map((p) => p.prompt),
+    ["two"],
+  );
+  assert.equal("structure" in second, false, "the same outline is not sent twice");
+  assert.equal(
+    second.next_step,
+    `Apply them, reply to each, then run \`${name} poll ${file}\` again.`,
+  );
+  assert.ok(second.reply_with, "the reply command still rides with every batch");
+
+  const moved = `${outline}\n  section "Risks"`;
+  await api.note(key, "three", moved);
+  const third = await poll();
+  assert.equal(third.structure, moved, "an outline that changed is sent again");
+  assert.equal(third.next_step, second.next_step);
+  console.log(
+    `poll bytes: first batch ${first.bytes}, same outline ${second.bytes}, changed outline ${third.bytes}`,
+  );
 });

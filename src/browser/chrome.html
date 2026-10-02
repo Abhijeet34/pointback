@@ -28,7 +28,14 @@
         <span id="presenceText" role="status"></span>
         <span class="presence-since" id="presenceSince"></span>
       </span>
-      <button class="switch" id="annotate" type="button" role="switch" aria-checked="true">
+      <button
+        class="switch"
+        id="annotate"
+        type="button"
+        role="switch"
+        aria-checked="true"
+        aria-keyshortcuts="A"
+      >
         <span class="switch-track" aria-hidden="true"></span>
         Annotate
       </button>
@@ -60,7 +67,15 @@
       <p class="margin-status" id="status" role="status"></p>
       <ol class="marks" id="marks" aria-label="Notes"></ol>
       <form class="send" id="sendForm">
-        <button class="send-button" id="send" type="submit" disabled>Send to agent</button>
+        <button
+          class="send-button"
+          id="send"
+          type="submit"
+          aria-keyshortcuts="Control+Enter Meta+Enter"
+          disabled
+        >
+          Send to agent
+        </button>
       </form>
     </aside>
     <dialog class="dialog" id="endDialog" aria-labelledby="endTitle">

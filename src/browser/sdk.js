@@ -12,7 +12,9 @@
     "TITLE",
     "NOSCRIPT",
   ]);
-  const INTERACTIVE = "a[href], button, input, select, textarea, label, summary, [contenteditable]";
+  // While Annotate is on a control is noted, never activated; Annotate off hands it back to the page.
+  const CONTROL = "a[href], button, input, select, textarea, label, summary, [contenteditable]";
+  const MEDIA = /^(IMG|SVG|CANVAS|VIDEO)$/;
   const STRUCTURE =
     "h1, h2, h3, h4, h5, h6, main, nav, aside, header, footer, section, article, form, dialog, table, figure, ul, ol, dl, pre, blockquote, img, svg, video, canvas, details";
   const MAX_FOCUSABLE = 2000;
@@ -175,12 +177,45 @@
   function candidate(node) {
     let element = node instanceof Element ? node : node?.parentElement;
     if (!element || host.contains(element) || pinHost.contains(element)) return null;
-    if (element.closest(INTERACTIVE)) return null;
+    // A chart's bars and labels are one picture, so a note goes on its outermost svg, with the point.
+    while (element.ownerSVGElement) element = element.ownerSVGElement;
+    element = element.closest(CONTROL) ?? element;
     while (element && SKIP.has(tagName(element))) element = element.parentElement;
     return element;
   }
 
-  // Elements that carry content of their own become Tab stops, so a keyboard reaches every note-worthy spot.
+  const isControl = (element) => element.matches(CONTROL);
+  // A field the reviewer types into keeps its keys: no shortcut fires there, and Space stays a space.
+  const typing = (element) =>
+    element instanceof HTMLElement &&
+    (element.isContentEditable ||
+      element.tagName === "TEXTAREA" ||
+      element.tagName === "SELECT" ||
+      (element instanceof HTMLInputElement &&
+        !/^(button|submit|reset|checkbox|radio|image|file|color|range)$/.test(element.type)));
+
+  const flows = (display) => display.startsWith("inline") || display === "contents";
+
+  // A block that holds a line of content: text of its own, or an inline run such as a bold phrase.
+  // Containers of other blocks are not stops, so a list is its items and a table its cells, and
+  // neither is a run of links, controls or pictures, each of which is a stop of its own already.
+  function holdsLine(element) {
+    const display = getComputedStyle(element).display;
+    if (display === "none" || flows(display)) return false;
+    return [...element.childNodes].some((node) =>
+      node instanceof Text
+        ? node.data.trim() !== ""
+        : node instanceof Element &&
+          !SKIP.has(tagName(node)) &&
+          !isControl(node) &&
+          !MEDIA.test(tagName(node)) &&
+          flows(getComputedStyle(node).display) &&
+          node.textContent.trim() !== "",
+    );
+  }
+
+  // One Tab stop per block of content and per picture, never per inline run: a stop for every
+  // element with text of its own put 1,794 stops on an 83 KB report. H and Shift+H jump headings.
   function setAnnotate(on) {
     annotate = on;
     for (const element of focusable) element.removeAttribute("tabindex");
@@ -192,13 +227,15 @@
     }
     for (const element of document.body.querySelectorAll("*")) {
       if (focusable.length >= MAX_FOCUSABLE) break;
-      if (SKIP.has(tagName(element)) || host.contains(element) || element.closest(INTERACTIVE))
-        continue;
-      if (element.hasAttribute("tabindex")) continue;
       if (
-        ownText(element) ||
-        /^(IMG|SVG|TABLE|TR|PRE|FIGURE|VIDEO|CANVAS)$/.test(tagName(element))
-      ) {
+        SKIP.has(tagName(element)) ||
+        host.contains(element) ||
+        (element instanceof SVGElement && element.ownerSVGElement) ||
+        element.closest(CONTROL) ||
+        element.hasAttribute("tabindex")
+      )
+        continue;
+      if (MEDIA.test(tagName(element)) || holdsLine(element)) {
         element.setAttribute("tabindex", "0");
         focusable.push(element);
       }
@@ -288,12 +325,58 @@
     return target;
   }
 
-  function elementHit(element) {
+  /** The name a screen reader announces, by the common rules, so an input with no text still has one. */
+  function accessibleName(element) {
+    const labelledBy = (element.getAttribute("aria-labelledby") ?? "")
+      .split(/\s+/)
+      .map((id) => id && document.getElementById(id))
+      .filter(Boolean);
+    const field = /^(INPUT|SELECT|TEXTAREA)$/.test(element.tagName);
+    const name =
+      labelledBy.map(visibleText).join(" ") ||
+      element.getAttribute("aria-label") ||
+      [...(element.labels ?? [])].map(visibleText).join(" ") ||
+      (field && /^(submit|button|reset)$/.test(element.type) ? element.value : "") ||
+      (field ? "" : visibleText(element)) ||
+      element.getAttribute("alt") ||
+      element.getAttribute("placeholder") ||
+      element.getAttribute("title") ||
+      "";
+    return clip(squash(name).trim(), 200);
+  }
+
+  // A picture's note says which picture and, from a click, where on it: an offset in CSS pixels
+  // beside the size it was drawn at, so a point on a chart scales to its viewBox or its data.
+  function mediaTarget(element, point) {
+    if (!MEDIA.test(tagName(element))) return null;
+    const target = { type: "media" };
+    if (tagName(element) === "IMG") {
+      if (element.hasAttribute("alt")) target.alt = clip(element.alt, 200);
+    } else {
+      const name = accessibleName(element);
+      if (name) target.name = name;
+    }
+    const src = element.getAttribute("src");
+    if (src) target.src = clip(src, 2000);
+    if (point) {
+      const r = element.getBoundingClientRect();
+      target.x = Math.max(0, Math.round(point.x - r.left));
+      target.y = Math.max(0, Math.round(point.y - r.top));
+      target.width = Math.round(r.width);
+      target.height = Math.round(r.height);
+    }
+    return target;
+  }
+
+  function elementHit(element, point) {
     return {
       element,
       tag: element.tagName.toLowerCase(),
       text: visibleText(element),
-      target: cellTarget(element),
+      target:
+        cellTarget(element) ??
+        (isControl(element) ? { type: "control", name: accessibleName(element) } : null) ??
+        mediaTarget(element, point),
       rects: [element.getBoundingClientRect()],
     };
   }
@@ -311,7 +394,7 @@
     if (range.collapsed) return null;
     const container = range.commonAncestorContainer;
     let element = container instanceof Element ? container : container.parentElement;
-    if (!element || host.contains(element) || element.closest(INTERACTIVE)) return null;
+    if (!element || host.contains(element) || element.closest(CONTROL)) return null;
     if (SKIP.has(tagName(element))) element = document.body;
     const whole = element.textContent;
     let start = offsetWithin(element, range.startContainer, range.startOffset);
@@ -358,7 +441,10 @@
   function label(hit) {
     const cell = hit.target?.type === "table-cell" ? hit.target : {};
     const where = [cell.row, cell.column].filter(Boolean).join(" › ");
-    const text = hit.tag === "text" ? `“${hit.text}”` : hit.text;
+    const text =
+      hit.tag === "text"
+        ? `“${hit.text}”`
+        : hit.target?.name || hit.text || hit.target?.alt || hit.target?.src || "";
     return `${hit.tag} · ${text}${where ? ` · ${where}` : ""}`;
   }
 
@@ -658,20 +744,22 @@
   document.fonts?.ready.then(replace);
   whenLoaded(replace);
 
-  document.addEventListener(
+  // Every listener below is on the window in the capture phase, ahead of any the page adds to an
+  // element or the document, so in Annotate mode a click notes a control and the page never sees it.
+  window.addEventListener(
     "click",
     (event) => {
       if (!annotate || ours(event)) return;
       const element = candidate(event.target);
       if (!element) return;
       event.preventDefault();
-      event.stopPropagation();
+      event.stopImmediatePropagation();
       // The click that ends a text drag arrives after the card has opened for the passage.
-      if (!open) selectTarget(elementHit(element));
+      if (!open) selectTarget(elementHit(element, { x: event.clientX, y: event.clientY }));
     },
     true,
   );
-  document.addEventListener(
+  window.addEventListener(
     "mouseup",
     () => {
       if (!annotate || open) return;
@@ -681,21 +769,77 @@
     },
     true,
   );
-  document.addEventListener("keydown", (event) => {
-    if (!annotate || open || ours(event)) return;
-    const element = candidate(document.activeElement);
-    if (!element || element === document.body) return;
-    if (event.shiftKey && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
+  // A press on a control would focus it, open it or start a drag, and the page may act on the
+  // press itself; in Annotate mode the press belongs to the note, so none of that happens.
+  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "dblclick", "auxclick"]) {
+    window.addEventListener(
+      type,
+      (event) => {
+        if (!annotate || ours(event)) return;
+        const element = candidate(event.target);
+        if (!element || !isControl(element)) return;
+        event.stopImmediatePropagation();
+        if (type !== "mousedown") return;
+        event.preventDefault();
+        // Cancelling the press also keeps focus from entering this frame, and the chrome hears a
+        // target only while the frame holds the reviewer's focus, so the frame takes it itself.
+        window.focus();
+      },
+      true,
+    );
+  }
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (!annotate || open || ours(event) || event.ctrlKey || event.metaKey || event.altKey)
+        return;
+      const element = candidate(document.activeElement);
+      if (!element || element === document.body) return;
+      const control = isControl(element);
+      if (!control && event.shiftKey && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
+        extendPassage(element, event.key === "ArrowRight" ? "forward" : "backward");
+      } else if (event.key === "Enter" || (event.key === " " && !typing(element))) {
+        selectTarget((!control && currentPassage(element)) || elementHit(element));
+      } else {
+        if (event.key === "Escape" && !control) {
+          if (getSelection().rangeCount > 0) getSelection().collapseToStart();
+          outline(element);
+        }
+        return;
+      }
       event.preventDefault();
-      extendPassage(element, event.key === "ArrowRight" ? "forward" : "backward");
-    } else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      selectTarget(currentPassage(element) ?? elementHit(element));
-    } else if (event.key === "Escape") {
-      getSelection().collapseToStart();
-      outline(element);
-    }
+      event.stopImmediatePropagation();
+    },
+    true,
+  );
+  // The review's own keys, listed in the chrome's help line. They bubble, so a key the page has
+  // already handled is left alone, and none fires in a field the reviewer is typing in. A and the
+  // send key are the chrome's to act on, which it does only under the reviewer's own key press.
+  window.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.isComposing || event.altKey || typing(event.target)) return;
+    const command = event.metaKey || event.ctrlKey;
+    if (command && event.key === "Enter") send({ type: "key", action: "send" });
+    else if (command) return;
+    else if (event.key === "a") send({ type: "key", action: "annotate" });
+    else if (event.key.toLowerCase() === "h" && annotate && !open)
+      jumpHeading(event.shiftKey ? -1 : 1);
+    else return;
+    event.preventDefault();
   });
+
+  /** Moves focus to the next heading after the focused element, or the one before it. */
+  function jumpHeading(direction) {
+    const from = document.activeElement ?? document.body;
+    const headings = focusable.filter((e) => /^H[1-6]$/.test(tagName(e)) && e.checkVisibility());
+    const ahead = (h) =>
+      !h.contains(from) &&
+      Boolean(from.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const to =
+      direction > 0
+        ? headings.find(ahead)
+        : headings.findLast((h) => h !== from && !h.contains(from) && !ahead(h));
+    to?.focus();
+  }
   document.addEventListener("mouseover", (event) => {
     if (annotate && !open) outline(candidate(event.target));
   });

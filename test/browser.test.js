@@ -136,13 +136,13 @@ test(
       await page.eval("document.getElementById('annotate').getAttribute('aria-checked')"),
       "true",
     );
-    assert.equal(
+    assert.match(
       await page.eval(help),
-      "Click or select anything on the page to note it, or Tab to it and press Enter.",
+      /^Click or select anything on the page to note it, or Tab to it and press Enter\. H jumps to the next heading, A turns Annotate off, (⌘|Ctrl\+)Enter sends\.$/,
     );
     await page.eval("document.getElementById('annotate').click()");
     await page.waitFor("document.body.dataset.annotate === '0'");
-    assert.equal(await page.eval(help), "Turn on Annotate to point at the page.");
+    assert.equal(await page.eval(help), "Turn on Annotate, or press A, to point at the page.");
 
     // The reference's own text-range row was recorded NOT EXERCISED because a synthetic drag
     // might not select anything. With annotate off nothing of ours can touch the selection,
@@ -205,10 +205,10 @@ test(
     await page.enter();
     await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 3");
 
-    // Eight more stops reach the owner of the first step: table, header row, its three
-    // cells, the first body row, and its first two cells.
+    // Five more stops reach the owner of the first step: the three header cells, then the first
+    // body row's first two. A table is its cells; neither it nor a row is a stop of its own.
     await artifact.waitFor("document.activeElement && document.activeElement.id === 'p1'");
-    for (let stop = 0; stop < 8; stop += 1) await page.tab();
+    for (let stop = 0; stop < 5; stop += 1) await page.tab();
     await page.enter();
     await page.waitFor(
       "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
@@ -694,6 +694,13 @@ test(
       { hidden: true, focus: "annotate", typed: "" },
       "with Annotate on and no gesture, neither a proposed target nor a claimed pin press moves anything",
     );
+    assert.deepEqual(
+      await page.eval(
+        "[document.getElementById('annotate').getAttribute('aria-checked'), document.querySelectorAll('.mark.sent').length]",
+      ),
+      ["true", 0],
+      "a claimed Annotate or send key without a gesture neither turns Annotate off nor sends the note",
+    );
 
     // Not vacuous: the reviewer's own click in the page is a gesture, and the card opens for it.
     await artifact.eval("globalThis.quiet = true");
@@ -1109,7 +1116,7 @@ async function pointAt(page, artifact, selector) {
 }
 
 /** A real click on an element of the artifact, in from its left edge, after scrolling it into view. */
-async function clickIn(page, artifact, selector) {
+async function clickIn(page, artifact, selector, at) {
   const frameBox = JSON.parse(
     await page.eval("JSON.stringify(document.getElementById('artifact').getBoundingClientRect())"),
   );
@@ -1121,8 +1128,8 @@ async function clickIn(page, artifact, selector) {
     })()`),
   );
   const point = {
-    x: frameBox.left + box.left + Math.min(30, box.width / 2),
-    y: frameBox.top + box.top + box.height / 2,
+    x: frameBox.left + box.left + (at?.x ?? Math.min(30, box.width / 2)),
+    y: frameBox.top + box.top + (at?.y ?? box.height / 2),
   };
   await page.pointerInto(artifact, point);
   await page.click(point.x, point.y);
@@ -1908,6 +1915,276 @@ globalThis.forge = () => {
     assert.deepEqual(
       polled.prompts.map((p) => p.prompt),
       [secrets.edited],
+    );
+    await page.close();
+  },
+);
+
+test(
+  "in Annotate mode a control is noted, never pressed, and a picture's note says which and where",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const file = join(dirname(fixture), "dashboard.html");
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    const outcome =
+      "JSON.stringify([document.getElementById('outcome').textContent, document.getElementById('outcome').dataset.ran ?? '', location.hash])";
+    const noted = [];
+    const note = async (selector, text, at) => {
+      await clickIn(page, artifact, selector, at);
+      await page.waitFor(
+        "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+      );
+      noted.push(await page.eval("document.getElementById('cardTarget').textContent"));
+      await page.type(text);
+      await page.enter();
+      await page.waitFor(
+        `document.querySelectorAll('.mark:not(.sent)').length === ${noted.length}`,
+      );
+    };
+    await note("#upgrade", "Say what the upgrade costs");
+    await note("#email", "Default this to the account owner");
+    await note("a[href='#terms']", "Link the terms from the button instead");
+    await note("#plan", "Show the price beside each plan");
+    // A bar of the chart, inside the svg, and a point on the image and the canvas.
+    await note("#chart rect:nth-of-type(4)", "Explain the spike", { x: 20, y: 80 });
+    await note("img", "Make this trend larger", { x: 50, y: 20 });
+    await note("#heat", "Label the heat map", { x: 150, y: 30 });
+    assert.deepEqual(noted, [
+      "button · Upgrade plan",
+      "input · Invoice email",
+      "a · terms of service",
+      "select · Plan",
+      "svg · Requests per day",
+      "img · Weekly trend",
+      "canvas · ",
+    ]);
+    assert.deepEqual(
+      JSON.parse(await artifact.eval(outcome)),
+      ["No change made.", "", ""],
+      "no click reached the page's own handlers, and the link did not navigate",
+    );
+
+    await page.eval("document.getElementById('send').click()");
+    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    const byTag = Object.fromEntries(polled.prompts.map((p) => [p.tag, p]));
+    assert.deepEqual(
+      polled.prompts.map((p) => p.tag),
+      ["button", "input", "a", "select", "svg", "img", "canvas"],
+    );
+    assert.equal(byTag.button.text, "Upgrade plan");
+    assert.deepEqual(byTag.button.target, { type: "control", name: "Upgrade plan" });
+    assert.deepEqual(byTag.input.target, { type: "control", name: "Invoice email" });
+    assert.deepEqual(byTag.a.target, { type: "control", name: "terms of service" });
+    assert.deepEqual(byTag.select.target, { type: "control", name: "Plan" });
+    // The offsets are CSS pixels from the picture's top left, beside the size it was drawn at.
+    const near = (target, x, y) =>
+      Math.abs(target.x - x) <= 1 && Math.abs(target.y - y) <= 1 ? { ...target, x, y } : target;
+    const chart = JSON.parse(
+      await artifact.eval(
+        "JSON.stringify(document.querySelector('#chart rect:nth-of-type(4)').getBoundingClientRect().left - document.getElementById('chart').getBoundingClientRect().left)",
+      ),
+    );
+    assert.deepEqual(near(byTag.svg.target, chart + 20, 100), {
+      type: "media",
+      name: "Requests per day",
+      x: chart + 20,
+      y: 100,
+      width: 640,
+      height: 160,
+    });
+    assert.deepEqual(near(byTag.img.target, 50, 20), {
+      type: "media",
+      alt: "Weekly trend",
+      src: "trend.svg",
+      x: 50,
+      y: 20,
+      width: 200,
+      height: 80,
+    });
+    assert.deepEqual(near(byTag.canvas.target, 150, 30), {
+      type: "media",
+      x: 150,
+      y: 30,
+      width: 300,
+      height: 60,
+    });
+    assert.deepEqual(
+      await page.eval(
+        "[...document.querySelectorAll('.mark .mark-text')].map((e) => e.textContent)",
+      ),
+      [
+        "Upgrade plan",
+        "Invoice email",
+        "terms of service",
+        "Plan",
+        "Requests per day",
+        "Weekly trend",
+        "",
+      ],
+      "the margin names a control or a picture the way the card did",
+    );
+
+    // Annotate off hands every control back to the page.
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    await clickIn(page, artifact, "#upgrade");
+    await artifact.waitFor("document.getElementById('outcome').textContent === 'Plan upgraded.'");
+    assert.deepEqual(JSON.parse(await artifact.eval(outcome)), [
+      "Plan upgraded.",
+      "element document ",
+      "",
+    ]);
+    // A field is the page's again, and a key typed in it is the field's, never a review key.
+    await clickIn(page, artifact, "#email");
+    await artifact.waitFor("document.activeElement.id === 'email'");
+    await artifact.eval("document.getElementById('email').setSelectionRange(99, 99)");
+    await page.key("a", { code: "KeyA", keyCode: 65, text: "a" });
+    await artifact.waitFor("document.getElementById('email').value === 'ops@example.coma'");
+    assert.equal(await page.eval("document.body.dataset.annotate"), "0");
+    await page.close();
+  },
+);
+
+test(
+  "the keyboard reaches each block of content once, jumps by heading, and owns A and the send key",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // A copy of its own, so no note another test left on the plan reaches these polls.
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-keys-"));
+    const plan = join(dir, "plan.html");
+    copyFileSync(fixture, plan);
+    copyFileSync(join(dirname(fixture), "plan.css"), join(dir, "plan.css"));
+    // A document the size of an agent's report: no inline run is a stop, so there are no more
+    // stops than blocks. The old rule gave every element with text of its own one.
+    const long = join(dir, "long.html");
+    const section = (n) =>
+      `<h2>Finding ${n}</h2><p>The <strong>${n}th</strong> check reads <code>src/${n}.js</code> and <a href="#f${n}">links here</a>, then <em>stops</em>.</p>` +
+      `<ul><li>First <code>a</code></li><li>Second <b>b</b></li></ul>` +
+      `<table><tr><th>Name</th><th>Value</th></tr><tr><td><code>k${n}</code></td><td>${n}</td></tr></table>`;
+    writeFileSync(
+      long,
+      `<!doctype html><title>Long</title><body><h1>Report</h1>${Array.from({ length: 60 }, (_, n) => section(n)).join("")}</body>`,
+    );
+    const longReview = await openReview((await cli([long], lab.env)).json().session.url);
+    const counts = JSON.parse(
+      await longReview.artifact.eval(`(() => {
+        const all = [...document.body.querySelectorAll("*")];
+        const stops = all.filter((e) => e.getAttribute("tabindex") === "0");
+        const blocks = all.filter((e) => !/^(inline|contents|none)/.test(getComputedStyle(e).display));
+        return JSON.stringify({
+          stops: stops.length,
+          blocks: blocks.length,
+          inline: stops.filter((e) => getComputedStyle(e).display.startsWith("inline")).length,
+        });
+      })()`),
+    );
+    console.log(`long document: ${counts.stops} Tab stops against ${counts.blocks} blocks`);
+    assert.equal(counts.inline, 0, "no inline run is a stop of its own");
+    assert.ok(counts.stops <= counts.blocks, `${counts.stops} stops over ${counts.blocks} blocks`);
+    await longReview.page.close();
+
+    const session = (await cli([plan], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    // Into the page the way a reviewer starts: point at the title, then Escape back onto it.
+    await pointAt(page, artifact, "#title");
+    await page.key("Escape", { keyCode: 27 });
+    await artifact.waitFor("document.activeElement.id === 'title'");
+    const focused = `(() => {
+      const e = document.activeElement;
+      return e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + " " + e.textContent.trim().replace(/\\s+/g, " ").slice(0, 12).trim();
+    })()`;
+    // Tabbing on past the last stop would leave the page for the browser's own UI, so the walk
+    // takes exactly as many steps as the page has stops after the title, counted from the page.
+    const stops = Number(
+      await artifact.eval(
+        "[...document.body.querySelectorAll('*')].filter((e) => e.tabIndex >= 0 && e.checkVisibility() && (e.hasAttribute('tabindex') || e.matches('a[href], button, input, select, textarea, summary'))).length",
+      ),
+    );
+    const walk = [];
+    for (let stop = 1; stop < stops; stop += 1) {
+      await page.tab();
+      walk.push(await artifact.eval(focused));
+    }
+    assert.deepEqual(walk, [
+      "p#p1 Move the que",
+      "th Step",
+      "th Owner",
+      "th Weeks",
+      "td Shadow traff",
+      "td Priya",
+      "td 2",
+      "td Cutover",
+      "td Sam",
+      "td 1",
+      "td Decommission",
+      "td Priya",
+      "td 1",
+      "h2 Risks",
+      "p Duplicate de",
+      "li Duplicate de",
+      "li Queue depth",
+      "li A cron entry",
+      "h2 Rollback",
+      "h3 Trigger",
+      "p Two consecut",
+      "h3 Command",
+      "pre deploy rollb",
+      "blockquote The cron ent",
+      "svg ",
+      "figcaption Queue depth",
+      "button#native A native but",
+    ]);
+
+    // H and Shift+H move by heading from wherever the reviewer is: here the walk's last stop.
+    const h = (shift) =>
+      page.key(shift ? "H" : "h", {
+        code: "KeyH",
+        keyCode: 72,
+        text: shift ? "H" : "h",
+        modifiers: shift ? 8 : 0,
+      });
+    const headings = [];
+    for (const shift of [true, true, true, false]) {
+      await h(shift);
+      headings.push(await artifact.eval("document.activeElement.textContent"));
+    }
+    assert.deepEqual(headings, ["Command", "Trigger", "Rollback", "Trigger"]);
+
+    // A turns Annotate off from inside the page, and on again.
+    const a = () => page.key("a", { code: "KeyA", keyCode: 65, text: "a" });
+    await a();
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    assert.equal(
+      await page.eval("document.getElementById('annotate').getAttribute('aria-checked')"),
+      "false",
+    );
+    await a();
+    await page.waitFor("document.body.dataset.annotate === '1'");
+
+    // The send key adds the note being written and sends it, from the card.
+    const ctrlEnter = () => page.key("Enter", { keyCode: 13, modifiers: 2 });
+    let polling = cli(["poll", plan, "--timeout-ms", "10000"], lab.env);
+    await pointAt(page, artifact, "#risks h2");
+    await page.type("Rank the risks");
+    await ctrlEnter();
+    let polled = (await polling).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => [p.prompt, p.tag]),
+      [["Rank the risks", "h2"]],
+    );
+
+    // And from the page, after Enter has added a note and handed focus back to its block.
+    await pointAt(page, artifact, "#rollback h2");
+    await page.type("Say who can roll back");
+    await page.enter();
+    await artifact.waitFor("document.activeElement.textContent === 'Rollback'");
+    polling = cli(["poll", plan, "--timeout-ms", "10000"], lab.env);
+    await ctrlEnter();
+    polled = (await polling).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => p.prompt),
+      ["Say who can roll back"],
     );
     await page.close();
   },
