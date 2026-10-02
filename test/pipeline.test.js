@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -440,30 +440,6 @@ test("the tag namespace is bare v<version>, and the manifest agrees with package
   assert.equal(config["include-component-in-tag"], false);
   assert.equal(JSON.parse(read(".release-please-manifest.json"))["."], pkg.version);
 });
-
-// release-please writes CHANGELOG.md, the manifest and package.json in one
-// commit, so the changelog existing is this tree saying the first release has
-// been cut. Both assertions below only describe the window before that, and
-// asserting them past it is what made every release pull request red: its own
-// diff moves the manifest off "0.0.0", which is the thing that must not happen
-// beforehand and the only thing that can happen afterwards.
-const firstReleaseCut = existsSync(new URL("CHANGELOG.md", root));
-
-test(
-  "the first release is 0.1.0, not 1.0.0",
-  { skip: firstReleaseCut && "the first release is cut; release-please owns the manifest now" },
-  () => {
-    // The two bump flags govern a bump from an existing version; the first
-    // release is not a bump, and release-please answers it with a hardcoded
-    // 1.0.0 unless `initial-version` says otherwise. docs/GIT-WORKFLOW.md,
-    // "Versioning", carries the mechanism and the source it was read from.
-    assert.equal(JSON.parse(read("release-please-config.json"))["initial-version"], "0.1.0");
-    // Load-bearing sentinel, not a placeholder: release-please backfills a
-    // synthetic previous release from any manifest entry that is not "0.0.0",
-    // which would make the first release 0.1.1 and skip 0.1.0 entirely.
-    assert.equal(JSON.parse(read(".release-please-manifest.json"))["."], "0.0.0");
-  },
-);
 
 test("every repository setting that is not a file has a committed export", () => {
   // Files do not apply themselves; this is the one script that applies them.

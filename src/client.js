@@ -46,6 +46,7 @@ export async function api(info, method, path, body) {
   if (!res.ok)
     throw Object.assign(new Error(json.error ?? `${method} ${path} failed with ${res.status}`), {
       answer: json,
+      status: res.status,
     });
   return json;
 }

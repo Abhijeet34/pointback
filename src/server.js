@@ -283,7 +283,7 @@ async function api(req, res, url, ctx) {
   }
   if (req.method === "POST" && action === "replies") {
     const body = await readJsonBody(req);
-    return sendJson(res, 200, ctx.store.reply(key, body.uid, body));
+    return reply(res, ctx.store.reply(key, body.uid, body));
   }
   if (req.method === "POST" && action === "end") {
     const body = await readJsonBody(req);
@@ -349,7 +349,7 @@ function pollCursor(params) {
 }
 
 /**
- * A review whose file moved or was deleted answers 410 with the same body to a poll and to an end,
+ * A review whose file moved or was deleted answers 410 with the same body to a poll, a reply and an end,
  * so the chrome's end fails visibly and the CLI prints it and exits 1.
  */
 function reply(res, answer) {

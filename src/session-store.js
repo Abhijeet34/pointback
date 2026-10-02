@@ -15,7 +15,13 @@ import { HttpError } from "./http-guard.js";
 import { limits } from "./limits.js";
 import { assetsOutside } from "./inject.js";
 import { MARKDOWN_STYLES, artifactKind, renderMarkdown } from "./markdown.js";
-import { pastSharingViolations, privateDir, readJson, writeJsonAtomic } from "./state-dir.js";
+import {
+  pastSharingViolations,
+  privateDir,
+  readJson,
+  readPollCursor,
+  writeJsonAtomic,
+} from "./state-dir.js";
 
 /**
  * Sessions live in a Map keyed by the path hash, so a key can only ever find a session
@@ -37,6 +43,7 @@ const newEpoch = () => randomBytes(8).toString("hex");
 const LEGACY_FILE = "state.json";
 
 export class SessionStore {
+  #stateDir;
   #dir;
   #sessions = new Map();
   #events = new EventEmitter();
@@ -49,6 +56,7 @@ export class SessionStore {
    * it changed: a file save costs the same with one review held as with the cap.
    */
   constructor(stateDir) {
+    this.#stateDir = stateDir;
     this.#dir = privateDir(join(stateDir, "sessions"));
     this.#events.setMaxListeners(0);
     for (const name of readdirSync(this.#dir)) {
@@ -137,10 +145,12 @@ export class SessionStore {
         root: assets,
         // A fresh secret per session gates the artifact bytes; the key alone opens nothing.
         assetToken: randomBytes(16).toString("hex"),
-        // Names this life of the session. Eviction and a later open restart `nextUid` at 1, and a
-        // poll cursor carried over from the old life must not acknowledge the new one's notes.
+        // Names this life of the session: a poll cursor carried over from an evicted earlier life
+        // must not acknowledge the new one's notes.
         epoch: newEpoch(),
-        nextUid: 1,
+        // Numbering goes on from the last uid the agent was handed for this file, so a uid never
+        // repeats in a file's review history and an agent skipping uids it applied drops nothing.
+        nextUid: (readPollCursor(this.#stateDir, canonical)?.uid ?? 0) + 1,
         revision: 0,
         pending: [],
         drafts: [],
@@ -430,6 +440,8 @@ export class SessionStore {
    */
   reply(key, uid, raw) {
     const session = this.get(key);
+    // The reviewer can no longer read it on the note, so it gets the answer a poll and an end get.
+    if (!existsSync(session.file)) return this.#gone(session);
     if (!Number.isInteger(uid) || uid < 1)
       throw new HttpError(400, "uid must be a positive integer");
     const note = session.chat.find((entry) => entry.uid === uid);

@@ -1686,6 +1686,13 @@ test(
       await page.eval("document.getElementById('cardTarget').textContent"),
       `Answer: ${question}`,
     );
+    // The card asks for an answer, in the words a screen reader and the eye both get.
+    assert.deepEqual(JSON.parse(await page.eval(CARD_WORDS)), {
+      dialog: "Answer the question",
+      field: "Answer",
+      placeholder: "Your answer to the question",
+      add: "Add answer",
+    });
     await page.type("The billing queue");
     await page.enter();
     // The drafts event on the stream can render the added note before the add's own HTTP
@@ -1703,6 +1710,16 @@ test(
       await page.eval("document.querySelector('.mark:not(.sent) .mark-tag').textContent"),
       "Answer",
     );
+    // A note pointed at on the page after an answer asks for a change again.
+    await pointAt(page, artifact, "#p1");
+    assert.deepEqual(JSON.parse(await page.eval(CARD_WORDS)), {
+      dialog: "Leave a note",
+      field: "Note",
+      placeholder: "What should change here?",
+      add: "Add note",
+    });
+    await page.eval("document.getElementById('cardCancel').click()");
+    await page.waitFor("document.getElementById('card').hidden");
     // The answer is the agent's to fetch once the reviewer sees it sent. A poll on a 3 s clock
     // started at the click can lose the race to a Send that a busy browser delivers late.
     await page.eval("document.getElementById('send').click()");
@@ -1742,6 +1759,14 @@ test(
     await page.close();
   },
 );
+
+/** What the open note card says it is asking for. */
+const CARD_WORDS = `JSON.stringify({
+  dialog: document.getElementById('card').getAttribute('aria-label'),
+  field: document.getElementById('cardText').getAttribute('aria-label'),
+  placeholder: document.getElementById('cardText').placeholder,
+  add: document.getElementById('cardAdd').textContent,
+})`;
 
 /**
  * Counts the API answers this page has not finished handling. One drops a task after the page has
