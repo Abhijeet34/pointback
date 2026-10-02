@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { limits } from "../src/limits.js";
 import { serve } from "../src/server.js";
+import { tokenProof } from "../src/http-guard.js";
 import { fixture } from "./helpers/env.js";
 import { until } from "./helpers/wait.js";
 import { assertPrivate } from "./helpers/private.js";
@@ -33,6 +35,13 @@ const post = (path, body, extra = {}) =>
     body: JSON.stringify(body),
   }).then((r) => r.json());
 const status = (path, init = {}) => fetch(base + path, init).then((r) => r.status);
+
+/** Queues notes the way the chrome does: each one kept as a draft, then Send. */
+async function queueNotes(k, prompts, structure) {
+  for (const draft of prompts)
+    await post(`/api/${k}/drafts`, { draft, structure }, { origin: base });
+  return post(`/api/${k}/prompts`, {}, { origin: base });
+}
 
 /** Sends a request line verbatim, so dot segments reach the server instead of being squashed by fetch. */
 function raw(requestPath) {
@@ -168,13 +177,10 @@ test("traversal over the wire is refused, dot segments and encodings included", 
 test("prompts queue, show in the chat, and reach one poller with anchors intact", async () => {
   const waiting = get(`/api/poll?file=${encodeURIComponent(fixture)}&timeoutMs=5000`);
   await new Promise((r) => setTimeout(r, 50));
-  const queued = await post(
-    `/api/${key}/prompts`,
-    {
-      prompts: [{ prompt: "Shorter", selector: "#title", tag: "h1", text: "Rollout plan" }],
-      structure: 'main\n  #title "Rollout plan"',
-    },
-    { origin: base },
+  const queued = await queueNotes(
+    key,
+    [{ prompt: "Shorter", selector: "#title", tag: "h1", text: "Rollout plan" }],
+    'main\n  #title "Rollout plan"',
   );
   assert.equal(queued.status, "queued");
   const result = await waiting;
@@ -315,6 +321,7 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
     presence: { state: "waiting" },
     ended: null,
     gone: false,
+    drafts: [],
   });
   const second = await eventStream(`/api/${opened.key}/events`);
   assert.equal((await second.next()).type, "hello");
@@ -339,11 +346,7 @@ test("a poll whose connection dies before the reply redelivers the batch, never 
   const file = join(dir, "redeliver.html");
   writeFileSync(file, "<p>x</p>");
   const k = (await post("/api/sessions", { file })).key;
-  await post(
-    `/api/${k}/prompts`,
-    { prompts: [{ prompt: "do not lose me", selector: "#p", tag: "p", text: "x" }] },
-    { origin: base },
-  );
+  await queueNotes(k, [{ prompt: "do not lose me", selector: "#p", tag: "p", text: "x" }]);
   // The poll sends its request and drops the socket before reading the reply, so the batch is taken
   // from the queue but its response never arrives - the exact shape of the silent loss this fixes.
   await new Promise((resolve) => {
@@ -364,12 +367,14 @@ test("a poll whose connection dies before the reply redelivers the batch, never 
 
 test("the reviewer ends the review with the queue attached, and only a reopen revives it", async () => {
   const opened = await post("/api/sessions", { file: fixture });
+  await post(
+    `/api/${opened.key}/drafts`,
+    { draft: { prompt: "One last thing", selector: "#title", tag: "h1", text: "Rollout" } },
+    { origin: base },
+  );
   const ended = await post(
     `/api/${opened.key}/end`,
-    {
-      by: "user",
-      prompts: [{ prompt: "One last thing", selector: "#title", tag: "h1", text: "Rollout" }],
-    },
+    { by: "user", drafts: "send" },
     { origin: base },
   );
   assert.deepEqual(ended, { status: "ended", ended_by: "user", queued: 1 });
@@ -397,6 +402,126 @@ test("the reviewer ends the review with the queue attached, and only a reopen re
       body: JSON.stringify({ by: "nobody" }),
     }),
     400,
+  );
+  assert.equal(
+    await status(`/api/${opened.key}/end`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ by: "user", drafts: "keep" }),
+    }),
+    400,
+  );
+});
+
+test("unsent notes live on the server: added, removed, sent as one batch, and kept across a restart", async () => {
+  const stateDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-drafts-"));
+  const file = join(stateDir, "drafted.html");
+  writeFileSync(file, "<h1 id='t'>x</h1>");
+  let daemon = await serve({ stateDir, port: 0, idleMs: 60_000 });
+  const once = (method, path, body) =>
+    fetch(`http://127.0.0.1:${daemon.port}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${daemon.token}`, "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  // fetch's pool may hand the first request after the restart a connection the old daemon closed;
+  // a browser retries that by itself, so this does too, once.
+  const call = (method, path, body) =>
+    once(method, path, body).catch(() => once(method, path, body));
+  try {
+    const k = (await call("POST", "/api/sessions", { file })).body.key;
+    const note = (prompt) => ({ prompt, selector: "#t", tag: "h1", text: "x" });
+    const first = await call("POST", `/api/${k}/drafts`, { draft: note("one"), structure: "main" });
+    assert.equal(first.status, 200);
+    const { drafts } = (await call("POST", `/api/${k}/drafts`, { draft: note("two") })).body;
+    assert.deepEqual(
+      drafts.map((d) => d.prompt),
+      ["one", "two"],
+    );
+    assert.match(drafts[0].id, /^[0-9a-f]{16}$/);
+    assert.ok(Date.parse(drafts[0].at) <= Date.parse(drafts[1].at), "stamped as each arrives");
+    // A draft is validated as it arrives, not when it is sent, and the page cannot stamp it.
+    const bad = await call("POST", `/api/${k}/drafts`, { draft: { ...note(""), at: "x" } });
+    assert.equal(bad.status, 400);
+
+    // The daemon goes away and comes back: the notes are still there, and still unsent.
+    await daemon.close();
+    daemon = await serve({ stateDir, port: 0, idleMs: 60_000 });
+    assert.deepEqual(
+      (await call("GET", `/api/${k}/session`)).body.drafts.map((d) => d.prompt),
+      ["one", "two"],
+    );
+    assert.equal(
+      (await call("GET", `/api/poll?file=${encodeURIComponent(file)}&timeoutMs=0`)).body.status,
+      "waiting",
+    );
+
+    const removed = await call("DELETE", `/api/${k}/drafts/${drafts[0].id}`);
+    assert.deepEqual(
+      removed.body.drafts.map((d) => d.prompt),
+      ["two"],
+    );
+    assert.equal(
+      (await call("DELETE", `/api/${k}/drafts/${drafts[0].id}`)).status,
+      200,
+      "idempotent",
+    );
+    assert.equal((await call("DELETE", `/api/${k}/drafts/__proto__`)).status, 404);
+
+    assert.equal((await call("POST", `/api/${k}/prompts`, {})).body.accepted, 1);
+    assert.deepEqual((await call("GET", `/api/${k}/session`)).body.drafts, []);
+    assert.equal((await call("POST", `/api/${k}/prompts`, {})).status, 400, "nothing to send");
+    const polled = (await call("GET", `/api/poll?file=${encodeURIComponent(file)}&timeoutMs=0`))
+      .body;
+    assert.deepEqual(
+      polled.prompts.map((p) => [p.uid, p.prompt, p.at === drafts[1].at]),
+      [[1, "two", true]],
+    );
+    assert.equal(polled.structure, "main", "the outline taken with the notes goes with them");
+
+    for (let i = 0; i < limits.promptsPerRequest; i += 1)
+      await call("POST", `/api/${k}/drafts`, { draft: note(`n${i}`) });
+    assert.equal((await call("POST", `/api/${k}/drafts`, { draft: note("over") })).status, 429);
+    await call("POST", `/api/${k}/end`, { by: "user", drafts: "discard" });
+    assert.deepEqual((await call("GET", `/api/${k}/session`)).body.drafts, []);
+  } finally {
+    await daemon.close();
+  }
+});
+
+test("a restart keeps its port and token, and a taken port means a new port and a new token", async () => {
+  const stateDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-restart-"));
+  const first = await serve({ stateDir, port: 0, idleMs: 60_000 });
+  await first.close();
+  const second = await serve({ stateDir, port: 0, idleMs: 60_000 });
+  assert.equal(second.port, first.port, "a tab on the old address can reach the new daemon");
+  assert.equal(second.token, first.token, "and the token in its fragment still works");
+  await second.close();
+
+  // Something else took the port while no daemon held it: whatever it is gets nothing of ours.
+  const squatter = createServer((req, res) => res.end()).listen(first.port, "127.0.0.1");
+  await new Promise((resolve) => squatter.once("listening", resolve));
+  try {
+    const third = await serve({ stateDir, port: 0, idleMs: 60_000 });
+    assert.notEqual(third.port, first.port);
+    assert.notEqual(third.token, first.token, "a token is never carried to a new port");
+    const recorded = JSON.parse(readFileSync(join(stateDir, "server.json"), "utf8"));
+    assert.deepEqual([recorded.port, recorded.token], [third.port, third.token]);
+    await third.close();
+  } finally {
+    squatter.close();
+  }
+});
+
+test("health proves the token without revealing it, and only for a well-formed challenge", async () => {
+  const challenge = "ab".repeat(16);
+  const answer = await fetch(`${base}/health?challenge=${challenge}`).then((r) => r.json());
+  assert.equal(answer.proof, tokenProof(srv.token, challenge));
+  assert.ok(!JSON.stringify(answer).includes(srv.token));
+  assert.equal((await fetch(`${base}/health`).then((r) => r.json())).proof, undefined);
+  assert.equal(
+    (await fetch(`${base}/health?challenge=${srv.token}`).then((r) => r.json())).proof,
+    undefined,
   );
 });
 

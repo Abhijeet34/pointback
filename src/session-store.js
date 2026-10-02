@@ -18,11 +18,16 @@ import { readJson, writeJsonAtomic } from "./state-dir.js";
  * that was put there: no lookup reaches an inherited property. Every mutation is
  * written through to disk atomically, so a restarted server resumes where it stopped.
  *
+ * A note the reviewer has added but not sent is a draft, kept on its session here rather than in
+ * the tab, so closing the tab or restarting the daemon loses none of it; Send promotes every draft
+ * to the agent's queue at once.
+ *
  * Agent presence is in memory only, because it describes live connections: `listening`
  * while a poll is attached, `working` after a poll took feedback until the next poll or the
  * bound in limits, and `waiting` otherwise. Every change to a session is emitted on its key.
  */
 export const EPOCH_PATTERN = /^[0-9a-f]{16}$/;
+export const DRAFT_ID_PATTERN = /^[0-9a-f]{16}$/;
 const newEpoch = () => randomBytes(8).toString("hex");
 
 export class SessionStore {
@@ -75,6 +80,7 @@ export class SessionStore {
         nextUid: 1,
         revision: 0,
         pending: [],
+        drafts: [],
         chat: [],
         createdAt: now,
         lastActive: now,
@@ -93,12 +99,17 @@ export class SessionStore {
    * live one, and the longest-untouched before a recent one; a session with a poll attached right now
    * is never disposed, so an agent is never left polling a session that vanished. A session still
    * holding undelivered notes (queued or delivered-but-unacked) is never disposed either, so the
-   * at-least-once delivery guarantee holds even under session-cap pressure. If every session is
-   * carrying work, the cap is real work and the new open is refused.
+   * at-least-once delivery guarantee holds even under session-cap pressure, and nor is one holding
+   * drafts the reviewer has not sent yet. If every session is carrying work, the cap is real work
+   * and the new open is refused.
    */
   #evict() {
     const evictable = [...this.#sessions.values()].filter(
-      (s) => (this.#pollsByKey.get(s.key) ?? 0) === 0 && s.pending.length === 0 && !s.unacked,
+      (s) =>
+        (this.#pollsByKey.get(s.key) ?? 0) === 0 &&
+        s.pending.length === 0 &&
+        !s.unacked &&
+        !s.drafts?.length,
     );
     if (evictable.length === 0) throw new HttpError(429, "too many active sessions");
     evictable.sort((a, b) => {
@@ -148,11 +159,12 @@ export class SessionStore {
     };
   }
 
-  /** What a freshly connected tab must know to be current: revision, presence, whether it ended, whether its file is gone. */
+  /** What a freshly connected tab must know to be current: revision, presence, whether it ended, whether its file is gone, and the unsent notes. */
   status(key) {
     const session = this.get(key);
     return {
       revision: session.revision,
+      drafts: session.drafts ?? [],
       presence: this.presence(key),
       ended: session.endedAt ? { by: session.endedBy, at: session.endedAt } : null,
       gone: !existsSync(session.file),
@@ -172,6 +184,51 @@ export class SessionStore {
     this.#persist();
     this.#events.emit(key, { type: "feedback" });
     return { status: "queued", pending_prompts: session.pending.length, accepted };
+  }
+
+  /**
+   * Keeps a note the reviewer added, stamped now: the moment it was written is the moment it
+   * reached the daemon. Capped at one send's worth, since Send promotes every draft as one batch.
+   */
+  addDraft(key, raw, structure) {
+    const session = this.get(key);
+    const drafts = session.drafts ?? [];
+    if (drafts.length >= limits.promptsPerRequest)
+      throw new HttpError(429, `${drafts.length} notes are waiting to be sent; send them first`);
+    const note = validatePrompt(raw);
+    delete note.at;
+    const outline = structure === undefined ? undefined : validateStructure(structure);
+    drafts.push({ id: randomBytes(8).toString("hex"), ...note, at: new Date().toISOString() });
+    if (outline !== undefined) session.draftStructure = outline;
+    return this.#draftsChanged(session, drafts);
+  }
+
+  /** Removes one draft; removing one that is already gone is not an error, so a retry is safe. */
+  removeDraft(key, id) {
+    const session = this.get(key);
+    return this.#draftsChanged(
+      session,
+      (session.drafts ?? []).filter((draft) => draft.id !== id),
+    );
+  }
+
+  /** Send: every draft goes to the agent's queue as one batch, in the order it was written. */
+  send(key) {
+    const session = this.get(key);
+    if (!session.drafts?.length) throw new HttpError(400, "no notes to send");
+    const result = this.queue(key, session.drafts, session.draftStructure);
+    this.#draftsChanged(session, []);
+    return result;
+  }
+
+  #draftsChanged(session, drafts) {
+    session.drafts = drafts;
+    if (drafts.length === 0) delete session.draftStructure;
+    session.lastActive = new Date().toISOString();
+    this.#persist();
+    // Every tab on the review shows the same unsent notes, whichever of them changed the list.
+    this.#events.emit(session.key, { type: "drafts", drafts });
+    return { drafts };
   }
 
   #accept(session, prompts, structure) {
@@ -216,15 +273,22 @@ export class SessionStore {
   }
 
   /**
-   * Ends the review, queueing any last prompts in the same step so a send-and-end can never
-   * strand them. `by` is who closed the loop: a user end refuses a plain reopen, an agent end does not.
+   * Ends the review. `drafts` says what happens to the unsent notes in the same step, so a
+   * send-and-end can never strand them: "send" queues them, "discard" drops them, and leaving it
+   * out keeps them sendable, which is what the agent's own end does. `by` is who closed the loop:
+   * a user end refuses a plain reopen, an agent end does not.
    */
-  end(key, by, prompts = [], structure) {
+  end(key, by, drafts) {
     const session = this.get(key);
     // A review whose file moved or was deleted has nothing left to end; whoever asked, and every
     // open tab, is told that instead, so the answer is the one a poll on that path gets.
     if (!existsSync(session.file)) return this.#gone(session);
-    const queued = prompts.length === 0 ? 0 : this.#accept(session, prompts, structure);
+    const unsent = session.drafts ?? [];
+    const queued =
+      drafts === "send" && unsent.length > 0
+        ? this.#accept(session, unsent, session.draftStructure)
+        : 0;
+    if (drafts === "send" || drafts === "discard") this.#draftsChanged(session, []);
     // Who closed the loop is the first answer, not the last. An agent tidying up after the
     // reviewer already ended would otherwise relabel it as its own and, since only a user end
     // refuses a plain reopen, hand itself back a review the reviewer deliberately closed.

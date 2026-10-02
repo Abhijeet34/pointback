@@ -22,7 +22,6 @@ const cardTarget = document.getElementById("cardTarget");
 const cardText = /** @type {HTMLTextAreaElement} */ (document.getElementById("cardText"));
 const cardCancel = /** @type {HTMLButtonElement} */ (document.getElementById("cardCancel"));
 const presenceSince = document.getElementById("presenceSince");
-const pendingKey = `pending:${key}`;
 
 // Every label is read by a reviewer mid-review, so the resting state between two polls
 // is "away", never a negative: it is the normal state, and Send works the same in it.
@@ -32,9 +31,15 @@ const PRESENCE = {
     "Your agent is not checking for notes right now. Send still works: notes wait here and go out the next time it checks.",
   ],
   listening: ["Agent listening", "Your agent is connected and waiting for your notes."],
-  working: ["Agent working", "Your agent took your last notes and is working on them."],
+  working: [
+    "Agent working",
+    "Your agent took your last notes and is working on them. New notes queue for its next check.",
+  ],
+  offline: [
+    "Not connected",
+    "This page lost its connection. Your notes are kept and nothing can be sent until it is back.",
+  ],
 };
-const RETRIES = 5;
 
 let nonce = "";
 let annotate = false;
@@ -57,12 +62,15 @@ let retaking = false;
 let problem = null;
 let marksDirty = true;
 let shownMarks = 0;
-const stored = readStored();
-let pending = stored.prompts;
-let structure = stored.structure;
+let appName = "";
+// The reviewer's unsent notes, as the server holds them: every change goes through it first.
+let pending = [];
 
-const api = (method, path, body) =>
-  fetch(path, {
+const api = (method, path, body) => {
+  // The token goes only to the server this page proved holds it; a lost connection may mean the
+  // port now belongs to something else.
+  if (connection !== "live") return Promise.reject(new Error("not connected"));
+  return fetch(path, {
     method,
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -71,19 +79,56 @@ const api = (method, path, body) =>
     if (!res.ok) throw new Error(json.error ?? `${res.status}`);
     return json;
   });
+};
+
+/**
+ * What answers on this page's port, with `proven` saying whether it holds this page's token; a throw
+ * when nothing answers. It proves it by keying a fresh challenge with the token, which never leaves.
+ */
+async function health() {
+  const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  const challenge = hex(crypto.getRandomValues(new Uint8Array(16)));
+  const res = await fetch(`/health?challenge=${challenge}`);
+  const answer = await res.json().catch(() => ({}));
+  const secret = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(token),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const proof = await crypto.subtle.sign("HMAC", secret, new TextEncoder().encode(challenge));
+  return { ...answer, proven: res.ok && answer.proof === hex(new Uint8Array(proof)) };
+}
+
+const pause = (failures) =>
+  new Promise((resolve) => setTimeout(resolve, Math.min(500 * failures, 5000)));
 
 async function boot() {
-  // The name and the session are independent, so both requests are in flight at once.
-  const health = fetch("/health").then((r) => r.json());
-  health.then((app) => (document.getElementById("appName").textContent = app.app));
+  let app;
+  for (let failures = 1; !app; failures += 1) {
+    try {
+      app = await health();
+    } catch {
+      // Nothing answers: a daemon between an idle-out and the agent's next command. The review is
+      // still there, so the page waits for it rather than calling its link dead.
+      setText(
+        statusLine,
+        "Not connected. This page opens the review when your agent next runs its command.",
+      );
+      await pause(failures);
+    }
+  }
   try {
+    if (!app.proven) throw new Error("unproven");
     session = await api("GET", `/api/${key}/session`);
   } catch {
     statusLine.textContent =
       "This link no longer works. Run the command on the file again to get a fresh one.";
     return;
   }
-  const app = await health;
+  appName = app.app;
+  document.getElementById("appName").textContent = appName;
   document.title = `${session.fileName} · ${app.app}`;
   document.getElementById("fileName").textContent = session.fileName;
   chat = session.chat;
@@ -98,6 +143,8 @@ function sync(state) {
   revision = state.revision;
   presence = state.presence;
   ended = state.ended;
+  pending = state.drafts;
+  marksDirty = true;
   // A gone file has no page to load; the last one shown stays up under the notice.
   fileGone = state.gone === true;
   if (fileGone) setAnnotate(false);
@@ -115,17 +162,26 @@ function show() {
   frame.src = `${session.artifactUrl}?r=${revision}`;
 }
 
-/** Reads the stream until it ends, then reconnects; a few dead attempts in a row is a dead server. */
+/**
+ * Reads the stream until it ends, then reconnects for as long as nothing answers: a daemon that
+ * idled out or was stopped comes back on the same port with the same token at the agent's next
+ * command, and this page picks the review up again. Something that answers and cannot prove it
+ * holds the token, or refuses it, means this page's link is spent, and it stops trying.
+ */
 async function listen() {
   let failures = 0;
-  while (failures < RETRIES) {
+  for (;;) {
     stream = new AbortController();
+    let spent = false;
     try {
+      spent = !(await health()).proven;
+      if (spent) break;
       const res = await fetch(`/api/${key}/events`, {
         headers: { authorization: `Bearer ${token}` },
         signal: stream.signal,
       });
-      if (!res.ok) throw new Error(`${res.status}`);
+      spent = !res.ok;
+      if (spent) break;
       failures = 0;
       connection = "live";
       render();
@@ -133,6 +189,7 @@ async function listen() {
     } catch {
       // A dropped stream and a taken-over one arrive the same way; the difference is intent.
     }
+    if (spent) break;
     if (retaking) {
       retaking = false;
       continue;
@@ -140,7 +197,7 @@ async function listen() {
     failures += 1;
     connection = "lost";
     render();
-    await new Promise((resolve) => setTimeout(resolve, 500 * failures));
+    await pause(failures);
   }
   connection = "gone";
   render();
@@ -149,7 +206,7 @@ async function listen() {
 // The daemon idles out on inactivity, so a tab keeps it alive only while the reviewer is actually on
 // it: a heartbeat runs while the tab is visible and stops while it is hidden. An open tab left and
 // walked away from therefore stops holding the process, rather than pinning it open for good, and the
-// review is not lost - pending notes live in sessionStorage and the tab resyncs when it comes back.
+// review is not lost - unsent notes live on the server and the tab resyncs when it comes back.
 let heartbeat = null;
 function beat() {
   fetch("/health").catch(() => {});
@@ -202,26 +259,25 @@ function apply(event) {
     ended = null;
   } else if (event.type === "reload-off") {
     liveReload = false;
+  } else if (event.type === "drafts") {
+    pending = event.drafts;
+    marksDirty = true;
   }
   render();
 }
 
-// The outline is stored beside the notes it was taken with: a chrome reload must not
-// send a batch describing a page nobody outlined.
-function readStored() {
+/** Adopts the server's answer to a change of the unsent notes, or says why it was refused. */
+async function changeDrafts(what, method, path, body) {
+  problem = null;
   try {
-    const raw = JSON.parse(sessionStorage.getItem(pendingKey) ?? "{}");
-    return {
-      prompts: Array.isArray(raw.prompts) ? raw.prompts : [],
-      structure: typeof raw.structure === "string" ? raw.structure : "",
-    };
-  } catch {
-    return { prompts: [], structure: "" };
+    pending = (await api(method, path, body)).drafts;
+    return true;
+  } catch (error) {
+    problem = `Could not ${what}: ${error.message}`;
+    return false;
+  } finally {
+    notesChanged();
   }
-}
-
-function savePending() {
-  sessionStorage.setItem(pendingKey, JSON.stringify({ prompts: pending, structure }));
 }
 
 /** Every state change lands here; the notes list is rebuilt only when the notes changed. */
@@ -230,14 +286,16 @@ function render() {
   renderPresence();
   renderNotice();
   const working = presence.state === "working" && !ended;
+  const offline = connection !== "live";
   // Notes the agent's own end left behind stay sendable: they queue for its next check,
   // which is worth more than a tidy disabled button and a queue nobody can do anything with.
+  // So do notes written while the agent works: the server queues them behind its batch.
   const count = pending.length;
-  sendButton.disabled = count === 0 || working || fileGone;
+  sendButton.disabled = count === 0 || fileGone || offline;
   sendButton.textContent = fileGone
     ? "File is gone"
-    : working
-      ? "Agent is working…"
+    : offline
+      ? "Not connected"
       : count === 0
         ? ended
           ? "Review ended"
@@ -258,15 +316,19 @@ function render() {
           ? count === 0
             ? "Nothing more can be sent from this page."
             : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
-          : working
-            ? "Your agent is working on your last notes. Send opens again when it comes back."
-            : deferredReload
-              ? "The file changed. This page updates as soon as you finish this note."
-              : chat.length === 0 && count === 0
-                ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
-                : count === 0
-                  ? "Every note has been sent."
-                  : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
+          : offline
+            ? count === 0
+              ? "Nothing can be sent until this page reconnects."
+              : `${count} ${count === 1 ? "note is" : "notes are"} kept, and Send opens again when this page reconnects.`
+            : working && count === 0
+              ? "Your agent is working on your last notes. Anything you send now waits for its next check."
+              : deferredReload
+                ? "The file changed. This page updates as soon as you finish this note."
+                : chat.length === 0 && count === 0
+                  ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
+                  : count === 0
+                    ? "Every note has been sent."
+                    : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
   );
 }
 
@@ -294,18 +356,21 @@ function setText(element, text) {
 }
 
 function renderPresence() {
-  const [label, explanation] = PRESENCE[presence.state] ?? PRESENCE.waiting;
-  presencePill.dataset.state = presence.state;
+  // What the server last said about the agent is stale the moment the connection goes.
+  const state = connection === "live" ? presence.state : "offline";
+  const [label, explanation] = PRESENCE[state] ?? PRESENCE.waiting;
+  presencePill.dataset.state = state;
   presencePill.title = explanation;
   setText(presenceText, label);
   clearInterval(workingTimer);
-  workingTimer = presence.state === "working" ? setInterval(tickSince, 1000) : null;
+  workingTimer = state === "working" ? setInterval(tickSince, 1000) : null;
   tickSince();
 }
 
 // The clock ticks outside the live region, so a screen reader hears "working" once, not every second.
 function tickSince() {
-  presenceSince.textContent = presence.state === "working" ? elapsed(presence.since) : "";
+  presenceSince.textContent =
+    presencePill.dataset.state === "working" ? elapsed(presence.since) : "";
 }
 
 function elapsed(since) {
@@ -322,9 +387,15 @@ function renderNotice() {
       : !current
         ? ["Another tab took over this review, so this page has stopped updating.", true]
         : connection === "gone"
-          ? ["Not connected. Run the command on this file again to get a fresh page.", false]
+          ? [
+              `This page can no longer reach its review. Run ${appName} on this file again for a fresh page; your notes are kept there.`,
+              false,
+            ]
           : connection === "lost"
-            ? ["Reconnecting…", false]
+            ? [
+                `Not connected. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
+                false,
+              ]
             : !liveReload
               ? [
                   "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
@@ -358,11 +429,9 @@ function mark(entry, sent) {
     remove.className = "mark-remove";
     remove.textContent = "×";
     remove.setAttribute("aria-label", "Remove this note");
-    remove.addEventListener("click", () => {
-      pending = pending.filter((item) => item !== entry);
-      savePending();
-      notesChanged();
-    });
+    remove.addEventListener("click", () =>
+      changeDrafts("remove the note", "DELETE", `/api/${key}/drafts/${entry.id}`),
+    );
     li.append(remove);
   }
   return li;
@@ -496,13 +565,13 @@ endButton.addEventListener("click", () => {
 endDialog.addEventListener("close", async () => {
   const choice = endDialog.returnValue;
   if (choice !== "end" && choice !== "discard") return;
-  const sending = choice === "end" ? pending : [];
   problem = null;
   try {
-    await api("POST", `/api/${key}/end`, { by: "user", prompts: sending, structure });
-    pending = [];
-    savePending();
-    chat = (await api("GET", `/api/${key}/session`)).chat;
+    await api("POST", `/api/${key}/end`, {
+      by: "user",
+      drafts: choice === "end" ? "send" : "discard",
+    });
+    ({ chat, drafts: pending } = await api("GET", `/api/${key}/session`));
     ended = { by: "user" };
     setAnnotate(false);
   } catch (error) {
@@ -518,32 +587,32 @@ document.getElementById("sendForm").addEventListener("submit", async (event) => 
   sendButton.textContent = "Sending…";
   problem = null;
   try {
-    await api("POST", `/api/${key}/prompts`, { prompts: pending, structure });
-    pending = [];
-    savePending();
-    chat = (await api("GET", `/api/${key}/session`)).chat;
+    await api("POST", `/api/${key}/prompts`);
+    ({ chat, drafts: pending } = await api("GET", `/api/${key}/session`));
   } catch (error) {
     problem = `Could not send: ${error.message}`;
   }
   notesChanged();
 });
 
-card.addEventListener("submit", (event) => {
+let adding = false;
+card.addEventListener("submit", async (event) => {
   event.preventDefault();
   const prompt = cardText.value.trim();
-  if (!composing || prompt === "") return;
+  if (!composing || prompt === "" || adding) return;
   // The instruction is this textarea's value; the other fields are copied by name from the target
   // the artifact proposed, so nothing else it sent rides along and nothing it sent can displace
-  // `prompt` or `at`. This is the only path that adds a note, and it runs only on the reviewer's
-  // submit. Stamped here so the moment the reviewer wrote it survives a batched send.
+  // `prompt`. This is the only path that adds a note, and it runs only on the reviewer's submit;
+  // the server stamps it, so the moment the reviewer wrote it survives a batched send.
   const { selector, tag, text, target } = composing.note;
-  pending.push({ selector, tag, text, target, prompt, at: new Date().toISOString() });
-  structure = composing.structure;
-  savePending();
-  // The one path that adds a note, so the one that must mark the list stale: closeCompose's own
-  // render leaves it alone, which is the point - a presence flip or a reload must not rebuild it.
-  marksDirty = true;
-  closeCompose(true);
+  adding = true;
+  const kept = await changeDrafts("add the note", "POST", `/api/${key}/drafts`, {
+    draft: { selector, tag, text, target, prompt },
+    structure: composing.structure,
+  });
+  adding = false;
+  // A note the server did not take stays in the card, still typed, beside the reason.
+  if (kept) closeCompose(true);
 });
 cardText.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {

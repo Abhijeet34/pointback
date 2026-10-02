@@ -1,7 +1,15 @@
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { canonicalPath, sessionKey } from "./artifact-path.js";
-import { api, ensureServer, openBrowser, readServerInfo, shouldOpenBrowser } from "./client.js";
+import {
+  api,
+  ensureServer,
+  health,
+  openBrowser,
+  readServerInfo,
+  shouldOpenBrowser,
+  stopServer,
+} from "./client.js";
 import { env, name, version } from "./identity.js";
 import { limits } from "./limits.js";
 import { serve } from "./server.js";
@@ -48,11 +56,12 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
 
   if (command === "stop") {
     const info = readServerInfo(dir);
-    if (!info) return print(stdout, JSON.stringify({ status: "not-running" }));
-    const status = await api(info, "POST", "/shutdown")
-      .then(() => "stopped")
-      .catch(() => "not-running");
-    return print(stdout, JSON.stringify({ status }));
+    const status = info && (await health(info));
+    // Whatever holds the recorded port and does not even answer as this app is sent nothing.
+    if (!status?.proven && status?.app !== name)
+      return print(stdout, JSON.stringify({ status: "not-running" }));
+    const stopped = await stopServer(dir, info, status);
+    return print(stdout, JSON.stringify({ status: stopped ? "stopped" : "not-running" }));
   }
 
   const file = args[0];
@@ -67,14 +76,19 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     // The token rides in the fragment: it reaches the page's script and never the server's request line.
     const url = `${session.url}#${server.token}`;
     const ended = session.status === "user-ended";
-    if (!ended && shouldOpenBrowser({ noOpen: values["no-open"] })) openBrowser(url);
+    // A tab already showing the review gets the update itself; a second one would only split the reviewer.
+    const shown = session.live === true;
+    if (!ended && !shown && shouldOpenBrowser({ noOpen: values["no-open"] })) openBrowser(url);
+    const poll = `Run \`${name} poll ${file}\` and wait; it returns the reviewer's annotations as JSON.`;
     return print(
       stdout,
       JSON.stringify({
         session: { file: session.file, url, status: session.status },
         next_step: ended
           ? `The reviewer ended this review. Run \`${name} ${file} --reopen\` only if they asked for another round.`
-          : `Run \`${name} poll ${file}\` and wait; it returns the reviewer's annotations as JSON.`,
+          : shown
+            ? `The review is already open in the reviewer's browser, so no new tab was opened. ${poll}`
+            : poll,
       }),
     );
   }

@@ -43,6 +43,7 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
     presence: { state: "waiting" },
     ended: null,
     gone: false,
+    drafts: [],
   });
   await sleep(150);
   writeFileSync(artifact, "<p>two</p>");
@@ -66,9 +67,11 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
 
 test("a second tab takes the review, and closing it hands the review back", () => {
   const { key, streams, store } = lab();
+  assert.equal(streams.live(key), false, "no tab yet, so opening the file opens one");
   const one = tab(streams, key);
   const two = tab(streams, key);
   assert.equal(streams.size, 2);
+  assert.equal(streams.live(key), true, "a tab shows the review, so opening the file opens none");
   assert.deepEqual(one.types(), ["hello", "superseded"], "the first tab is told at once");
   assert.deepEqual(two.types(), ["hello"]);
   store.fileChanged(key);
@@ -81,6 +84,7 @@ test("a second tab takes the review, and closing it hands the review back", () =
     presence: { state: "waiting" },
     ended: null,
     gone: false,
+    drafts: [],
   });
   // A tab that was never current leaves without disturbing the one that is.
   const three = tab(streams, key);
@@ -88,23 +92,33 @@ test("a second tab takes the review, and closing it hands the review back", () =
   assert.deepEqual(one.lines.at(-1).type, "current");
   one.detach();
   assert.equal(streams.size, 0);
+  assert.equal(streams.live(key), false, "the last tab gone, the next open opens one again");
 });
 
-test("presence, the end and a reopen all reach the tab; feedback does not", async () => {
+test("presence, unsent notes, the end and a reopen all reach every tab; feedback does not", async () => {
   const { key, streams, store } = lab();
   const one = tab(streams, key);
   const poll = store.waitForFeedback(key, 30);
   await poll;
-  store.queue(key, [{ prompt: "x", selector: "p", tag: "p", text: "one" }]);
+  store.addDraft(key, { prompt: "x", selector: "p", tag: "p", text: "one" });
+  store.send(key);
   store.end(key, "user");
   store.reopen(key);
   assert.deepEqual(only(one.types(), await noise()), [
     "hello",
     "presence",
     "presence",
+    "drafts",
+    "drafts",
     "ended",
     "reopened",
   ]);
+  const drafts = one.lines.filter((line) => line.type === "drafts").map((line) => line.drafts);
+  assert.deepEqual(
+    drafts.map((list) => list.map((d) => d.prompt)),
+    [["x"], []],
+    "a tab sees the note arrive and leave with Send",
+  );
   one.detach();
 });
 

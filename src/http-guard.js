@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { limits } from "./limits.js";
 
 export class HttpError extends Error {
@@ -25,6 +25,18 @@ export function assertOrigin(req, port) {
     `http://[::1]:${port}`,
   ]);
   if (!allowed.has(origin.toLowerCase())) throw new HttpError(403, "unexpected origin");
+}
+
+export const SERVER_TOKEN_PATTERN = /^[0-9a-f]{48}$/;
+export const CHALLENGE_PATTERN = /^[0-9a-f]{32}$/;
+
+/**
+ * Proof that a server holds the token, without the token crossing the wire: a client presents the
+ * token only to a server that answers its fresh challenge with this. The token outlives a restart,
+ * so whatever listens on a port a dead daemon left must never be handed it.
+ */
+export function tokenProof(token, challenge) {
+  return createHmac("sha256", token).update(challenge).digest("hex");
 }
 
 export function assertBearer(req, token) {

@@ -5,21 +5,24 @@ import { dirname, extname, join } from "node:path";
 import { KEY_PATTERN, TOKEN_PATTERN, resolveAsset } from "./artifact-path.js";
 import {
   ARTIFACT_HEADERS,
+  CHALLENGE_PATTERN,
   CHROME_HEADERS,
   HttpError,
+  SERVER_TOKEN_PATTERN,
   STATIC_HEADERS,
   assertBearer,
   assertHost,
   assertOrigin,
   readJsonBody,
   sendJson,
+  tokenProof,
 } from "./http-guard.js";
 import { EventStreams } from "./events.js";
 import { name, version } from "./identity.js";
 import { injectSdk } from "./inject.js";
 import { limits } from "./limits.js";
-import { EPOCH_PATTERN, SessionStore } from "./session-store.js";
-import { writeJsonAtomic } from "./state-dir.js";
+import { DRAFT_ID_PATTERN, EPOCH_PATTERN, SessionStore } from "./session-store.js";
+import { readJson, writeJsonAtomic } from "./state-dir.js";
 
 const SDK_PATH = "/sdk.js";
 const browserDir = new URL("./browser/", import.meta.url);
@@ -66,9 +69,19 @@ const contentTypes = {
 /**
  * Starts the loopback server and records how to reach it in `server.json`, which
  * only the owning user can read: the token in it is the one credential that exists.
+ *
+ * A restart comes back on the port and with the token the last server recorded, so a tab opened
+ * before an idle-out, a stop or an upgrade reconnects on its own. `port` 0 asks for exactly that,
+ * falling back to an ephemeral port when the old one is taken; any other port is used as given.
  */
-export function serve({ stateDir, port = 0, idleMs = limits.idleShutdownMs, onIdle = () => {} }) {
-  const token = randomBytes(24).toString("hex");
+export async function serve({
+  stateDir,
+  port = 0,
+  idleMs = limits.idleShutdownMs,
+  onIdle = () => {},
+}) {
+  const recorded = join(stateDir, "server.json");
+  const previous = readJson(recorded);
   const store = new SessionStore(join(stateDir, "state.json"));
   const streams = new EventStreams(store);
   let idleTimer;
@@ -105,29 +118,45 @@ export function serve({ stateDir, port = 0, idleMs = limits.idleShutdownMs, onId
       server.closeAllConnections();
     });
 
-  const listening = new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => {
-      // Caught, because this callback is libuv's and not the promise's: a throw here - a state
-      // directory that cannot be written, say - would leave `listening` pending forever and take
-      // the process down with a raw object dump instead of the CLI's own one-line error.
-      try {
-        const bound = boundPort();
-        writeJsonAtomic(join(stateDir, "server.json"), {
-          pid: process.pid,
-          port: bound,
-          token,
-          version,
-          startedAt: new Date().toISOString(),
-        });
-        touch();
-        resolve({ port: bound, token, close, server });
-      } catch (error) {
-        reject(error);
-      }
+  const listen = (at) =>
+    new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(at, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve(undefined);
+      });
     });
-  });
-  return listening;
+  const reused = Number.isInteger(previous?.port) && previous.port > 0 ? previous.port : 0;
+  try {
+    await listen(port || reused);
+  } catch (error) {
+    if (port !== 0 || reused === 0 || error.code !== "EADDRINUSE") throw error;
+    await listen(0);
+    console.error(
+      `port ${reused} is taken, so tabs opened before this start cannot reconnect; listening on ${boundPort()}`,
+    );
+  }
+  const bound = boundPort();
+  // The token is kept only with the port it was paired with: a tab can reach no other port, and a
+  // fresh token on a fresh port is one fewer place an old one is still worth anything.
+  const token =
+    bound === previous?.port && SERVER_TOKEN_PATTERN.test(previous.token ?? "")
+      ? previous.token
+      : randomBytes(24).toString("hex");
+  try {
+    writeJsonAtomic(recorded, {
+      pid: process.pid,
+      port: bound,
+      token,
+      version,
+      startedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    await close();
+    throw error;
+  }
+  touch();
+  return { port: bound, token, close, server };
 }
 
 async function route(req, res, ctx) {
@@ -136,7 +165,12 @@ async function route(req, res, ctx) {
   assertHost(req, ctx.port);
 
   if (req.method === "GET" && pathname === "/health") {
-    return sendJson(res, 200, { ok: true, app: name, version, idleMs: ctx.idleMs });
+    const challenge = url.searchParams.get("challenge");
+    const proof =
+      challenge !== null && CHALLENGE_PATTERN.test(challenge)
+        ? { proof: tokenProof(ctx.token, challenge) }
+        : {};
+    return sendJson(res, 200, { ok: true, app: name, version, idleMs: ctx.idleMs, ...proof });
   }
   if (req.method === "POST" && pathname === "/shutdown") {
     assertOrigin(req, ctx.port);
@@ -187,6 +221,7 @@ async function api(req, res, url, ctx) {
       file: session.file,
       url: `http://127.0.0.1:${ctx.port}/session/${session.key}`,
       status,
+      live: ctx.streams.live(session.key),
     });
   }
 
@@ -203,21 +238,34 @@ async function api(req, res, url, ctx) {
     return reply(res, answer);
   }
 
-  const keyed = pathname.match(/^\/api\/([^/]+)\/(session|prompts|events|end)$/);
+  const draft = pathname.match(/^\/api\/([^/]+)\/drafts\/([^/]+)$/);
+  if (req.method === "DELETE" && draft) {
+    if (!DRAFT_ID_PATTERN.test(draft[2])) throw new HttpError(404, "no such draft");
+    return sendJson(res, 200, ctx.store.removeDraft(draft[1], draft[2]));
+  }
+
+  const keyed = pathname.match(/^\/api\/([^/]+)\/(session|prompts|drafts|events|end)$/);
   if (!keyed) throw new HttpError(404, "not found");
   const [, key, action] = keyed;
   if (req.method === "GET" && action === "session")
     return sendJson(res, 200, ctx.store.bootstrap(key));
   if (req.method === "GET" && action === "events") return eventStream(req, res, ctx, key);
-  if (req.method === "POST" && action === "prompts") {
+  if (req.method === "POST" && action === "drafts") {
     const body = await readJsonBody(req);
-    return sendJson(res, 200, ctx.store.queue(key, body.prompts, body.structure));
+    return sendJson(res, 200, ctx.store.addDraft(key, body.draft, body.structure));
+  }
+  // Send: the reviewer's notes reach the agent only as drafts this server already holds.
+  if (req.method === "POST" && action === "prompts") {
+    await readJsonBody(req);
+    return sendJson(res, 200, ctx.store.send(key));
   }
   if (req.method === "POST" && action === "end") {
     const body = await readJsonBody(req);
     if (body.by !== "user" && body.by !== "agent")
       throw new HttpError(400, "by must be user or agent");
-    return reply(res, ctx.store.end(key, body.by, body.prompts ?? [], body.structure));
+    if (body.drafts !== undefined && body.drafts !== "send" && body.drafts !== "discard")
+      throw new HttpError(400, "drafts must be send or discard");
+    return reply(res, ctx.store.end(key, body.by, body.drafts));
   }
   throw new HttpError(405, "method not allowed");
 }

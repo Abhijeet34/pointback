@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
+import { tokenProof } from "./http-guard.js";
 import { env, name, version } from "./identity.js";
-import { readJson } from "./state-dir.js";
+import { readJson, writeJsonAtomic } from "./state-dir.js";
 
 // fileURLToPath, never URL.pathname: on Windows that yields "/C:/...", which spawn cannot run.
 const bin = fileURLToPath(new URL(`../bin/${name}.js`, import.meta.url));
@@ -15,12 +17,19 @@ export function readServerInfo(stateDir) {
   return info && typeof info.port === "number" && typeof info.token === "string" ? info : null;
 }
 
-async function health(info) {
+/**
+ * What answers on the recorded port, and whether it proved it holds the recorded token. Only a
+ * proven server is ever sent the token: the port of a daemon that exited can be taken by anything.
+ */
+export async function health(info) {
+  const challenge = randomBytes(16).toString("hex");
   try {
-    const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
+    const res = await fetch(`http://127.0.0.1:${info.port}/health?challenge=${challenge}`, {
       signal: AbortSignal.timeout(1500),
     });
-    return res.ok ? /** @type {any} */ (await res.json()) : null;
+    if (!res.ok) return null;
+    const status = /** @type {any} */ (await res.json());
+    return { ...status, proven: status.proof === tokenProof(info.token, challenge) };
   } catch {
     return null;
   }
@@ -49,8 +58,8 @@ export async function ensureServer(stateDir, environment = process.env) {
   const existing = readServerInfo(stateDir);
   if (existing) {
     const status = await health(existing);
-    if (status?.version === version) return existing;
-    if (status) await api(existing, "POST", "/shutdown").catch(() => {});
+    if (status?.proven && status.version === version) return existing;
+    if (status?.proven || status?.app === name) await stopServer(stateDir, existing, status);
   }
   const log = openSync(join(stateDir, "server.log"), "a", 0o600);
   const child = spawn(process.execPath, [bin, "server"], {
@@ -71,12 +80,26 @@ export async function ensureServer(stateDir, environment = process.env) {
   for (;;) {
     probes += 1;
     const info = readServerInfo(stateDir);
-    if (info && info.pid === child.pid && (await health(info))?.version === version) return info;
+    if (info && info.pid === child.pid && (await health(info))?.proven) return info;
     if (child.exitCode !== null) break;
     if (probes >= START_PROBES && Date.now() - startedAt >= START_TIMEOUT_MS) break;
     await sleep(50);
   }
   throw new Error(startFailure(stateDir, child, Date.now() - startedAt, probes));
+}
+
+/**
+ * Asks the recorded server to stop. A daemon from before the proof existed answers as this app
+ * but cannot prove it holds the token, and still has to stop, or two would share state.json; it
+ * has then been shown the token, so the token is retired and the next daemon mints a fresh one.
+ */
+export async function stopServer(stateDir, info, status) {
+  const stopped = await api(info, "POST", "/shutdown").then(
+    () => true,
+    () => false,
+  );
+  if (!status.proven) writeJsonAtomic(join(stateDir, "server.json"), { ...info, token: null });
+  return stopped;
 }
 
 /** How long, and how many looks, a spawned daemon gets to answer before it is called dead. */

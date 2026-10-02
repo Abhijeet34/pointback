@@ -15,7 +15,7 @@ One person, one agent, one local file.
 
 Node 24 or newer, and a browser to review in.
 CI runs the suite on `ubuntu-24.04` every pull request, and on `macos-15` and `windows-2025` weekly, on the release pull request, and on every push to `main`.
-All three pass it: 125 tests, 124 passing and one skipped, with the browser suite driving real Chrome on each.
+All three pass it: 148 tests, 147 passing and one skipped, with the browser suite driving real Chrome on each.
 
 ## Install
 
@@ -57,7 +57,7 @@ Opening a file prints where the review is and what to do next:
 }
 ```
 
-Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (default an ephemeral port, recorded in `server.json`), `POINTBACK_NO_OPEN=1` to skip launching the browser, `POINTBACK_IDLE_MS` before an idle server exits (default 30 minutes).
+Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (default the port the last server used, recorded in `server.json`, or an ephemeral one when that is taken), `POINTBACK_NO_OPEN=1` to skip launching the browser, `POINTBACK_IDLE_MS` before an idle server exits (default 30 minutes).
 
 ## What comes back
 
@@ -148,19 +148,26 @@ Hold Shift and press an arrow key to grow a real selection a word at a time insi
 
 The tab holds one connection, `GET /api/<key>/events`, and the server writes a line of NDJSON on it per event.
 A capability token travels in a header, and an `EventSource` cannot send one, so the stream is NDJSON read with `fetch` rather than server-sent events.
-It carries five things.
+It carries six things.
 
 - **Live reload.** The server watches the artifact's directory, not its inode, so an editor's write-and-rename save still counts, and a burst of writes inside 100 ms is one change. Each change numbers a new revision; the tab reloads the artifact at that revision and puts the element the reviewer was reading back where it was on screen, so a section added above it does not push their line down the page. A reload that would interrupt a half-typed note waits until the note is added.
-- **Presence.** `waiting` when no poll is attached, `listening` while one is, `working` from the moment a poll takes a batch. Working is bounded by `workingMaxMs` in `src/limits.js`: an agent that took the feedback and never came back stops holding the reviewer's Send after three minutes.
-- **The handover.** Opening the file again opens a second tab, and the newest tab owns the artifact view. The older one is told the moment it happens and offers to take the review back, rather than finding out at the next save.
+- **Presence.** `waiting` when no poll is attached, `listening` while one is, `working` from the moment a poll takes a batch. Working is bounded by `workingMaxMs` in `src/limits.js`, so an agent that took the feedback and never came back stops showing as working after three minutes. It never locks Send: a note sent while the agent works queues behind the batch it holds and arrives on its next poll.
+- **Unsent notes.** A note is kept by the server the moment the reviewer adds it, so closing the tab, reloading it or restarting the daemon loses nothing, and every tab on the review shows the same list. Send hands every unsent note to the agent as one batch, which is why at most `promptsPerRequest` of them wait at once.
+- **The handover.** Opening the file again while a tab shows the review opens nothing new, and the agent is told the review is already open. A second tab the reviewer opens themselves owns the artifact view; the older one is told the moment it happens and offers to take the review back, rather than finding out at the next save.
 - **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
+
+When the stream drops, the tab says it is not connected, in the header and the notice, and turns Send off until it is back.
+It keeps trying, because a daemon that idled out or was stopped comes back at the agent's next command on the same port with the same token, and the tab picks the review up from there.
+If something else took that port in the meantime, the new daemon starts on another port with a fresh token; the old tab cannot follow it there, so it keeps saying it is not connected, and running the command on the file again opens a tab with the notes in it.
 
 The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on sessions, prompts and open polls.
 
 ## How it holds together
 
 The first CLI call starts a detached server bound to `127.0.0.1` only and records its port and a random capability token in `~/.pointback/server.json`, readable by the owner alone.
+A restarted server takes the same port and token again while that port is free, which is what lets an open tab reconnect, and mints a fresh token whenever it has to take another port.
+Because the token outlives the process, whatever holds a dead daemon's port must never receive it: the CLI and the tab present it only to a server that first answers a fresh challenge keyed with it (`tokenProof` in `src/http-guard.js`).
 Every API call, from the CLI or from the chrome page, carries that token; the browser receives it in the URL fragment, which never reaches a server log.
 A session is keyed by a hash of the file's canonical path, but that key opens nothing: the artifact bytes are served under a second random per-session token, and the store is a `Map`, so no key can resolve to an inherited property.
 The page under review runs in a sandboxed iframe with an opaque origin.

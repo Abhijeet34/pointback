@@ -12,6 +12,7 @@ Reports are in scope when they break one of those boundaries.
 In scope:
 
 - Reaching the API without the token in `~/.pointback/server.json`: the loopback host check, the origin check, or the constant-time bearer comparison in `src/http-guard.js`, including DNS rebinding onto the bound port.
+- Recovering the token by listening on the port a daemon left when it exited. The token outlives the process, so the CLI and the review tab present it only to a server that has proved it holds it (`tokenProof` in `src/http-guard.js`), and a daemon that cannot take its old port back mints a fresh one.
 - Escaping the artifact iframe: the page under review reading the review chrome, calling the API, or recovering the server token from the URL fragment the chrome page is opened with (`src/browser/`).
 - Reading or writing a file outside the artifact's own directory through the asset route, by traversal, encoding, separator, null byte, or symlink (`src/artifact-path.js`).
 - A note reaching the agent that the reviewer never wrote, or a note attributed to the wrong element.
