@@ -42,7 +42,12 @@ const PRESENCE = {
 };
 
 let nonce = "";
-let annotate = false;
+// Annotate starts on: pointing is what this page is for, and a target the page proposes is still
+// heard only after the reviewer's own gesture in it (`gesture` below), never on its own. `annotate`
+// is what is in force; `wantAnnotate` is the reviewer's choice, which comes back when a gone file
+// returns or an ended review is reopened.
+let annotate = true;
+let wantAnnotate = true;
 let chat = [];
 let session = null;
 let revision = 0;
@@ -66,6 +71,11 @@ let shownMarks = 0;
 let appName = "";
 // The reviewer's unsent notes, as the server holds them: every change goes through it first.
 let pending = [];
+// The note last shown from the margin or its pin, by number; the draft being edited in place;
+// and the notes whose pin found nothing on the page to stand on.
+let shownNote = 0;
+let editingNote = null;
+let missingPins = new Set();
 
 const api = (method, path, body) => {
   // The token goes only to the server this page proved holds it; a lost connection may mean the
@@ -151,8 +161,8 @@ function sync(state) {
   marksDirty = true;
   // A gone file has no page to load; the last one shown stays up under the notice.
   fileGone = state.gone === true;
-  if (fileGone) setAnnotate(false);
-  else if (revision !== shownRevision || session.artifactUrl !== shownUrl) show();
+  followAnnotate();
+  if (!fileGone && (revision !== shownRevision || session.artifactUrl !== shownUrl)) show();
 }
 
 function show() {
@@ -250,20 +260,22 @@ function apply(event) {
   } else if (event.type === "reload") {
     // A reload means the file is there to read, including one that came back after it was gone.
     fileGone = false;
+    followAnnotate();
     revision = event.revision;
     if (current) show();
   } else if (event.type === "gone") {
     fileGone = true;
-    setAnnotate(false);
+    followAnnotate();
   } else if (event.type === "presence") {
     presence = { state: event.state, since: event.since };
   } else if (event.type === "ended") {
     ended = { by: event.by };
     marksDirty = true;
-    setAnnotate(false);
+    followAnnotate();
   } else if (event.type === "reopened") {
     ended = null;
     marksDirty = true;
+    followAnnotate();
   } else if (event.type === "reload-off") {
     liveReload = false;
   } else if (event.type === "drafts") {
@@ -275,9 +287,12 @@ function apply(event) {
     marksDirty = true;
   }
   render();
-  // A question waits on the reviewer, so it is brought into view; any other reply stays put.
+  // A question waits on the reviewer, so its Answer is brought into view, with the question
+  // above it; any other reply stays put.
   if (event.type === "reply" && event.reply.status === "question")
-    marks.querySelector(`[data-uid="${event.uid}"]`)?.scrollIntoView({ block: "nearest" });
+    marks
+      .querySelector(`[data-uid="${event.uid}"] .mark-answer`)
+      ?.scrollIntoView({ block: "nearest" });
 }
 
 /** Adopts the server's answer to a change of the unsent notes, or says why it was refused. */
@@ -345,7 +360,9 @@ function render() {
                   : working && count === 0
                     ? "Your agent is working on your last notes. Anything you send now waits for its next check."
                     : chat.length === 0 && count === 0
-                      ? "Turn on Annotate, then click an element or select a passage and type a note. By keyboard: Tab to an element, Shift and an arrow key for a passage, Enter to note it."
+                      ? annotate
+                        ? "Click or select anything on the page to note it, or Tab to it and press Enter."
+                        : "Turn on Annotate to point at the page."
                       : count === 0
                         ? "Every note has been sent."
                         : `${count} ${count === 1 ? "note" : "notes"} ready to send.`,
@@ -356,13 +373,71 @@ function render() {
 // a presence flip or a reload must not yank a reviewer who scrolled up to reread a note.
 function renderMarks() {
   marksDirty = false;
-  marks.replaceChildren(
-    ...chat.map((entry) => mark(entry, true)),
-    ...pending.map((entry) => mark(entry, false)),
-  );
-  const shown = chat.length + pending.length;
+  // A rebuild must not take the words, the caret or the focus out of a note being edited.
+  const box = /** @type {HTMLTextAreaElement | null} */ (marks.querySelector(".mark-edit-text"));
+  const caret = box && document.activeElement === box && [box.selectionStart, box.selectionEnd];
+  if (editingNote && !pending.some((entry) => entry.id === editingNote.id)) {
+    problem = "That note was sent or removed in another tab before your edit was saved.";
+    editingNote = null;
+  }
+  const notes = allNotes();
+  marks.replaceChildren(...notes.map(({ entry, sent }, index) => mark(entry, sent, index + 1)));
+  if (shownNote > notes.length) shownNote = 0;
+  const shown = notes.length;
   if (shown > shownMarks) marks.scrollTop = marks.scrollHeight;
   shownMarks = shown;
+  const editor = /** @type {HTMLTextAreaElement | null} */ (marks.querySelector(".mark-edit-text"));
+  if (editor && caret) {
+    editor.focus();
+    editor.setSelectionRange(caret[0], caret[1]);
+  }
+  post({ type: "pins", pins: pinData() });
+}
+
+/** Every note in the margin's order, which is the order the pins are numbered in. */
+function allNotes() {
+  return [
+    ...chat.map((entry) => ({ entry, sent: true })),
+    ...pending.map((entry) => ({ entry, sent: false })),
+  ];
+}
+
+const noteState = (entry, sent) => (sent ? (entry.reply?.status ?? "sent") : "queued");
+
+/**
+ * What the artifact needs to draw a pin: a number, a state, and the anchor the page itself proposed.
+ * Never the instruction or the agent's reply: the page under review reads every message it is sent.
+ */
+function pinData() {
+  return allNotes().map(({ entry, sent }, index) => ({
+    n: index + 1,
+    state: noteState(entry, sent),
+    selector: entry.selector,
+    tag: entry.tag,
+    text: entry.text,
+    ...(entry.target && { target: entry.target }),
+  }));
+}
+
+/** A margin note's way back to the page: its pin is highlighted and its target scrolled into view. */
+function revealNote(n) {
+  shownNote = n;
+  markShown();
+  post({ type: "reveal", n });
+}
+
+/** A pin's way back to the margin: its note is brought into view and takes the focus. */
+function focusNote(n) {
+  const li = marks.children[n - 1];
+  if (!li) return;
+  shownNote = n;
+  markShown();
+  li.scrollIntoView({ block: "nearest" });
+  /** @type {HTMLElement} */ (li.querySelector(".mark-target")).focus({ preventScroll: true });
+}
+
+function markShown() {
+  [...marks.children].forEach((li, index) => li.classList.toggle("shown", index + 1 === shownNote));
 }
 
 function notesChanged() {
@@ -427,36 +502,153 @@ function renderNotice() {
   takeOverButton.hidden = !action;
 }
 
-function mark(entry, sent) {
+function mark(entry, sent, n) {
   const li = document.createElement("li");
   li.className = sent ? "mark sent" : "mark";
+  // Only a queued note has an id, so only a queued note can be the one being edited.
+  const edited = !sent && editingNote !== null && editingNote.id === entry.id;
+  li.classList.toggle("shown", n === shownNote);
+  li.classList.toggle("editing", edited);
+  li.dataset.state = noteState(entry, sent);
   if (sent) li.dataset.uid = String(entry.uid);
-  const target = document.createElement("div");
+  else li.dataset.id = entry.id;
+  // The number and what the note points at are one button: pressing it shows the place on the page.
+  const target = document.createElement("button");
+  target.type = "button";
   target.className = "mark-target";
+  const number = document.createElement("span");
+  number.className = "mark-number";
+  number.textContent = String(n);
   const tag = document.createElement("span");
   tag.className = "mark-tag";
   tag.textContent = entry.answers === undefined ? entry.tag : "answer";
   const text = document.createElement("span");
   text.className = "mark-text";
   text.textContent = describe(entry);
-  target.append(tag, text);
-  const note = document.createElement("p");
-  note.className = "mark-note";
-  note.textContent = entry.prompt;
-  li.append(target, note);
+  target.append(number, tag, text);
+  target.setAttribute(
+    "aria-label",
+    `Note ${n}, on ${tag.textContent} ${text.textContent}. Show it on the page`,
+  );
+  target.addEventListener("click", () => revealNote(n));
+  li.append(target);
+  if (missingPins.has(n)) li.append(missingLine());
+  li.append(edited ? editor(entry, n) : noteText(entry));
   if (entry.reply) li.append(replyLine(entry));
-  if (!sent) {
+  if (!sent && !edited) {
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "mark-edit";
+    edit.textContent = "Edit";
+    edit.setAttribute("aria-label", `Edit note ${n}`);
+    edit.addEventListener("click", async () => {
+      // Moving to another note keeps what was typed in the last one rather than dropping it.
+      if (!(await saveEdit())) return;
+      editingNote = { id: entry.id, value: entry.prompt };
+      notesChanged();
+      const box = /** @type {HTMLTextAreaElement} */ (marks.querySelector(".mark-edit-text"));
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+    });
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "mark-remove";
     remove.textContent = "×";
-    remove.setAttribute("aria-label", "Remove this note");
+    remove.setAttribute("aria-label", `Remove note ${n}`);
     remove.addEventListener("click", () =>
       changeDrafts("remove the note", "DELETE", `/api/${key}/drafts/${entry.id}`),
     );
-    li.append(remove);
+    li.append(edit, remove);
   }
   return li;
+}
+
+function noteText(entry) {
+  const note = document.createElement("p");
+  note.className = "mark-note";
+  note.textContent = entry.prompt;
+  return note;
+}
+
+function showMissing() {
+  [...marks.children].forEach((li, index) => {
+    const line = li.querySelector(".mark-missing");
+    const missing = missingPins.has(index + 1);
+    if (missing && !line) li.querySelector(".mark-target").after(missingLine());
+    else if (!missing && line) line.remove();
+  });
+}
+
+function missingLine() {
+  const line = document.createElement("p");
+  line.className = "mark-missing";
+  line.textContent = "No longer on the page";
+  return line;
+}
+
+/** A queued note edited where it stands: Enter saves, Shift+Enter breaks the line, Escape keeps it. */
+function editor(entry, n) {
+  const form = document.createElement("form");
+  form.className = "mark-editor";
+  const box = document.createElement("textarea");
+  box.className = "mark-edit-text";
+  box.value = editingNote.value;
+  box.rows = 3;
+  box.setAttribute("aria-label", `Note ${n}`);
+  box.addEventListener("input", () => {
+    editingNote.value = box.value;
+  });
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      stopEditing();
+    }
+  });
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "quiet";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", stopEditing);
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.className = "send-button";
+  save.textContent = "Save";
+  const row = document.createElement("div");
+  row.className = "card-row";
+  row.append(cancel, save);
+  form.append(box, row);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await saveEdit();
+  });
+  return form;
+}
+
+/** Saves the note being edited, if any; true when nothing is left unsaved. */
+async function saveEdit() {
+  if (!editingNote) return true;
+  const { id, value } = editingNote;
+  const prompt = value.trim();
+  if (prompt === "") {
+    problem = "A note cannot be empty. Remove it with × instead.";
+    render();
+    return false;
+  }
+  const saved = await changeDrafts("save the note", "PATCH", `/api/${key}/drafts/${id}`, {
+    prompt,
+  });
+  if (saved) stopEditing();
+  return saved;
+}
+
+function stopEditing() {
+  const id = editingNote?.id;
+  editingNote = null;
+  notesChanged();
+  /** @type {HTMLElement | null} */ (marks.querySelector(`[data-id="${id}"] .mark-edit`))?.focus();
 }
 
 const REPLY_LABELS = { done: "Done", declined: "Declined", question: "Question" };
@@ -524,7 +716,19 @@ function setAnnotate(on) {
   annotateSwitch.setAttribute("aria-checked", String(on));
   if (!on) closeCompose(false);
   post({ type: "annotate", on });
+  render();
 }
+
+/** Puts Annotate where the reviewer left it, unless a gone file or an ended review rules it out. */
+function followAnnotate() {
+  const on = wantAnnotate && !fileGone && ended === null;
+  if (on !== annotate) setAnnotate(on);
+}
+
+// A page under review can post at any moment. What it proposes is acted on only straight after the
+// reviewer's own click or key inside it, so it can neither pop the card nor move focus by itself.
+const gesture = () =>
+  navigator.userActivation?.isActive === true && document.activeElement === frame;
 
 // The note card is composed in the chrome, from a target the artifact proposed. The artifact
 // sends the fields that describe what the reviewer pointed at, and never the note text, so a
@@ -578,7 +782,7 @@ window.addEventListener("message", (event) => {
   const data = event.data;
   if (data?.type === "ready") {
     nonce = crypto.randomUUID();
-    post({ type: "init", annotate, scroll: lastScroll });
+    post({ type: "init", annotate, scroll: lastScroll, pins: pinData() });
     document.body.dataset.ready = "1";
     return;
   }
@@ -590,9 +794,10 @@ window.addEventListener("message", (event) => {
   } else if (data.type === "target" && data.note && typeof data.note === "object") {
     // The artifact proposes a target; the reviewer's instruction is composed in the chrome, never
     // sent by the page. A `queue` message carrying note text is deliberately not accepted here.
-    // A proposal is heard only while the reviewer has Annotate on and no card open: the page can
-    // send one at any moment, and must not pop the card, take focus, or wipe a note being typed.
-    if (!annotate || composing) return;
+    // A proposal is heard only while the reviewer has Annotate on, no card open, and has just
+    // clicked or pressed a key in the page: the page can send one at any moment, and must not pop
+    // the card, take focus, or wipe a note being typed.
+    if (!annotate || composing || !gesture()) return;
     // Only what the reviewer pointed at: `answers` is the chrome's to set, from the margin.
     const { selector, tag, text, target } = data.note;
     openCompose(
@@ -601,6 +806,15 @@ window.addEventListener("message", (event) => {
       data.structure,
       data.rects,
     );
+  } else if (data.type === "pin" && Number.isInteger(data.n)) {
+    // Only the number crosses back; the note it names is the chrome's own, and focusing it is all
+    // a pin can do, and only under the reviewer's own press.
+    if (gesture()) focusNote(data.n);
+  } else if (data.type === "placed" && Array.isArray(data.missing)) {
+    // Toggled in place, never by a rebuild: the page can send this as often as it likes, and must
+    // not be able to take the focus or a half-typed edit out of the margin by doing so.
+    missingPins = new Set(data.missing.filter(Number.isInteger));
+    showMissing();
   } else if (data.type === "scroll") {
     lastScroll = { x: data.x, y: data.y, selector: data.selector, text: data.text, top: data.top };
     // Published for the same reason as ready, revision and annotate: the reviewer's place is
@@ -614,7 +828,10 @@ window.addEventListener("message", (event) => {
   }
 });
 
-annotateSwitch.addEventListener("click", () => setAnnotate(!annotate));
+annotateSwitch.addEventListener("click", () => {
+  wantAnnotate = !annotate;
+  setAnnotate(wantAnnotate);
+});
 
 takeOverButton.addEventListener("click", () => {
   retaking = true;
@@ -637,6 +854,10 @@ endButton.addEventListener("click", () => {
 endDialog.addEventListener("close", async () => {
   const choice = endDialog.returnValue;
   if (choice !== "end" && choice !== "discard") return;
+  // Discarding drops the note being edited along with the rest; nothing is left to save.
+  if (choice === "discard") editingNote = null;
+  // What the reviewer last typed is what goes, even if they ended mid-edit.
+  if (choice === "end" && !(await saveEdit())) return;
   problem = null;
   try {
     await api("POST", `/api/${key}/end`, {
@@ -645,7 +866,7 @@ endDialog.addEventListener("close", async () => {
     });
     ({ chat, drafts: pending } = await api("GET", `/api/${key}/session`));
     ended = { by: "user" };
-    setAnnotate(false);
+    followAnnotate();
   } catch (error) {
     problem = `Could not end the review: ${error.message}`;
   }
@@ -655,6 +876,7 @@ endDialog.addEventListener("close", async () => {
 document.getElementById("sendForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (pending.length === 0) return;
+  if (!(await saveEdit())) return;
   sendButton.disabled = true;
   sendButton.textContent = "Sending…";
   problem = null;

@@ -165,7 +165,8 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.card textarea {
+.card textarea,
+.mark-edit-text {
   width: 100%;
   min-height: 64px;
   box-sizing: border-box;
@@ -183,8 +184,11 @@ body {
   justify-content: flex-end;
   margin-top: var(--hw-space-8);
 }
-.card .send-button {
+.card .send-button,
+.mark-editor .send-button {
   width: auto;
+  min-height: 32px;
+  padding: 0 var(--hw-space-12);
 }
 
 #artifact {
@@ -227,32 +231,87 @@ body {
   border-left: 2px solid var(--hw-accent);
 }
 
-.mark::before {
-  content: "";
-  position: absolute;
-  top: 14px;
-  left: -6px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 2px solid var(--hw-accent);
-  background: var(--hw-surface);
+/* The note last shown on the page, from here or from its pin, is the one the eye returns to. */
+.mark.shown {
+  background: var(--hw-accent-fill);
 }
 
-.mark.sent::before {
-  background: var(--hw-accent);
+/* Queued notes leave room on the right for Edit and ×. */
+.mark:not(.sent, .editing) {
+  padding-right: 72px;
 }
 
-.mark:not(.sent) {
-  padding-right: 28px;
-}
-
+/* The number and target are one button that leads to the place on the page. */
 .mark-target {
   display: flex;
   gap: var(--hw-space-8);
   align-items: baseline;
+  width: 100%;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
   color: var(--hw-text-muted);
+  font: 12px var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+
+.mark-target:hover .mark-text {
+  color: var(--hw-text);
+  text-decoration: underline;
+}
+
+/* The number sits on the margin's rule where the dot was, and its fill is the note's state, the
+   same as its pin on the page: an outline while queued, filled once sent, the reply's colour after. */
+.mark-number {
+  position: absolute;
+  top: 9px;
+  left: -12px;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  border: 2px solid var(--hw-accent);
+  border-radius: 50%;
+  background: var(--hw-bg);
+  color: var(--hw-accent-text);
+  font: 600 11px/18px var(--font);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.mark.sent .mark-number {
+  background: var(--hw-accent);
+  color: var(--hw-on-accent);
+}
+
+.mark[data-state="done"] .mark-number {
+  border-color: var(--hw-success);
+  background: var(--hw-success);
+  color: var(--hw-bg);
+}
+
+.mark[data-state="question"] .mark-number {
+  border-color: var(--hw-warning);
+  background: var(--hw-warning);
+  color: var(--hw-bg);
+}
+
+.mark[data-state="declined"] .mark-number {
+  border-color: var(--hw-text-muted);
+  background: var(--hw-text-muted);
+  color: var(--hw-bg);
+}
+
+.mark-missing {
+  margin: var(--hw-space-4) 0 0;
+  color: var(--hw-warning);
   font-size: 12px;
+}
+
+.mark-editor {
+  margin-top: var(--hw-space-4);
 }
 
 .mark-tag {
@@ -319,6 +378,26 @@ body {
 
 .mark-remove:hover {
   color: var(--hw-danger);
+  background: var(--hw-fill-hover);
+}
+
+.mark-edit {
+  position: absolute;
+  top: var(--hw-space-8);
+  right: 28px;
+  min-width: 40px;
+  height: 24px;
+  padding: 0 var(--hw-space-8);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--hw-text-muted);
+  font: 12px var(--font);
+  cursor: pointer;
+}
+
+.mark-edit:hover {
+  color: var(--hw-text);
   background: var(--hw-fill-hover);
 }
 

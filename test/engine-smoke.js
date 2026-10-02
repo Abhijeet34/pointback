@@ -23,7 +23,7 @@ async function smoke(engine) {
     const { session } = (await cli([fixture], lab.env)).json();
     await page.goto(session.url);
     await page.waitForFunction(() => document.body.dataset.ready === "1");
-    await page.click("#annotate");
+    // Annotate starts on; the click below is the reviewer's gesture the chrome waits for.
     await page.waitForFunction(() => document.body.dataset.annotate === "1");
     await page.frameLocator("#artifact").locator("#title").click();
     await page.waitForFunction(() => document.activeElement?.id === "cardText");

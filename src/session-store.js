@@ -277,6 +277,19 @@ export class SessionStore {
     );
   }
 
+  /**
+   * Rewrites one draft's instruction in place, keeping its target, stamp and place in the batch.
+   * A draft that is gone was sent or removed in another tab, which the reviewer is told.
+   */
+  editDraft(key, id, prompt) {
+    const session = this.get(key);
+    const drafts = session.drafts ?? [];
+    const draft = drafts.find((entry) => entry.id === id);
+    if (!draft) throw new HttpError(404, "that note was already sent or removed");
+    draft.prompt = validatePrompt({ ...draft, prompt }).prompt;
+    return this.#draftsChanged(session, drafts);
+  }
+
   /** Send: every draft goes to the agent's queue as one batch, in the order it was written. */
   send(key) {
     const session = this.get(key);

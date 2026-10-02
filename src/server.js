@@ -247,6 +247,11 @@ async function api(req, res, url, ctx) {
     if (!DRAFT_ID_PATTERN.test(draft[2])) throw new HttpError(404, "no such draft");
     return sendJson(res, 200, ctx.store.removeDraft(draft[1], draft[2]));
   }
+  if (req.method === "PATCH" && draft) {
+    if (!DRAFT_ID_PATTERN.test(draft[2])) throw new HttpError(404, "no such draft");
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, ctx.store.editDraft(draft[1], draft[2], body.prompt));
+  }
 
   const keyed = pathname.match(/^\/api\/([^/]+)\/(session|prompts|drafts|events|end|replies)$/);
   if (!keyed) throw new HttpError(404, "not found");

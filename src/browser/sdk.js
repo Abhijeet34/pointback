@@ -37,6 +37,40 @@
     <div class="boxes"></div>`;
   const boxes = /** @type {HTMLElement} */ (shadow.querySelector(".boxes"));
 
+  // One numbered pin per note, drawn from what the chrome sends: where the note points, its number
+  // and its state, never its instruction or the agent's reply, which this page must not read. The
+  // layer sits in document coordinates, so the pins ride the page's own scroll without a repaint.
+  // Colours are the house's dark roles as literals, since this frame cannot load the chrome's sheets;
+  // every pin and its focus ring carry a dark halo, so they read on a white page and a dark one.
+  const PIN = 20;
+  const PIN_STATES = {
+    queued: "not sent yet",
+    sent: "sent",
+    done: "done",
+    declined: "declined",
+    question: "your agent asked a question",
+  };
+  const pinHost = document.createElement("div");
+  pinHost.style.cssText =
+    "all:initial;position:absolute;inset:0 auto auto 0;width:0;height:0;z-index:2147483646";
+  const pinRoot = pinHost.attachShadow({ mode: "closed" });
+  pinRoot.innerHTML = `
+    <style>
+      .pin { position: absolute; box-sizing: border-box; width: ${PIN}px; height: ${PIN}px; padding: 0; border: 2px solid transparent; border-radius: 50%; background: oklch(78% 0.12 230); color: oklch(16.5% 0.012 260); font: 600 11px/16px system-ui, sans-serif; font-variant-numeric: tabular-nums; text-align: center; cursor: pointer; box-shadow: 0 0 0 2px oklch(16.5% 0.012 260); }
+      .pin[data-state="queued"] { background: oklch(19.5% 0.012 260); border-color: oklch(78% 0.12 230); color: oklch(78% 0.12 230); }
+      .pin[data-state="done"] { background: oklch(65.5% 0.14 150); }
+      .pin[data-state="question"] { background: oklch(67.8% 0.146 70); }
+      .pin[data-state="declined"] { background: oklch(67% 0.024 260); }
+      .pin[data-active] { box-shadow: 0 0 0 2px oklch(16.5% 0.012 260), 0 0 0 5px oklch(78% 0.12 230); }
+      .pin:focus-visible { outline: 2px solid oklch(98.7% 0.006 260); outline-offset: 2px; box-shadow: 0 0 0 6px oklch(16.5% 0.012 260); }
+    </style>
+    <div class="pins"></div>`;
+  const pinLayer = /** @type {HTMLElement} */ (pinRoot.querySelector(".pins"));
+  /** @type {{ n: number, state: string, selector: string, tag: string, text: string, target?: any, button: HTMLButtonElement, anchor: Element | Range | null }[]} */
+  let pins = [];
+  let activePin = 0;
+  let missingSent = "";
+
   const send = (message) => parent.postMessage({ ...message, nonce }, chromeOrigin);
   // SVG elements report a lowercase tagName, so every comparison against the lists above goes through this.
   const tagName = (element) => element.tagName.toUpperCase();
@@ -51,6 +85,9 @@
       // A reload replaces the document, so the chrome hands back where the reviewer was reading.
       if (data.scroll) restoreScroll(data.scroll);
       setAnnotate(data.annotate);
+      send({ type: "annotate-ok", on: annotate });
+      // The agent may have rewritten the page, so every note is found again by its anchor.
+      setPins(data.pins);
       // The chrome counts the page shown only once it has finished loading, been put back where
       // the reviewer was, and become annotatable; anything earlier is a page still moving.
       whenLoaded(() => send({ type: "shown" }));
@@ -64,6 +101,10 @@
       // The chrome closed its note card; drop the selection and, for the keyboard path, hand
       // focus back to the element the reviewer came from so a Tab lands on the next one.
       closeTarget(data.refocus === true);
+    } else if (data?.nonce === nonce && data.type === "pins") {
+      setPins(data.pins);
+    } else if (data?.nonce === nonce && data.type === "reveal") {
+      reveal(data.n);
     }
   });
 
@@ -126,9 +167,14 @@
     };
   }
 
+  // The highlight and the pins are ours, not the page's: nothing in them is a target.
+  const ours = (event) => event.composedPath().some((node) => node === host || node === pinHost);
+  const ownText = (element) =>
+    [...element.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+
   function candidate(node) {
     let element = node instanceof Element ? node : node?.parentElement;
-    if (!element || host.contains(element)) return null;
+    if (!element || host.contains(element) || pinHost.contains(element)) return null;
     if (element.closest(INTERACTIVE)) return null;
     while (element && SKIP.has(tagName(element))) element = element.parentElement;
     return element;
@@ -149,8 +195,10 @@
       if (SKIP.has(tagName(element)) || host.contains(element) || element.closest(INTERACTIVE))
         continue;
       if (element.hasAttribute("tabindex")) continue;
-      const ownText = [...element.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
-      if (ownText || /^(IMG|SVG|TABLE|TR|PRE|FIGURE|VIDEO|CANVAS)$/.test(tagName(element))) {
+      if (
+        ownText(element) ||
+        /^(IMG|SVG|TABLE|TR|PRE|FIGURE|VIDEO|CANVAS)$/.test(tagName(element))
+      ) {
         element.setAttribute("tabindex", "0");
         focusable.push(element);
       }
@@ -393,10 +441,227 @@
     return lines.join("\n");
   }
 
+  // A pin keeps its button across updates, so a reviewer whose focus is on one does not lose it
+  // when a reply or another note changes the set.
+  function setPins(list) {
+    if (!Array.isArray(list)) return;
+    const kept = new Map(pins.map((pin) => [pin.n, pin.button]));
+    pins = list.map((pin) => {
+      const button = kept.get(pin.n) ?? pinButton(pin.n);
+      kept.delete(pin.n);
+      button.dataset.state = pin.state;
+      button.setAttribute("aria-label", `Note ${pin.n}, ${PIN_STATES[pin.state] ?? pin.state}`);
+      return { ...pin, button, anchor: findAnchor(pin) };
+    });
+    for (const button of kept.values()) button.remove();
+    pinLayer.append(...pins.map((pin) => pin.button).filter((button) => !button.isConnected));
+    activate(activePin);
+    placePins();
+  }
+
+  function pinButton(n) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pin";
+    button.textContent = String(n);
+    button.addEventListener("click", () => {
+      activate(n);
+      send({ type: "pin", n });
+    });
+    return button;
+  }
+
+  function activate(n) {
+    activePin = n;
+    for (const pin of pins) pin.button.toggleAttribute("data-active", pin.n === n);
+  }
+
+  /** Brings a note's target to the middle of the window, or its top when it is taller than that. */
+  function reveal(n) {
+    activate(n);
+    const anchor = pins.find((pin) => pin.n === n)?.anchor;
+    if (!anchor) return;
+    const element = anchor instanceof Range ? anchor.startContainer.parentElement : anchor;
+    const tall = element.getBoundingClientRect().height > innerHeight * 0.8;
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    element.scrollIntoView({
+      block: tall ? "start" : "center",
+      inline: "nearest",
+      behavior: still ? "instant" : "smooth",
+    });
+  }
+
+  function query(selector) {
+    try {
+      return document.querySelector(selector);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The element a note was left on, found again in a page the agent may have rewritten: the
+   * selector first, confirmed by tag, text and cell, then the first element that matches all three.
+   * A note whose text the agent changed stays on the element its selector still names.
+   */
+  function findAnchor(pin) {
+    if (pin.tag === "text") return passageAnchor(pin);
+    const cell = pin.target?.type === "table-cell" ? pin.target : null;
+    const fits = (element) => {
+      if (element.tagName.toLowerCase() !== pin.tag || visibleText(element) !== pin.text)
+        return false;
+      const named = cell && cellTarget(element);
+      return !cell || (named?.row === cell.row && named?.column === cell.column);
+    };
+    const bySelector = query(pin.selector);
+    if (bySelector && fits(bySelector)) return bySelector;
+    let seen = 0;
+    for (const element of document.body.querySelectorAll("*")) {
+      if (++seen > MAX_FOCUSABLE) break;
+      if (fits(element)) return element;
+    }
+    return bySelector;
+  }
+
+  /**
+   * A passage found again: in the element its selector names if it is still there, else in the
+   * smallest element that holds it, at the occurrence whose surrounding text matches and which
+   * sits nearest the offset it was taken at. Falls back to the element when the words are gone.
+   */
+  function passageAnchor(pin) {
+    const words = String(pin.text ?? "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    const bySelector = query(pin.selector);
+    if (words.length === 0) return bySelector;
+    const pattern = new RegExp(
+      words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"),
+      "g",
+    );
+    const { start = 0, before = "", after = "" } = pin.target ?? {};
+    const best = (element) => {
+      let found = null;
+      for (const match of element.textContent.matchAll(pattern)) {
+        const whole = element.textContent;
+        const end = match.index + match[0].length;
+        const context =
+          squash(whole.slice(0, match.index)).endsWith(before) &&
+          squash(whole.slice(end)).startsWith(after);
+        const score = (context ? 0 : 1e9) + Math.abs(match.index - start);
+        if (!found || score < found.score) found = { start: match.index, end, score };
+      }
+      return found;
+    };
+    let element = bySelector && best(bySelector) ? bySelector : null;
+    if (!element) {
+      let seen = 0;
+      for (const node of document.body.querySelectorAll("*")) {
+        if (++seen > MAX_FOCUSABLE) break;
+        if (SKIP.has(tagName(node)) || host.contains(node)) continue;
+        pattern.lastIndex = 0;
+        const size = node.textContent.length;
+        if ((!element || size < element.textContent.length) && pattern.test(node.textContent))
+          element = node;
+      }
+    }
+    const hit = element && best(element);
+    return (hit && rangeAt(element, hit.start, hit.end)) ?? bySelector;
+  }
+
+  /** A range over characters `start` to `end` of the element's text content. */
+  function rangeAt(element, start, end) {
+    const range = document.createRange();
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let offset = 0;
+    let started = false;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const length = /** @type {Text} */ (node).data.length;
+      if (!started && start <= offset + length) {
+        range.setStart(node, start - offset);
+        started = true;
+      }
+      if (started && end <= offset + length) {
+        range.setEnd(node, end - offset);
+        return range;
+      }
+      offset += length;
+    }
+    return null;
+  }
+
+  // A pin sits like a footnote mark on the top right of the first line of what it marks, so it
+  // reads as attached to the words without covering them; a target with no text of its own, such
+  // as an image or a table, gets its box.
+  function anchorRect(anchor) {
+    let rects;
+    if (anchor instanceof Range) rects = [...anchor.getClientRects()];
+    else if (ownText(anchor)) {
+      const range = document.createRange();
+      range.selectNodeContents(anchor);
+      rects = [...range.getClientRects()];
+    } else rects = [anchor.getBoundingClientRect()];
+    return rects.find((r) => r.width > 0 && r.height > 0) ?? null;
+  }
+
+  const attached = (anchor) =>
+    anchor instanceof Range
+      ? !anchor.collapsed && anchor.startContainer.isConnected
+      : anchor.isConnected;
+
+  function placePins() {
+    const origin = pinHost.getBoundingClientRect();
+    const width = document.documentElement.clientWidth;
+    const placed = [];
+    const missing = [];
+    for (const pin of pins) {
+      if (!pin.anchor || !attached(pin.anchor)) pin.anchor = findAnchor(pin);
+      const rect = pin.anchor && anchorRect(pin.anchor);
+      pin.button.hidden = !rect;
+      if (!rect) {
+        missing.push(pin.n);
+        continue;
+      }
+      let x = Math.min(Math.max(rect.right + 1, 0), width - PIN) - origin.left;
+      const y = Math.max(rect.top - PIN + 4 - origin.top, 0);
+      // Two notes on one spot stand side by side rather than one hiding the other.
+      while (placed.some((p) => Math.abs(p.x - x) < PIN && Math.abs(p.y - y) < PIN)) x += PIN + 4;
+      placed.push({ x, y });
+      pin.button.style.left = `${x}px`;
+      pin.button.style.top = `${y}px`;
+    }
+    // The chrome says in the margin which notes no longer have anything on the page to point at.
+    const report = JSON.stringify(missing);
+    if (report !== missingSent) {
+      missingSent = report;
+      send({ type: "placed", missing });
+    }
+  }
+
+  // Layout moves under the pins when the window resizes, the page grows, fonts or images arrive,
+  // or a scrolling box inside the page scrolls; the document's own scroll needs nothing.
+  let placing = false;
+  const replace = () => {
+    if (placing || pins.length === 0) return;
+    placing = true;
+    requestAnimationFrame(() => {
+      placing = false;
+      placePins();
+    });
+  };
+  window.addEventListener("resize", replace);
+  document.addEventListener("scroll", (event) => event.target !== document && replace(), {
+    capture: true,
+    passive: true,
+  });
+  new ResizeObserver(replace).observe(document.documentElement);
+  document.fonts?.ready.then(replace);
+  whenLoaded(replace);
+
   document.addEventListener(
     "click",
     (event) => {
-      if (!annotate || event.composedPath().includes(host)) return;
+      if (!annotate || ours(event)) return;
       const element = candidate(event.target);
       if (!element) return;
       event.preventDefault();
@@ -417,7 +682,7 @@
     true,
   );
   document.addEventListener("keydown", (event) => {
-    if (!annotate || open || event.composedPath().includes(host)) return;
+    if (!annotate || open || ours(event)) return;
     const element = candidate(document.activeElement);
     if (!element || element === document.body) return;
     if (event.shiftKey && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
@@ -434,6 +699,15 @@
   document.addEventListener("mouseover", (event) => {
     if (annotate && !open) outline(candidate(event.target));
   });
+  // The highlight is drawn in window coordinates, so a scroll or a resize draws it again where its
+  // element now is, rather than leaving a box over whatever moved under the old spot.
+  const reoutline = () => {
+    if (!annotate) return;
+    if (!open) outline(candidate(document.activeElement));
+    else if (open.tag !== "text") outline(open.element);
+  };
+  window.addEventListener("scroll", reoutline, { capture: true, passive: true });
+  window.addEventListener("resize", reoutline);
   document.addEventListener("focusin", (event) => {
     if (annotate && !open) outline(candidate(event.target));
   });
@@ -453,6 +727,6 @@
     { passive: true },
   );
 
-  document.documentElement.append(host);
+  document.documentElement.append(pinHost, host);
   send({ type: "ready" });
 })();
