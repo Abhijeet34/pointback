@@ -54,6 +54,7 @@
     "bench": "node scripts/bench-state.js"
   },
   "dependencies": {
+    "markdown-it": "15.0.2",
     "parse5": "8.0.1"
   },
   "devDependencies": {
