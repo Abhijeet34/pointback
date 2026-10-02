@@ -1627,12 +1627,16 @@ test(
     );
     await page.type("The billing queue");
     await page.enter();
-    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    // The drafts event on the stream can render the added note before the add's own HTTP
+    // answer closes the card, so a wait keyed on the note count alone can read focus while
+    // it is still in cardText. The card closing is what the reviewer sees happen last.
+    await page.waitFor("document.getElementById('card').hidden");
     assert.equal(
       await page.eval("document.activeElement.id"),
       "send",
       "an answer written from the margin hands focus on to Send",
     );
+    assert.equal(await page.eval("document.querySelectorAll('.mark:not(.sent)').length"), 1);
     assert.equal(await page.eval("document.querySelectorAll('.mark-answer').length"), 0);
     assert.equal(
       await page.eval("document.querySelector('.mark:not(.sent) .mark-tag').textContent"),
