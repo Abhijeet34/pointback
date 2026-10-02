@@ -120,6 +120,25 @@ test("the chrome page carries a locked-down policy and cannot be framed", async 
   assert.equal(await status("/session/__proto__"), 404);
 });
 
+test("the wrapper frame is served for the chrome under the other loopback name, and nothing else", async () => {
+  const chrome = await fetch(`${base}/session/${key}`);
+  const wrapperAt = `http://localhost:${srv.port}`;
+  assert.match(
+    chrome.headers.get("content-security-policy"),
+    new RegExp(`frame-src ${wrapperAt};`),
+  );
+  const res = await fetch(`${base}/wrapper.html`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "text/html; charset=utf-8");
+  // Asked for under 127.0.0.1, so it answers for a chrome under localhost.
+  assert.match(
+    res.headers.get("content-security-policy"),
+    new RegExp(`frame-ancestors ${wrapperAt}$`),
+  );
+  assert.match(await res.text(), /<script src="\/wrapper\.js"><\/script>/);
+  assert.equal(await status("/wrapper.html", { method: "POST" }), 404);
+});
+
 test("the chrome page names a tab icon, and both forms of it are served as images", async () => {
   const html = await fetch(`${base}/session/${key}`).then((r) => r.text());
   assert.match(html, /<link rel="icon" href="\/icon\.svg" sizes="any" type="image\/svg\+xml" \/>/);
