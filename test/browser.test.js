@@ -526,21 +526,42 @@ test(
     const styled = "rgb(10, 120, 200) 9px";
     const opened = await cli([file, "--root", repo], lab.env);
     assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(opened.json().refused_assets, undefined, "under --root nothing is refused");
     const page = await browser.page(opened.json().session.url);
     const artifact = await page.frame();
     await artifact.waitFor(`${painted} === ${JSON.stringify(styled)}`);
     const unstyledAtNewAddress = `document.readyState === 'complete' && ![null, ${JSON.stringify(styled)}].includes(${painted}) && /\\/[0-9a-f]{32}\\/actions\\.html$/.test(location.pathname)`;
+    // The line the reviewer reads about files the review does not serve, or null while it paints nothing.
+    const outsideLine =
+      "(() => { const line = document.getElementById('outside'); return line?.checkVisibility() ? line.textContent : null; })()";
+    await page.waitFor("document.body.dataset.ready === '1'");
+    assert.equal(
+      await page.eval(outsideLine),
+      null,
+      "the tab says nothing while every file is served",
+    );
 
     // Opened again without a root while this tab shows the review, which opens no second tab: this
     // one follows the page to the address the new root gives it, or its next reload paints a 404.
-    const reopened = (await cli([file], lab.env)).json().session.url;
+    // The agent is told which files the page now goes without, and what brings them back.
+    const again = (await cli([file], lab.env)).json();
+    assert.deepEqual(again.refused_assets, ["../../exports/variables.css", "../components.css"]);
+    assert.match(
+      again.next_step,
+      /^The page loads \.\.\/\.\.\/exports\/variables\.css, \.\.\/components\.css from outside the folder the review serves, so it shows without them; run `pointback .*actions\.html --root <dir>`/,
+    );
+    const reopened = again.session.url;
     await artifact.waitFor(unstyledAtNewAddress);
+    const told =
+      "../../exports/variables.css, ../components.css are outside the folder this review serves, so the page shows without them. Your agent can open it with --root to include them.";
+    assert.equal(await page.waitFor(outsideLine), told, "the open tab is told as it follows");
 
-    // A second tab on that open gets today's default and the sheet unstyled.
+    // A second tab on that open gets today's default and the sheet unstyled, and says why.
     const plain = await browser.page(reopened);
     const plainFrame = await plain.frame();
     await plainFrame.waitFor(`document.readyState === 'complete' && ${painted} !== null`);
     assert.notEqual(await plainFrame.eval(painted), styled, "assets stay in the file's folder");
+    assert.equal(await plain.waitFor(outsideLine), told, "a fresh tab is told on opening");
 
     // The first tab gets the review back when the second goes, still at the address the new root
     // gave it rather than the one the wider root did.
@@ -1213,8 +1234,8 @@ test(
  * the slice test asserts; turning it on here when it is not keeps every other test about its own
  * property rather than about that default.
  */
-async function openReview(url) {
-  const page = await browser.page(url);
+async function openReview(url, viewport) {
+  const page = await browser.page(url, viewport);
   const attaching = page.frame();
   await page.waitFor("document.body.dataset.ready === '1'");
   const artifact = await attaching;
@@ -2286,17 +2307,24 @@ const firstLine = (selector) => `JSON.stringify((() => {
   const line = rects.filter((r) => r.top + r.height / 2 > first.top && r.top + r.height / 2 < first.bottom);
   return {
     top: Math.min(...line.map((r) => r.top)),
+    bottom: Math.max(...line.map((r) => r.bottom)),
     right: Math.max(...line.map((r) => r.right)),
     code: element.firstElementChild?.tagName === "CODE" ? element.firstElementChild.getBoundingClientRect().right : null,
   };
 })())`;
 
-/** Asserts a pin stands at the top right of the first line of its target, past any opening code. */
+/**
+ * Asserts a pin stands at the end of the first line of its target, past any opening code: on its
+ * top right corner, or level with it where that corner has words above it.
+ */
 async function pinOnFirstLine(artifact, pin, selector) {
   const line = JSON.parse(await artifact.eval(firstLine(selector)));
   assert.ok(line.code !== null, `${selector} opens with inline code`);
   assert.ok(
-    Math.abs(pin.left - (line.right + 1)) <= 2 && pin.bottom <= line.top + 2,
+    pin.left >= line.right - 1 &&
+      pin.left <= line.right + 6 &&
+      pin.bottom >= line.top - 2 &&
+      pin.top <= line.top + 2,
     `${pin.name} paints at ${JSON.stringify(pin)}; the first line of ${selector} ends at ` +
       `${line.right} and starts at ${line.top}, its opening code chip ends at ${line.code}`,
   );
@@ -2401,6 +2429,201 @@ test(
     await pinOnFirstLine(review.artifact, onInstall, install);
     await review.page.close();
     rmSync(dirname(readme.file), { recursive: true, force: true });
+  },
+);
+
+/**
+ * The words each pin paints over: every text box on the page, from its text nodes, that a pin's
+ * box intersects, named by the element holding it. Measured as the pins are, in the frame's viewport.
+ */
+async function wordsUnderPins(artifact, pins) {
+  const words = JSON.parse(
+    await artifact.eval(`JSON.stringify((() => {
+      const out = [];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.data.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const r of range.getClientRects())
+          if (r.width > 0 && r.height > 0)
+            out.push({ text: node.data.trim().slice(0, 30), in: node.parentElement.tagName.toLowerCase(), left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+      }
+      return out;
+    })())`),
+  );
+  const overlaps = (a, b) =>
+    a.left < b.right - 0.5 &&
+    b.left < a.right - 0.5 &&
+    a.top < b.bottom - 0.5 &&
+    b.top < a.bottom - 0.5;
+  return pins.flatMap((pin) =>
+    words.filter((w) => overlaps(pin, w)).map((w) => `${pin.name} covers <${w.in}> "${w.text}"`),
+  );
+}
+
+/**
+ * The pins whose box, with the widest ring a pin paints (5 px), leaves the frame's visible width or
+ * runs above the top of the page. Read with the page scrolled to its top, as the pins were.
+ */
+async function pinsOffFrame(artifact, pins) {
+  const width = Number(await artifact.eval("document.documentElement.clientWidth"));
+  return pins
+    .filter((pin) => pin.left - 5 < 0 || pin.right + 5 > width || pin.top - 5 < 0)
+    .map(
+      (pin) =>
+        `${pin.name} paints at ${pin.left}..${pin.right}, ${pin.top}, past the frame's 0..${width}`,
+    );
+}
+
+/**
+ * Notes every element `selectors` names, and a passage of `passage.length` characters from the
+ * start of `passage.selector` selected by dragging over it, then waits for one pin each.
+ */
+async function pinsOnEach(page, artifact, selectors, passage) {
+  for (const [i, selector] of selectors.entries()) {
+    await noteOn(page, artifact, selector, `Note on ${i + 1}`);
+  }
+  if (passage) {
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+    const line = JSON.parse(
+      await artifact.eval(`(() => {
+        const text = document.querySelector(${JSON.stringify(passage.selector)}).firstChild;
+        text.parentElement.scrollIntoView({ block: "center", behavior: "instant" });
+        const range = document.createRange();
+        range.setStart(text, 0);
+        range.setEnd(text, ${passage.length});
+        return JSON.stringify(range.getClientRects()[0]);
+      })()`),
+    );
+    const y = frameBox.top + line.top + line.height / 2;
+    await page.pointerInto(artifact, { x: frameBox.left + line.left + 1, y });
+    await page.drag(
+      { x: frameBox.left + line.left + 1, y },
+      { x: frameBox.left + line.right - 1, y },
+    );
+    await page.waitFor("document.activeElement.id === 'cardText'");
+    await page.type("Note on the passage");
+    await page.enter();
+    await page.waitFor("document.getElementById('card').hidden");
+    selectors = [...selectors, passage.selector];
+  }
+  await artifact.eval("window.scrollTo({ top: 0, behavior: 'instant' })");
+  return until(
+    async () => {
+      const shown = await pinsOn(artifact);
+      return shown.length === selectors.length ? shown : null;
+    },
+    { what: `${selectors.length} pins` },
+  );
+}
+
+test(
+  "no pin covers a word of the page or leaves the frame, and a target's pins stand side by side",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const covered = {};
+    for (const viewport of [
+      { width: 390, height: 844 },
+      { width: 800, height: 600 },
+      { width: 1440, height: 900 },
+    ]) {
+      const { file, html } = copyOfFixture();
+      // A button pair, as a decision section ends, with two notes on the first button.
+      writeFileSync(
+        file,
+        html.replace(
+          '<button id="native">',
+          '<p id="pair"><button id="approve">Approve plan</button> <button id="reject">Reject</button></p><button id="native">',
+        ),
+      );
+      const url = (await cli([file], lab.env)).json().session.url;
+      const { page, artifact } = await openReview(url, viewport);
+      const onHtml = await pinsOnEach(page, artifact, [
+        "#title",
+        "#p1",
+        CELL(1),
+        "#risks h2",
+        "#risks > p",
+        "#risks li:nth-of-type(2)",
+        "#rollback h3",
+        "#rollback > p",
+        "#rollback pre",
+        "#rollback blockquote",
+        "figcaption",
+        "#approve",
+        "#approve",
+        "#reject",
+      ]);
+      // The two notes on Approve stand side by side, one pin and a gap apart, not on another button.
+      const [first, second] = onHtml.slice(11, 13);
+      const apart =
+        Math.abs(second.top - first.top) < 0.5 && Math.abs(second.left - first.right - 4) < 0.5;
+      covered[`html at ${viewport.width}`] = [
+        ...(await wordsUnderPins(artifact, onHtml)),
+        ...(await pinsOffFrame(artifact, onHtml)),
+        ...(apart
+          ? []
+          : [
+              `${second.name} at ${second.left}, ${second.top} is not beside ${first.name} at ${first.right}, ${first.top}`,
+            ]),
+      ];
+      await page.close();
+
+      // Rendered Markdown holds paragraphs 16 px apart, closer than a pin is tall.
+      const readme = copyOfReadme();
+      const review = await openReview(
+        (await cli([readme.file], lab.env)).json().session.url,
+        viewport,
+      );
+      const onMarkdown = await pinsOnEach(
+        review.page,
+        review.artifact,
+        [
+          "main > p:nth-of-type(1)",
+          "main > p:nth-of-type(2)",
+          "main > p:nth-of-type(3)",
+          "main > p:nth-of-type(4)",
+          "main > p:nth-of-type(5)",
+          "main > p:nth-of-type(6)",
+          "main > h2:nth-of-type(1)",
+          "main > h2:nth-of-type(2)",
+          "main > pre:nth-of-type(1)",
+          "main > ul:nth-of-type(1) > li:nth-of-type(1)",
+          "main > ul:nth-of-type(1) > li:nth-of-type(2)",
+        ],
+        { selector: "main > p:nth-of-type(3)", length: 42 },
+      );
+      // A section heading draws a rule along its top; its pin stands clear of the rule, not on it.
+      const rules = JSON.parse(
+        await review.artifact.eval(
+          "JSON.stringify([...document.querySelectorAll('main > h2')].slice(0, 2).map((h) => h.getBoundingClientRect().top))",
+        ),
+      );
+      const onRules = onMarkdown
+        .slice(6, 8)
+        .filter((pin, i) => pin.top < rules[i] + 1 && pin.bottom > rules[i])
+        .map(
+          (pin) =>
+            `${pin.name} sits on its heading's rule at ${rules[onMarkdown.indexOf(pin) - 6]}`,
+        );
+      covered[`markdown at ${viewport.width}`] = [
+        ...(await wordsUnderPins(review.artifact, onMarkdown)),
+        ...(await pinsOffFrame(review.artifact, onMarkdown)),
+        ...onRules,
+      ];
+      await review.page.close();
+      rmSync(dirname(readme.file), { recursive: true, force: true });
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(covered, {
+      "html at 390": [],
+      "markdown at 390": [],
+      "html at 800": [],
+      "markdown at 800": [],
+      "html at 1440": [],
+      "markdown at 1440": [],
+    });
   },
 );
 
@@ -2931,7 +3154,7 @@ test(
 );
 
 test(
-  "the chrome's text grows with the house text size",
+  "the reviewer sets the chrome's text size in the bar, and it stays for the next review",
   { skip: !executable && "no browser found" },
   async () => {
     const file = copyOfDark();
@@ -2943,8 +3166,18 @@ test(
         const e = document.querySelector(s);
         return [s, parseFloat(getComputedStyle(e).fontSize), e.getBoundingClientRect().height];
       }))`;
+    const step = (size) => `document.querySelector('#textSize [data-size="${size}"]')`;
+    const checked =
+      "document.querySelector('#textSize [aria-checked=true]')?.getAttribute('aria-label')";
+    assert.equal(await page.eval(checked), "Medium", "the house default, M, to start");
     const at = JSON.parse(await page.eval(SIZES));
-    await page.eval("document.documentElement.dataset.textSize = 'xl'");
+    // One button in the bar opens the five steps; closed, they take no room in it.
+    const panel = "document.getElementById('textSizePanel')";
+    assert.equal(await page.eval(`${panel}.checkVisibility()`), false, "the steps start closed");
+    await clickOn(page, "document.getElementById('textSizeButton')");
+    await page.waitFor(`${panel}.matches(':popover-open') && ${panel}.checkVisibility()`);
+    await clickOn(page, step("xl"));
+    await page.waitFor(`${checked} === "Extra large"`);
     const xl = JSON.parse(await page.eval(SIZES));
     // The house root is 15px at M and 19px at XL: every step of its rem ramp moves by 19/15.
     for (const [i, [selector, size]] of at.entries()) {
@@ -2953,6 +3186,80 @@ test(
     }
     const send = at.findIndex(([selector]) => selector === "#send");
     assert.ok(xl[send][2] > at[send][2] * 1.2, "Send's box grows with its label");
+    const fontOf = (selector) =>
+      `parseFloat(getComputedStyle(document.querySelector('${selector}')).fontSize)`;
+
+    // The arrow keys move the choice, one Tab stop for the five, and the next review opens at it.
+    await page.key("ArrowLeft", { keyCode: 37 });
+    await page.waitFor(`${checked} === "Large" && document.activeElement === ${step("l")}`);
+    assert.ok(Math.abs((await page.eval(fontOf("#status"))) - at[3][1] * (17 / 15)) < 0.01);
+    await page.reload();
+    await page.waitFor("document.body.dataset.ready === '1'");
+    assert.equal(await page.eval(checked), "Large", "the size stays across a reload");
+    assert.ok(Math.abs((await page.eval(fontOf("#status"))) - at[3][1] * (17 / 15)) < 0.01);
+
+    // On top of the reviewer's own browser default, which every step is a share of.
+    await page.send("Page.setFontSizes", { fontSizes: { standard: 20, fixed: 13 } });
+    await page.waitFor(
+      `Math.abs(${fontOf("#status")} - ${at[3][1] * (17 / 15) * (20 / 16)}) < 0.01`,
+    );
+    await page.send("Page.setFontSizes", { fontSizes: { standard: 16, fixed: 13 } });
+    await clickOn(page, "document.getElementById('textSizeButton')");
+    await page.waitFor(`${panel}.matches(':popover-open')`);
+    await clickOn(page, step("m"));
+    await page.waitFor(`${checked} === "Medium"`);
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+/** Picks a text size the way a reviewer does: the Aa button, then the step. */
+async function pickTextSize(page, size) {
+  await clickOn(page, "document.getElementById('textSizeButton')");
+  await page.waitFor("document.getElementById('textSizePanel').matches(':popover-open')");
+  await clickOn(page, `document.querySelector('#textSize [data-size="${size}"]')`);
+  await page.waitFor(`document.documentElement.dataset.textSize === "${size}"`);
+}
+
+test(
+  "the text size reaches a rendered Markdown page, and leaves an HTML page as its author set it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const prose = "parseFloat(getComputedStyle(document.querySelector('main > p')).fontSize)";
+    const readme = copyOfReadme();
+    const review = await openReview((await cli([readme.file], lab.env)).json().session.url);
+    const atM = Number(await review.artifact.eval(prose));
+    await pickTextSize(review.page, "xl");
+    // The house root is 15px at M and 19px at XL, and the page's prose is rem on it.
+    await review.artifact.waitFor(`Math.abs(${prose} - ${atM * (19 / 15)}) < 0.05`);
+    // A reload is a new document, told the size again when it says it is ready.
+    const reattaching = review.page.frame();
+    await review.page.reload();
+    const reloaded = await reattaching;
+    await review.page.waitFor("document.body.dataset.ready === '1'");
+    await reloaded.waitFor(`Math.abs(${prose} - ${atM * (19 / 15)}) < 0.05`);
+
+    const { file } = copyOfFixture();
+    const html = await openReview((await cli([file], lab.env)).json().session.url);
+    await html.page.waitFor("document.documentElement.dataset.textSize === 'xl'");
+    const sizes = `JSON.stringify([document.documentElement.dataset.textSize ?? null, parseFloat(getComputedStyle(document.getElementById('p1')).fontSize)])`;
+    assert.deepEqual(JSON.parse(await html.artifact.eval(sizes)), [null, 16], "the author's 16px");
+    await pickTextSize(html.page, "m");
+    await html.page.close();
+    await review.page.close();
+    rmSync(dirname(readme.file), { recursive: true, force: true });
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "the chrome paints in the house faces, served by the daemon",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const file = copyOfDark();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    await noteOn(page, artifact, "#title", "Name the run");
     // The faces are what paints, read from the font the renderer used for each run of text, and
     // they came from this daemon: the review asks nothing of the network off loopback.
     await page.eval("document.fonts.ready.then(() => true)");
@@ -3186,6 +3493,76 @@ test(
     assert.equal(keys.indexOf("lines"), keys.indexOf("selector") + 1, "beside the selector");
     await page.close();
     rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+/**
+ * Every inline code chip in the rendered page, as it paints: the ones a line break splits though
+ * they would fit on one line, and the ones whose punctuation after them stands further off than a
+ * word space of the text around them, read from the glyph boxes of the chip's text and the next.
+ */
+const CHIPS = `JSON.stringify((() => {
+  const rectsOf = (node, start = 0, end = node.data.length) => {
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, end);
+    return [...range.getClientRects()].filter((r) => r.width > 0);
+  };
+  const wordSpace = (block) => {
+    const widthOf = (words) => {
+      const probe = document.createElement("span");
+      probe.style.cssText = "position: absolute; white-space: pre";
+      probe.textContent = words;
+      block.append(probe);
+      const width = probe.getBoundingClientRect().width;
+      probe.remove();
+      return width;
+    };
+    return widthOf("a b") - widthOf("ab");
+  };
+  const split = [];
+  const spaced = [];
+  for (const code of document.querySelectorAll(":not(pre) > code")) {
+    const text = code.firstChild;
+    if (!(text instanceof Text)) continue;
+    const block = code.closest("p, li, td, th, blockquote");
+    const style = getComputedStyle(block);
+    const room = block.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const probe = code.cloneNode(true);
+    probe.style.cssText = "position: absolute; white-space: nowrap; display: inline-block; max-width: none";
+    block.append(probe);
+    const natural = probe.getBoundingClientRect().width;
+    probe.remove();
+    const lines = new Set(rectsOf(text).map((r) => Math.round(r.top)));
+    if (natural <= room && lines.size > 1) split.push(code.textContent);
+    const next = code.nextSibling;
+    if (next instanceof Text && /^[,.;:)!?]/.test(next.data)) {
+      const gap = rectsOf(next, 0, 1)[0].left - rectsOf(text).at(-1).right;
+      const space = wordSpace(block);
+      if (gap >= space) spaced.push(code.textContent + next.data[0] + " " + gap.toFixed(1) + " px off, a word space is " + space.toFixed(1));
+    }
+  }
+  return { split, spaced: spaced.slice(0, 3), of: spaced.length };
+})())`;
+
+test(
+  "inline code in Markdown stays whole on its line, and the punctuation after it sits close",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const chips = {};
+    for (const width of [390, 800, 1440]) {
+      const { file } = copyOfReadme();
+      const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+        width,
+        height: 900,
+      });
+      await artifact.eval("document.fonts.ready.then(() => true)");
+      chips[width] = JSON.parse(await artifact.eval(CHIPS));
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    const whole = { split: [], spaced: [], of: 0 };
+    assert.deepEqual(chips, { 390: whole, 800: whole, 1440: whole });
   },
 );
 

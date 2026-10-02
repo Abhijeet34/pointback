@@ -46,6 +46,16 @@
   // this frame cannot load the chrome's sheets. Every pin and its focus ring carry a dark halo, so
   // they read on a white page and a dark one.
   const PIN = 24;
+  // A pin stands GAP clear of the line or box it is beside.
+  const GAP = 4;
+  // A row shifted clear of a sibling pin tries this many spots before settling for the one that
+  // covers least, so the search always ends even when the frame is dense with obstacles.
+  const MAX_SHIFT_ATTEMPTS = 200;
+  // The widest ring a pin paints around its box, the active one.
+  const HALO = 5;
+  const MAX_TEXT_NODES = 20000;
+  const CONTROLS = "button, input, select, textarea";
+  const SOLID = `${CONTROLS}, img, svg, video, canvas, iframe, pre, table`;
   const PIN_STATES = {
     queued: "not sent yet",
     sent: "sent",
@@ -90,6 +100,7 @@
       if (data.scroll) restoreScroll(data.scroll);
       setAnnotate(data.annotate);
       send({ type: "annotate-ok", on: annotate });
+      setTextSize(data.textSize);
       // The agent may have rewritten the page, so every note is found again by its anchor.
       setPins(data.pins);
       // The chrome counts the page shown only once it has finished loading, been put back where
@@ -109,8 +120,17 @@
       setPins(data.pins);
     } else if (data?.nonce === nonce && data.type === "reveal") {
       reveal(data.n);
+    } else if (data?.nonce === nonce && data.type === "text-size") {
+      setTextSize(data.size);
     }
   });
+
+  // The reviewer's text size, which the chrome sends only to its own Markdown render: one of the
+  // house's five steps on <html>, which that page's scales.css turns into its root size.
+  function setTextSize(size) {
+    if (["s", "m", "l", "xl", "xxl"].includes(size))
+      document.documentElement.dataset.textSize = size;
+  }
 
   function whenLoaded(then) {
     if (document.readyState === "complete") then();
@@ -689,12 +709,35 @@
   // A pin sits like a footnote mark on the top right of the first line of what it marks, so it
   // reads as attached to the words without covering them; a target with no text of its own, such
   // as an image or a table, gets its box. The first line is every box on it, so a paragraph that
-  // opens with a code chip is marked where its line ends rather than where the chip does. A table
-  // cell has no room above its words, so its pin stays inside the cell, off the rows around it.
-  function pinSpot(anchor) {
+  // opens with a code chip is marked where its line ends rather than where the chip does, and a
+  // control by its box, which is what the reviewer sees of it. Where that spot would cover words, a
+  // control, a picture, a code block or another pin, as it does between paragraphs closer than a pin
+  // is tall, the pin moves beside the line's end, before its start, under its end, then to the right
+  // of the block; failing all of those, to whichever covers least.
+  // A table cell has no room above its words, so its pin stays inside the cell, off the rows around it.
+  // Every note on one target is placed as one row `width` wide, so a second pin stands beside the first.
+  const elementFor = (anchor) => {
+    const node = anchor instanceof Range ? anchor.commonAncestorContainer : anchor;
+    return node instanceof Element ? node : node.parentElement;
+  };
+
+  // A box of the target's own, or one holding it, is a spot's ground, not something it covers.
+  const overlapArea = (spot, width, avoid, element) => {
+    let area = 0;
+    for (const { rect, owner } of avoid) {
+      if (owner && (owner === element || owner.contains(element) || element.contains(owner)))
+        continue;
+      const w = Math.min(spot.left + width, rect.right) - Math.max(spot.left, rect.left);
+      const h = Math.min(spot.top + PIN, rect.bottom) - Math.max(spot.top, rect.top);
+      if (w > 0.5 && h > 0.5) area += w * h;
+    }
+    return area;
+  };
+
+  function pinSpot(anchor, avoid, bounds, width) {
     let rects;
     if (anchor instanceof Range) rects = [...anchor.getClientRects()];
-    else if (ownText(anchor)) {
+    else if (ownText(anchor) && !anchor.matches(CONTROLS)) {
       const range = document.createRange();
       range.selectNodeContents(anchor);
       rects = [...range.getClientRects()];
@@ -706,18 +749,67 @@
       const middle = r.top + r.height / 2;
       return middle > first.top && middle < first.bottom;
     });
-    let left = Math.max(...line.map((r) => r.right)) + 1;
-    // The pin's point is its lower left corner, so it stands on the line's top right corner.
-    let top = Math.min(...line.map((r) => r.top)) - PIN;
-    const node = anchor instanceof Range ? anchor.commonAncestorContainer : anchor;
-    const cell = (node instanceof Element ? node : node.parentElement)?.closest("td, th");
+    const right = Math.max(...line.map((r) => r.right));
+    const lineTop = Math.min(...line.map((r) => r.top));
+    const lineBottom = Math.max(...line.map((r) => r.bottom));
+    const element = elementFor(anchor);
+    const cell = element?.closest("td, th");
     if (cell) {
       // Beside the words rather than above them, so it clears them by its widest ring, 5 px.
       const box = cell.getBoundingClientRect();
-      left = Math.max(box.left, Math.min(left + 4, box.right - PIN));
-      top = Math.max(box.top, Math.min(top, box.bottom - PIN));
+      return {
+        left: Math.max(box.left, Math.min(right + 5, box.right - width)),
+        top: Math.max(box.top, Math.min(lineTop - PIN, box.bottom - PIN)),
+      };
     }
-    return { left, top };
+    // Level with the line's middle, or with the top of a box taller than a pin.
+    const beside = lineTop - (PIN - Math.min(lineBottom - lineTop, PIN)) / 2;
+    const candidates = [
+      // The pin's point is its lower left corner, so it stands on the line's top right corner.
+      // Above the element's own box, so a heading's rule or a block's padding stays clear of it.
+      {
+        left: right + 1,
+        top:
+          (anchor instanceof Range
+            ? lineTop
+            : Math.min(lineTop, element.getBoundingClientRect().top)) - PIN,
+      },
+      { left: right + GAP, top: beside },
+      { left: Math.min(...line.map((r) => r.left)) - width - GAP, top: beside },
+      { left: right - width, top: lineBottom + GAP },
+      { left: element.getBoundingClientRect().right + GAP, top: beside },
+    ].map(({ left, top }) => ({
+      left: Math.min(Math.max(left, bounds.left), bounds.right - width),
+      top: Math.max(top, bounds.top),
+    }));
+    let best = null;
+    for (const spot of candidates) {
+      const area = overlapArea(spot, width, avoid, element);
+      if (area === 0) return spot;
+      if (!best || area < best.area) best = { ...spot, area };
+    }
+    return best;
+  }
+
+  // What a pin must not paint over, in viewport coordinates: every run of the page's words, and the
+  // boxes of controls, pictures, code blocks and tables, each with the element that draws it. A
+  // word carries no owner, so a pin keeps off its own target's words too.
+  function obstacles() {
+    const found = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let seen = 0;
+    for (let text = walker.nextNode(); text && ++seen <= MAX_TEXT_NODES; text = walker.nextNode()) {
+      if (!(/** @type {Text} */ (text).data.trim())) continue;
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      for (const rect of range.getClientRects())
+        if (rect.width > 0 && rect.height > 0) found.push({ rect, owner: null });
+    }
+    for (const owner of document.body.querySelectorAll(SOLID)) {
+      const rect = owner.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) found.push({ rect, owner });
+    }
+    return found;
   }
 
   const attached = (anchor) =>
@@ -727,25 +819,81 @@
 
   function placePins() {
     const origin = pinHost.getBoundingClientRect();
-    const width = document.documentElement.clientWidth;
+    // Inside the frame by the pin's halo, so no edge of the frame cuts its ring.
+    const bounds = {
+      left: HALO,
+      right: document.documentElement.clientWidth - HALO,
+      top: origin.top + HALO,
+    };
+    const avoid = obstacles();
     const placed = [];
     const missing = [];
     for (const pin of pins) {
       if (!pin.anchor || !attached(pin.anchor)) pin.anchor = findAnchor(pin);
-      const spot = pin.anchor && pinSpot(pin.anchor);
-      pin.button.hidden = !spot;
+    }
+    // The notes on one element, in number order, form one row and are placed together, and so does
+    // a passage that starts on that element's first line, which would otherwise want the same spot.
+    const firstTop = (target) => target.getClientRects()[0]?.top;
+    const rowOf = (pin) => {
+      if (!(pin.anchor instanceof Range)) return pin.anchor ?? pin;
+      const node = pin.anchor.commonAncestorContainer;
+      const element = node instanceof Element ? node : node.parentElement;
+      const whole = document.createRange();
+      whole.selectNodeContents(element);
+      return Math.abs(firstTop(pin.anchor) - firstTop(whole)) < 1 ? element : pin;
+    };
+    const rows = new Map();
+    for (const pin of pins) {
+      const key = rowOf(pin);
+      rows.set(key, [...(rows.get(key) ?? []), pin]);
+    }
+    for (const row of rows.values()) {
+      const { anchor } = row[0];
+      const width = row.length * PIN + (row.length - 1) * GAP;
+      const spot = anchor && pinSpot(anchor, avoid, bounds, width);
+      for (const pin of row) pin.button.hidden = !spot;
       if (!spot) {
-        missing.push(pin.n);
+        missing.push(...row.map((pin) => pin.n));
         continue;
       }
-      let x = Math.min(Math.max(spot.left, 0), width - PIN) - origin.left;
-      const y = Math.max(spot.top - origin.top, 0);
-      // Two notes on one spot stand side by side rather than one hiding the other.
-      while (placed.some((p) => Math.abs(p.x - x) < PIN && Math.abs(p.y - y) < PIN)) x += PIN + 4;
-      placed.push({ x, y });
-      pin.button.style.left = `${x}px`;
-      pin.button.style.top = `${y}px`;
+      const naturalX = spot.left - origin.left;
+      let x = naturalX;
+      let y = spot.top - origin.top;
+      // Two rows on one spot stand side by side rather than one hiding the other, and a row with
+      // no room left beside it in the frame starts again under it, at its own natural column.
+      const right = bounds.right - origin.left - width;
+      const element = elementFor(anchor);
+      const areaAt = (cx, cy) =>
+        placed.some((p) => p.x - width < cx && cx < p.x + p.width && Math.abs(p.y - cy) < PIN)
+          ? Infinity
+          : overlapArea({ left: cx + origin.left, top: cy + origin.top }, width, avoid, element);
+      let bestX = x;
+      let bestY = y;
+      let bestArea = areaAt(x, y);
+      for (let attempt = 0; bestArea > 0 && attempt < MAX_SHIFT_ATTEMPTS; attempt++) {
+        if (x + PIN + GAP <= right) x += PIN + GAP;
+        else {
+          x = naturalX;
+          y += PIN + GAP;
+        }
+        const area = areaAt(x, y);
+        if (area < bestArea) {
+          bestArea = area;
+          bestX = x;
+          bestY = y;
+        }
+      }
+      x = bestX;
+      y = bestY;
+      placed.push({ x, y, width });
+      // A placed row is in the way of the next one, as words are.
+      avoid.push({ rect: new DOMRect(x + origin.left, y + origin.top, width, PIN), owner: null });
+      for (const [i, pin] of row.entries()) {
+        pin.button.style.left = `${x + i * (PIN + GAP)}px`;
+        pin.button.style.top = `${y}px`;
+      }
     }
+    missing.sort((a, b) => a - b);
     // The chrome says in the margin which notes no longer have anything on the page to point at.
     const report = JSON.stringify(missing);
     if (report !== missingSent) {

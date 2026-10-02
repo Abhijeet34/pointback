@@ -28,3 +28,4 @@ CODE_OF_CONDUCT.md
 # The house design system's files, vendored byte for byte and pinned by digest in
 # src/browser/house/pin.json (scripts/sync-house.js); a reflow here is drift.
 src/browser/house/*.css
+src/browser/house/*.js

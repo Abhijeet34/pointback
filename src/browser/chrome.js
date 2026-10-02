@@ -7,6 +7,8 @@ const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifac
 const marks = document.getElementById("marks");
 const marginBody = document.getElementById("marginBody");
 const statusLine = document.getElementById("status");
+const outsideLine = document.getElementById("outside");
+const textSize = document.getElementById("textSize");
 const notice = document.getElementById("notice");
 const noticeText = document.getElementById("noticeText");
 const takeOverButton = /** @type {HTMLButtonElement} */ (document.getElementById("takeOver"));
@@ -162,6 +164,7 @@ async function boot() {
   document.title = `${session.fileName} · ${app.app}`;
   document.getElementById("fileName").textContent = session.fileName;
   sync(session);
+  tellOutside(session.outside);
   render();
   listen();
   startHeartbeat(typeof app.idleMs === "number" ? app.idleMs : 1_800_000);
@@ -287,6 +290,7 @@ function apply(event) {
     if (current) show();
   } else if (event.type === "rerooted") {
     session.artifactUrl = event.artifactUrl;
+    tellOutside(event.outside);
     if (current) show();
   } else if (event.type === "gone") {
     fileGone = true;
@@ -492,6 +496,17 @@ function notesChanged() {
 }
 
 /** A live region announces every write, so an unchanged status is left alone. */
+/** Says which of the page's files the review does not serve, the reason a page paints unstyled. */
+function tellOutside(outside = []) {
+  const one = outside.length === 1;
+  setText(
+    outsideLine,
+    outside.length === 0
+      ? ""
+      : `${outside.join(", ")} ${one ? "is" : "are"} outside the folder this review serves, so the page shows without ${one ? "it" : "them"}. Your agent can open it with --root to include ${one ? "it" : "them"}.`,
+  );
+}
+
 function setText(element, text) {
   if (element.textContent !== text) element.textContent = text;
 }
@@ -905,7 +920,13 @@ window.addEventListener("message", (event) => {
   const data = event.data;
   if (data?.type === "ready") {
     nonce = crypto.randomUUID();
-    post({ type: "init", annotate, scroll: lastScroll, pins: pinData() });
+    post({
+      type: "init",
+      annotate,
+      scroll: lastScroll,
+      pins: pinData(),
+      textSize: frameTextSize(),
+    });
     document.body.dataset.ready = "1";
     announced = true;
     if (strayed) {
@@ -1021,6 +1042,35 @@ async function sendNow() {
   if (composing && cardText.value.trim() !== "" && !(await addNote())) return;
   if (!sendButton.disabled) sendForm.requestSubmit();
 }
+
+// The reviewer's text size, on top of their browser's own default, kept by this browser for the next
+// review. Set before the house's radiogroup.js reads which step is checked, on DOMContentLoaded.
+const TEXT_SIZE_KEY = "textSize";
+try {
+  const kept = localStorage.getItem(TEXT_SIZE_KEY);
+  if (kept && textSize.querySelector(`[data-size="${CSS.escape(kept)}"]`))
+    for (const step of textSize.querySelectorAll("[role=radio]"))
+      step.setAttribute("aria-checked", String(step.getAttribute("data-size") === kept));
+} catch {
+  // No storage, as in a private window: every review starts at the default.
+}
+// A rendered Markdown page is this review's own, in the house reading styles, so the reviewer's size
+// reaches it too; an HTML page keeps the sizes its author set.
+const frameTextSize = () =>
+  /\.(md|markdown)$/i.test(session?.fileName ?? "")
+    ? (document.documentElement.dataset.textSize ?? "m")
+    : undefined;
+
+textSize.addEventListener("change", () => {
+  const size = textSize.querySelector("[aria-checked=true]")?.getAttribute("data-size") ?? "m";
+  document.documentElement.dataset.textSize = size;
+  if (nonce && frameTextSize()) post({ type: "text-size", size });
+  try {
+    localStorage.setItem(TEXT_SIZE_KEY, size);
+  } catch {
+    // Kept for this page only.
+  }
+});
 
 // The same keys in the chrome itself, outside the fields it has the reviewer type in.
 document.addEventListener("keydown", (event) => {

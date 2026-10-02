@@ -18,6 +18,10 @@
       "from": "components/components.css",
       "sha256": "7870b7a532994e568bde5b51c8ceb59c9a1ff86f31c0ba5eb42b6a53e0afa576"
     },
+    "radiogroup.js": {
+      "from": "components/radiogroup.js",
+      "sha256": "2b08dae2a14f6c437a78346fce59a65951b2864b594667a4e0603168f455dac5"
+    },
     "fonts/archivo/archivo-latin-wdth-normal.woff2": {
       "from": "fonts/archivo/archivo-latin-wdth-normal.woff2",
       "sha256": "e3a28eade21a900c7155a247757f4b2834c07bb7ef07ad7efa55cebaac1e8f5e"

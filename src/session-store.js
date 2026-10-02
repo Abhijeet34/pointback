@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -13,7 +13,8 @@ import {
 } from "./artifact-path.js";
 import { HttpError } from "./http-guard.js";
 import { limits } from "./limits.js";
-import { artifactKind } from "./markdown.js";
+import { assetsOutside } from "./inject.js";
+import { MARKDOWN_STYLES, artifactKind, renderMarkdown } from "./markdown.js";
 import { pastSharingViolations, privateDir, readJson, writeJsonAtomic } from "./state-dir.js";
 
 /**
@@ -156,7 +157,11 @@ export class SessionStore {
     // A tab already showing the review opens no second one, so it must follow the page to its new
     // address: the old one no longer resolves, and its next reload would paint a 404.
     if (rerooted)
-      this.#events.emit(key, { type: "rerooted", artifactUrl: this.status(key).artifactUrl });
+      this.#events.emit(key, {
+        type: "rerooted",
+        artifactUrl: this.status(key).artifactUrl,
+        outside: this.outside(key),
+      });
     return session;
   }
 
@@ -222,7 +227,29 @@ export class SessionStore {
       file: session.file,
       fileName: basename(session.file),
       ...this.status(key),
+      outside: this.outside(key),
     };
+  }
+
+  /**
+   * What the page loads from outside its root, which the review does not serve, so the agent and the
+   * reviewer can be told why it looks unstyled rather than left to guess. Read from the file as it is.
+   */
+  outside(key) {
+    const session = this.get(key);
+    let source;
+    try {
+      source = readFileSync(session.file, "utf8");
+    } catch {
+      return [];
+    }
+    const markdown = artifactKind(session.file) === "markdown";
+    const page = markdown ? renderMarkdown(source, session.file) : source;
+    const { artifactUrl } = this.status(key);
+    const rootUrl = `/artifact/${key}/${session.assetToken}/`;
+    return assetsOutside(page, rootUrl, artifactUrl).filter(
+      (ref) => !(markdown && MARKDOWN_STYLES.includes(ref)),
+    );
   }
 
   /**

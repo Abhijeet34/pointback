@@ -19,6 +19,7 @@ pointback plan.html
 ```
 
 A browser tab opens with the page in it, and `next_step` says what to run next.
+If the output has `refused_assets`, the page loads those files from above its folder and shows without them; open it again with `--root` set to a folder that holds the page and them.
 If `session.status` is `user-ended`, the user closed this review; run `pointback plan.html --reopen` only if they asked for another round.
 
 ## 2. Poll

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parse } from "parse5";
-import { injectSdk } from "../src/inject.js";
+import { assetsOutside, injectSdk } from "../src/inject.js";
 
 test("the SDK script becomes the last child of body", () => {
   const out = injectSdk("<!doctype html><html><body><p>hi</p></body></html>", "/sdk.js");
@@ -32,4 +32,34 @@ test("the src attribute is serialised, never spliced", () => {
   walk(parse(out));
   assert.equal(scripts.length, 1, "the hostile value produced no second element");
   assert.equal(scripts[0].attrs.find((a) => a.name === "src").value, src);
+});
+
+test("the assets a page loads from above its root are named as the page wrote them, and nothing else", () => {
+  const root = "/artifact/k/t/";
+  const page = `${root}docs/plan.html`;
+  const html = `<!doctype html><head>
+<link rel="stylesheet" href="../../site.css">
+<link rel="stylesheet" href="/abs.css">
+<link rel="stylesheet" href="../in-root.css">
+<link rel="canonical" href="../../canonical.html">
+<link rel="icon" href="https://cdn.example/x.png">
+<script src="../../app.js"></script>
+</head><body>
+<a href="../../away.html">a link is not a load</a>
+<img src="data:image/png;base64,AAAA" srcset="../../a.png 1x, ok.png 2x">
+<template><img src="../../tpl.png"></template>
+<img src="../../${"x".repeat(200)}.png">
+</body>`;
+  assert.deepEqual(assetsOutside(html, root, page), [
+    "../../site.css",
+    "/abs.css",
+    "../../app.js",
+    "../../a.png",
+    "../../tpl.png",
+  ]);
+  // A <base> moves what every relative path resolves against, as it does for the browser.
+  assert.deepEqual(
+    assetsOutside(`<base href="../../"><link rel="stylesheet" href="site.css">`, root, page),
+    ["site.css"],
+  );
 });
