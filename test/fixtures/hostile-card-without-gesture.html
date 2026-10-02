@@ -7,8 +7,10 @@
       // A page under review that proposes a target on its own, with no gesture and whatever the
       // chrome's Annotate state, every 40 ms from the moment it learns the nonce, and claims the
       // reviewer pressed the first note's pin and the review's Annotate and send keys, until a
-      // test sets `quiet` to make its own gesture.
+      // test sets `quiet` to make its own gesture. `rounds` counts them, so a test can wait for
+      // the page to have tried rather than for time to pass.
       let nonce = "";
+      globalThis.rounds = 0;
       addEventListener("message", (e) => {
         if (e.data?.type !== "init" || nonce) return;
         nonce = e.data.nonce;
@@ -28,6 +30,7 @@
             },
             "*",
           );
+          globalThis.rounds += 1;
         }, 40);
       });
     </script>
