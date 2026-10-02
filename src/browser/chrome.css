@@ -4,7 +4,7 @@
    annotation channel and nothing else. */
 
 /* The two house faces the chrome sets, served by the daemon itself: the review makes no request off
-   loopback. The descriptors are the house's own fonts/fonts.css; Literata is not shipped. */
+   loopback. The descriptors are the house's own fonts/fonts.css; Literata is for markdown.css. */
 @font-face {
   font-family: "Archivo";
   font-style: normal;
