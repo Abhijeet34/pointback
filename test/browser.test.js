@@ -434,6 +434,65 @@ test(
   },
 );
 
+/**
+ * A design system's real layout, in miniature: the sheet sits two folders down and is styled only
+ * by `../components.css`, which paints with a variable from `../../exports/variables.css`.
+ */
+function componentSheet() {
+  const repo = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-sheet-"));
+  const sheets = join(repo, "components", "sheets");
+  mkdirSync(sheets, { recursive: true });
+  mkdirSync(join(repo, "exports"));
+  writeFileSync(join(repo, "exports", "variables.css"), ":root { --accent: rgb(10, 120, 200); }");
+  writeFileSync(
+    join(repo, "components", "components.css"),
+    ".button { background: var(--accent); border-radius: 9px; }",
+  );
+  const file = join(sheets, "actions.html");
+  writeFileSync(
+    file,
+    `<!doctype html><meta charset="utf-8"><title>Actions</title>
+<link rel="stylesheet" href="../../exports/variables.css">
+<link rel="stylesheet" href="../components.css">
+<body><button class="button" id="agree">Agree and finish</button></body>`,
+  );
+  return { repo, file };
+}
+
+test(
+  "a sheet whose styles live above its folder paints styled under --root, and only there",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { repo, file } = componentSheet();
+    // What paints on the button: the accent and the radius only the two parent-folder sheets give it.
+    // Null until the button is parsed: the frame attaches before its document has loaded.
+    const painted =
+      "(() => { const b = document.getElementById('agree'); if (!b) return null; const s = getComputedStyle(b); return s.backgroundColor + ' ' + s.borderRadius; })()";
+    const styled = "rgb(10, 120, 200) 9px";
+    const opened = await cli([file, "--root", repo], lab.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    const page = await browser.page(opened.json().session.url);
+    const artifact = await page.frame();
+    await artifact.waitFor(`${painted} === ${JSON.stringify(styled)}`);
+
+    // Opened again without a root, a second tab gets today's default and the sheet unstyled.
+    const plain = await browser.page((await cli([file], lab.env)).json().session.url);
+    const plainFrame = await plain.frame();
+    await plainFrame.waitFor(`document.readyState === 'complete' && ${painted} !== null`);
+    assert.notEqual(await plainFrame.eval(painted), styled, "assets stay in the file's folder");
+
+    // The first tab gets the review back when the second goes, and follows the root it now has
+    // rather than reloading under the address the wider root gave it.
+    await plain.close();
+    await page.front();
+    await artifact.waitFor(
+      `document.readyState === 'complete' && ![null, ${JSON.stringify(styled)}].includes(${painted})`,
+    );
+    assert.match(await artifact.eval("location.pathname"), /\/[0-9a-f]{32}\/actions\.html$/);
+    await page.close();
+  },
+);
+
 test(
   "a hostile artifact cannot forge a note by echoing the chrome's own messages back",
   { skip: !executable && "no browser found" },

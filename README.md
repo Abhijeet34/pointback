@@ -15,7 +15,7 @@ One person, one agent, one local file.
 
 Node 24 or newer, and a browser to review in.
 CI runs the suite on `ubuntu-24.04` every pull request, and on `macos-15` and `windows-2025` weekly, on the release pull request, and on every push to `main`.
-All three pass it: 148 tests, 147 passing and one skipped, with the browser suite driving real Chrome on each.
+All three pass the whole suite, with the browser suite driving real Chrome on each.
 
 ## Install
 
@@ -40,6 +40,7 @@ pointback poll plan.html            # blocks until the reviewer sends, then prin
 pointback poll plan.html --timeout-ms 30000
 pointback end plan.html             # ends the review from the agent's side
 pointback plan.html --reopen        # opens a review the reviewer ended
+pointback components/sheets/actions.html --root .   # lets the page load assets from anywhere under .
 pointback stop                      # stops the background server
 ```
 
@@ -56,6 +57,12 @@ Opening a file prints where the review is and what to do next:
   "next_step": "Run `pointback poll plan.html` and wait; it returns the reviewer's annotations as JSON."
 }
 ```
+
+The page loads its own stylesheets, scripts and images from the review's root, which is the file's own folder unless `--root <dir>` names a wider one that holds it.
+A page that links `../components.css` and `../../exports/variables.css`, as a design system's component sheet does, renders unstyled under the default because both files sit above its folder; `--root` at the repository's top makes them reachable.
+The root is resolved to its real path when the review opens, so a symlinked spelling cannot stretch it, and nothing outside it is served: not by `../`, not by an encoding, not by a symlink inside it that points out.
+Every open sets the root again, so opening the file without `--root` goes back to its folder.
+The root is also everything the page under review can load, so name the narrowest folder that holds its assets.
 
 Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (default the port the last server used, recorded in `server.json`, or an ephemeral one when that is taken), `POINTBACK_NO_OPEN=1` to skip launching the browser, `POINTBACK_IDLE_MS` before an idle server exits (default 30 minutes).
 
@@ -173,7 +180,7 @@ A session is keyed by a hash of the file's canonical path, but that key opens no
 The page under review runs in a sandboxed iframe with an opaque origin.
 It cannot read the chrome, cannot call the API, and talks to the chrome only through messages checked by source and origin in both directions.
 The review script is inserted into the artifact as a DOM node through a real HTML parser, so nothing in the page's own markup can swallow or reshape it.
-Sibling assets resolve through a path check that survives encoded traversal, backslashes, unicode lookalikes, null bytes, absolute paths and symlink escape.
+Assets resolve within the review's root through a path check that survives encoded traversal, backslashes, unicode lookalikes, null bytes, absolute paths and symlink escape.
 State is written to a temporary file and renamed, and nothing but the owning user can read it.
 POSIX says that in the mode bits, `0600` in a `0700` directory.
 Windows has no such bits, so the state directory's ACL is reset to a single full-control entry for the current user and every file written inside inherits it.

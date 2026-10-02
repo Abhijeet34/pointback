@@ -73,7 +73,8 @@ export function resolveAsset(rootDir, requestPath) {
   return realCandidate;
 }
 
-function isOutside(root, target) {
+/** True unless `target` lies strictly beneath `root`; the root itself counts as outside. */
+export function isOutside(root, target) {
   const rel = relative(root, target);
   return rel === "" || rel.startsWith(`..${sep}`) || rel === ".." || resolve(target) !== target;
 }
