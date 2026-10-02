@@ -698,10 +698,10 @@ function replyLine(entry) {
       if (composing) return cardText.focus();
       const box = line.getBoundingClientRect();
       const frameBox = frame.getBoundingClientRect();
-      const { selector, tag, text, target } = entry;
+      const { selector, lines, tag, text, target } = entry;
       // The answer points where the question's note did, and names the note it answers.
       openCompose(
-        { selector, tag, text, target, answers: entry.uid },
+        { selector, lines, tag, text, target, answers: entry.uid },
         `Answer: ${entry.reply.message}`,
         undefined,
         [{ left: Infinity, bottom: box.top - frameBox.top }],
@@ -881,8 +881,8 @@ window.addEventListener("message", (event) => {
     // the card, take focus, or wipe a note being typed.
     if (!annotate || composing || !gesture()) return;
     // Only what the reviewer pointed at: `answers` is the chrome's to set, from the margin.
-    const { selector, tag, text, target } = data.note;
-    const note = { selector, tag, text, target };
+    const { selector, lines, tag, text, target } = data.note;
+    const note = { selector, lines, tag, text, target };
     openCompose(note, locatorOf(note), data.structure, data.rects);
   } else if (data.type === "key") {
     // The review's keys pressed in the page. Like a target, a key is heard only under the
@@ -1016,10 +1016,10 @@ async function addNote() {
   // the artifact proposed, so nothing else it sent rides along and nothing it sent can displace
   // `prompt`. This is the only path that adds a note, and it runs only on the reviewer's submit;
   // the server stamps it, so the moment the reviewer wrote it survives a batched send.
-  const { selector, tag, text, target, answers } = composing.note;
+  const { selector, lines, tag, text, target, answers } = composing.note;
   adding = true;
   const kept = await changeDrafts("add the note", "POST", `/api/${key}/drafts`, {
-    draft: { selector, tag, text, target, answers, prompt },
+    draft: { selector, lines, tag, text, target, answers, prompt },
     structure: composing.structure,
   });
   adding = false;

@@ -370,11 +370,28 @@
     return target;
   }
 
+  // A block of rendered Markdown names its source lines, so a note on it, or on a passage running
+  // across several, carries the first and last line beside its selector.
+  function sourceLines(from, to) {
+    const range = (node) =>
+      (node instanceof Element ? node : node.parentElement)
+        ?.closest("[data-source-lines]")
+        ?.getAttribute("data-source-lines")
+        ?.split("-")
+        .map(Number);
+    const [first] = range(from) ?? [];
+    const [, last] = range(to) ?? [];
+    return Number.isInteger(first) && Number.isInteger(last) && first <= last
+      ? [first, last]
+      : undefined;
+  }
+
   function elementHit(element, point) {
     return {
       element,
       tag: element.tagName.toLowerCase(),
       text: visibleText(element),
+      lines: sourceLines(element, element),
       target:
         cellTarget(element) ??
         (isControl(element) ? { type: "control", name: accessibleName(element) } : null) ??
@@ -415,6 +432,7 @@
         before: squash(whole.slice(Math.max(0, start - QUOTE_CHARS), start)),
         after: squash(whole.slice(end, end + QUOTE_CHARS)),
       },
+      lines: sourceLines(range.startContainer, range.endContainer),
       rects: range.getClientRects(),
     };
   }
@@ -450,6 +468,7 @@
       type: "target",
       note: {
         selector: selectorFor(hit.element),
+        ...(hit.lines && { lines: hit.lines }),
         tag: hit.tag,
         text: hit.text,
         ...(hit.target && { target: hit.target }),

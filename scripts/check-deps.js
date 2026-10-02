@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 export const LAYERS = [
   ["identity.js", "limits.js"],
-  ["state-dir.js", "http-guard.js", "artifact-path.js", "inject.js", "watch.js"],
+  ["state-dir.js", "http-guard.js", "artifact-path.js", "inject.js", "markdown.js", "watch.js"],
   ["session-store.js", "events.js"],
   ["server.js", "client.js"],
   ["cli.js"],

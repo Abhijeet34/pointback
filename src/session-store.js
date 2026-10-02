@@ -13,6 +13,7 @@ import {
 } from "./artifact-path.js";
 import { HttpError } from "./http-guard.js";
 import { limits } from "./limits.js";
+import { artifactKind } from "./markdown.js";
 import { pastSharingViolations, privateDir, readJson, writeJsonAtomic } from "./state-dir.js";
 
 /**
@@ -117,6 +118,11 @@ export class SessionStore {
    */
   open(file, root) {
     const canonical = canonicalFile(file);
+    if (!artifactKind(canonical))
+      throw new HttpError(
+        415,
+        `${basename(canonical)} cannot be reviewed: open an HTML (.html, .htm) or Markdown (.md, .markdown) file`,
+      );
     const assets = assetRoot(root, canonical);
     const key = sessionKey(canonical);
     const now = new Date().toISOString();
@@ -265,6 +271,8 @@ export class SessionStore {
       throw new HttpError(429, `${drafts.length} notes are waiting to be sent; send them first`);
     const note = validatePrompt(raw);
     delete note.at;
+    // Source lines mean something only against the Markdown this server rendered them from.
+    if (artifactKind(session.file) !== "markdown") delete note.lines;
     if (note.answers !== undefined && !session.chat.some((entry) => entry.uid === note.answers))
       throw new HttpError(400, `prompt.answers names no note in this review: ${note.answers}`);
     const outline = structure === undefined ? undefined : validateStructure(structure);
@@ -606,9 +614,11 @@ function str(object, owner, field, max) {
 
 function validatePrompt(raw) {
   if (raw === null || typeof raw !== "object") throw new HttpError(400, "prompt must be an object");
+  /** @type {{ prompt: string, selector: string, lines?: number[], tag: string, text: string, at?: string, target?: object, answers?: number }} */
   const prompt = {
     prompt: str(raw, "prompt", "prompt", limits.promptTextChars),
     selector: str(raw, "prompt", "selector", 2000),
+    ...(raw.lines !== undefined && { lines: validateLines(raw.lines) }),
     tag: str(raw, "prompt", "tag", 64),
     text: str(raw, "prompt", "text", 2000),
   };
@@ -621,6 +631,14 @@ function validatePrompt(raw) {
     prompt.answers = raw.answers;
   }
   return prompt;
+}
+
+/** The first and last source line of the block a note is on, 1-based and inclusive. */
+function validateLines(raw) {
+  const [start, end] = Array.isArray(raw) && raw.length === 2 ? raw : [];
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start)
+    throw new HttpError(400, "prompt.lines must be [first, last] line numbers");
+  return [start, end];
 }
 
 export const REPLY_STATUSES = ["done", "declined", "question"];
