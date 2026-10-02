@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/Abhijeet34/pointback/compare/v0.1.3...v0.1.4) (2026-10-02)
+
+
+### Bug Fixes
+
+* **browser:** stop a reviewed page from forging or re-triggering a note ([#32](https://github.com/Abhijeet34/pointback/issues/32)) ([a3c3e30](https://github.com/Abhijeet34/pointback/commit/a3c3e307f7762fd75df91744760dcfd9798e7cd4))
+* **chrome:** paint the review chrome with house roles, fix hidden notice and ended switch ([#31](https://github.com/Abhijeet34/pointback/issues/31)) ([20e7a94](https://github.com/Abhijeet34/pointback/commit/20e7a94aee3929e2565bb58f6910e1b5d043d31b))
+
 ## [0.1.3](https://github.com/Abhijeet34/pointback/compare/v0.1.2...v0.1.3) (2026-09-04)
 
 
