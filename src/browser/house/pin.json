@@ -1,10 +1,10 @@
 {
   "source": "https://github.com/Abhijeet34/halderworks-design",
-  "commit": "420ff9cf4134e176cf047b2c1e1682e68284d99e",
+  "commit": "fa0c376dfb5e54a58495f93c9b3cd3c3c2c9f70b",
   "files": {
     "brand.tokens.css": {
       "from": "ramps/tokens/pointback.tokens.css",
-      "sha256": "7c275680fd017568b424d3de5ccc7b48893975558ee6f27fd95168050234fe3f"
+      "sha256": "3cbef882c63132f4e75e18fd48cc93864122d6ac9c225f0f4e3a344eb480f0cc"
     },
     "roles.css": {
       "from": "ramps/roles.css",

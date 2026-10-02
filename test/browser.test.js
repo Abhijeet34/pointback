@@ -2286,6 +2286,34 @@ test(
     }
     const send = at.findIndex(([selector]) => selector === "#send");
     assert.ok(xl[send][2] > at[send][2] * 1.2, "Send's box grows with its label");
+    // The faces are what paints, read from the font the renderer used for each run of text, and
+    // they came from this daemon: the review asks nothing of the network off loopback.
+    await page.eval("document.fonts.ready.then(() => true)");
+    await page.send("DOM.enable");
+    await page.send("CSS.enable");
+    const { root } = await page.send("DOM.getDocument");
+    const painted = async (selector) => {
+      const { nodeId } = await page.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+      const { fonts } = await page.send("CSS.getPlatformFontsForNode", { nodeId });
+      // The face that sets the text is the one drawing most of its glyphs: a symbol such as ⌘ is
+      // outside the latin subset and falls back. A variable face reports its named instance,
+      // "Archivo SemiBold", so the family is the prefix.
+      const [main] = fonts.toSorted((x, y) => y.glyphCount - x.glyphCount);
+      return main.familyName.replace(/ (Medium|SemiBold|Bold)$/, "");
+    };
+    for (const selector of ["#send", "#status", ".mark-note", "#end"]) {
+      assert.equal(await painted(selector), "Archivo", `${selector} paints in Archivo`);
+    }
+    assert.equal(await painted("#fileName"), "IBM Plex Mono", "the file name paints in Plex Mono");
+    assert.deepEqual(
+      JSON.parse(
+        await page.eval(
+          "JSON.stringify([...new Set(performance.getEntriesByType('resource').filter((e) => /\\.woff2$/.test(e.name)).map((e) => new URL(e.name).origin === location.origin))])",
+        ),
+      ),
+      [true],
+      "every face the chrome loaded came from the daemon",
+    );
     await page.close();
     rmSync(dirname(file), { recursive: true, force: true });
   },
