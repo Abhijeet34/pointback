@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -123,6 +123,30 @@ test("presence, unsent notes, the end and a reopen all reach every tab; feedback
     [["x"], []],
     "a tab sees the note arrive and leave with Send",
   );
+  one.detach();
+});
+
+test("a file the agent's poll finds gone comes back to every tab, even unchanged inside the debounce", async () => {
+  const watching = await watchAvailable();
+  const { artifact, key, store, streams } = lab();
+  const one = tab(streams, key);
+  await sleep(150);
+  // Moved away and straight back around the poll, so the watcher's debounce first runs with the
+  // file present at the size and mtime it started with: it never saw the file leave, the tab did.
+  renameSync(artifact, `${artifact}.away`);
+  assert.equal((await store.waitForFeedback(key, 0)).status, "gone");
+  renameSync(`${artifact}.away`, artifact);
+  if (!watching) {
+    await sleep(200);
+    assert.deepEqual(only(one.types(), ["reload-off"]), ["hello", "gone"], "no watching here");
+    one.detach();
+    return;
+  }
+  await until(() => one.types().includes("reload"), {
+    what: "the file's return to reach a tab the poll told it was gone",
+    timeoutMs: 10_000,
+  });
+  assert.deepEqual(one.types(), ["hello", "gone", "reload"]);
   one.detach();
 });
 

@@ -6,7 +6,8 @@ import { basename, dirname } from "node:path";
 export const DEBOUNCE_MS = 100;
 
 /**
- * Calls `onChange` once per burst of writes to `file`, or when it is removed; returns a function that stops watching.
+ * Calls `onChange` once per burst of writes to `file`, or when it is removed; returns a function that
+ * stops watching, whose `missing()` says the file was found gone elsewhere so its return still counts.
  * The parent directory is watched rather than the file, because a rename-replace save leaves an
  * inode watch pointing at the old file while a directory watch sees the new one arrive.
  */
@@ -41,10 +42,13 @@ export function watchFile(
     watcher.close();
     onError(error);
   });
-  return () => {
+  const stop = () => {
     clearTimeout(timer);
     watcher.close();
   };
+  // A caller can find the file gone before this watcher does. If it then comes back unchanged
+  // before the debounce runs, the watcher never saw it leave and would call the return no change.
+  return Object.assign(stop, { missing: () => (last = null) });
 }
 
 function signature(file) {

@@ -47,13 +47,16 @@ export class EventStreams {
   }
 
   #watch(key, file) {
+    let unwatch;
     const onEvent = (event) => {
       // A queued batch is the agent's business; a tab hears about it through presence instead.
       if (event.type === "feedback") return;
+      // A poll or an end that finds the file gone tells the tabs before the watcher may have seen
+      // it go, and only the watcher can tell them it came back.
+      if (event.type === "gone") unwatch?.missing();
       for (const write of this.#groups.get(key)?.streams ?? []) write(event);
     };
     this.#store.on(key, onEvent);
-    let unwatch = () => {};
     try {
       unwatch = watchFile(file, () => this.#store.fileChanged(key), {
         // A watch that dies takes live reload with it; saying so beats a page that quietly stops updating.
@@ -65,7 +68,7 @@ export class EventStreams {
     const group = {
       streams: [],
       stop: () => {
-        unwatch();
+        unwatch?.();
         this.#store.off(key, onEvent);
       },
     };
