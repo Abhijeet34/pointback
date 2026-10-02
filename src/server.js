@@ -40,6 +40,7 @@ const staticFiles = new Map(
     "/house/roles.css": "text/css; charset=utf-8",
     "/house/scales.css": "text/css; charset=utf-8",
     "/house/components.css": "text/css; charset=utf-8",
+    "/house/radiogroup.js": "text/javascript; charset=utf-8",
     "/house/fonts/archivo/archivo-latin-wdth-normal.woff2": "font/woff2",
     "/house/fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2": "font/woff2",
     "/house/fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2": "font/woff2",

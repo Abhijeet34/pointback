@@ -21,6 +21,7 @@ export const FILES = {
   "roles.css": "ramps/roles.css",
   "scales.css": "ramps/scales.css",
   "components.css": "components/components.css",
+  "radiogroup.js": "components/radiogroup.js",
   "fonts/archivo/archivo-latin-wdth-normal.woff2": "fonts/archivo/archivo-latin-wdth-normal.woff2",
   "fonts/archivo/OFL.txt": "fonts/archivo/OFL.txt",
   "fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2":

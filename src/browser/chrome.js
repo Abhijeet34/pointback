@@ -8,6 +8,7 @@ const marks = document.getElementById("marks");
 const marginBody = document.getElementById("marginBody");
 const statusLine = document.getElementById("status");
 const outsideLine = document.getElementById("outside");
+const textSize = document.getElementById("textSize");
 const notice = document.getElementById("notice");
 const noticeText = document.getElementById("noticeText");
 const takeOverButton = /** @type {HTMLButtonElement} */ (document.getElementById("takeOver"));
@@ -1035,6 +1036,27 @@ async function sendNow() {
   if (composing && cardText.value.trim() !== "" && !(await addNote())) return;
   if (!sendButton.disabled) sendForm.requestSubmit();
 }
+
+// The reviewer's text size, on top of their browser's own default, kept by this browser for the next
+// review. Set before the house's radiogroup.js reads which step is checked, on DOMContentLoaded.
+const TEXT_SIZE_KEY = "textSize";
+try {
+  const kept = localStorage.getItem(TEXT_SIZE_KEY);
+  if (kept && textSize.querySelector(`[data-size="${CSS.escape(kept)}"]`))
+    for (const step of textSize.querySelectorAll("[role=radio]"))
+      step.setAttribute("aria-checked", String(step.getAttribute("data-size") === kept));
+} catch {
+  // No storage, as in a private window: every review starts at the default.
+}
+textSize.addEventListener("change", () => {
+  const size = textSize.querySelector("[aria-checked=true]")?.getAttribute("data-size") ?? "m";
+  document.documentElement.dataset.textSize = size;
+  try {
+    localStorage.setItem(TEXT_SIZE_KEY, size);
+  } catch {
+    // Kept for this page only.
+  }
+});
 
 // The same keys in the chrome itself, outside the fields it has the reviewer type in.
 document.addEventListener("keydown", (event) => {

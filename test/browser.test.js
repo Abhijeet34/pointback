@@ -3108,7 +3108,7 @@ test(
 );
 
 test(
-  "the chrome's text grows with the house text size",
+  "the reviewer sets the chrome's text size in the bar, and it stays for the next review",
   { skip: !executable && "no browser found" },
   async () => {
     const file = copyOfDark();
@@ -3120,8 +3120,13 @@ test(
         const e = document.querySelector(s);
         return [s, parseFloat(getComputedStyle(e).fontSize), e.getBoundingClientRect().height];
       }))`;
+    const step = (size) => `document.querySelector('#textSize [data-size="${size}"]')`;
+    const checked =
+      "document.querySelector('#textSize [aria-checked=true]')?.getAttribute('aria-label')";
+    assert.equal(await page.eval(checked), "Medium", "the house default, M, to start");
     const at = JSON.parse(await page.eval(SIZES));
-    await page.eval("document.documentElement.dataset.textSize = 'xl'");
+    await clickOn(page, step("xl"));
+    await page.waitFor(`${checked} === "Extra large"`);
     const xl = JSON.parse(await page.eval(SIZES));
     // The house root is 15px at M and 19px at XL: every step of its rem ramp moves by 19/15.
     for (const [i, [selector, size]] of at.entries()) {
@@ -3130,6 +3135,39 @@ test(
     }
     const send = at.findIndex(([selector]) => selector === "#send");
     assert.ok(xl[send][2] > at[send][2] * 1.2, "Send's box grows with its label");
+    const fontOf = (selector) =>
+      `parseFloat(getComputedStyle(document.querySelector('${selector}')).fontSize)`;
+
+    // The arrow keys move the choice, one Tab stop for the five, and the next review opens at it.
+    await page.key("ArrowLeft", { keyCode: 37 });
+    await page.waitFor(`${checked} === "Large" && document.activeElement === ${step("l")}`);
+    assert.ok(Math.abs((await page.eval(fontOf("#status"))) - at[3][1] * (17 / 15)) < 0.01);
+    await page.reload();
+    await page.waitFor("document.body.dataset.ready === '1'");
+    assert.equal(await page.eval(checked), "Large", "the size stays across a reload");
+    assert.ok(Math.abs((await page.eval(fontOf("#status"))) - at[3][1] * (17 / 15)) < 0.01);
+
+    // On top of the reviewer's own browser default, which every step is a share of.
+    await page.send("Page.setFontSizes", { fontSizes: { standard: 20, fixed: 13 } });
+    await page.waitFor(
+      `Math.abs(${fontOf("#status")} - ${at[3][1] * (17 / 15) * (20 / 16)}) < 0.01`,
+    );
+    await page.send("Page.setFontSizes", { fontSizes: { standard: 16, fixed: 13 } });
+    await clickOn(page, step("m"));
+    await page.waitFor(`${checked} === "Medium"`);
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "the chrome paints in the house faces, served by the daemon",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const file = copyOfDark();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    await noteOn(page, artifact, "#title", "Name the run");
     // The faces are what paints, read from the font the renderer used for each run of text, and
     // they came from this daemon: the review asks nothing of the network off loopback.
     await page.eval("document.fonts.ready.then(() => true)");

@@ -32,6 +32,36 @@
           <span id="presenceText" role="status"></span>
           <span class="presence-since" id="presenceSince"></span>
         </span>
+        <!-- The house's text-size setting, its five steps on <html>; radiogroup.js gives it arrow keys. -->
+        <span class="hw-segmented text-size" id="textSize" role="radiogroup" aria-label="Text size">
+          <button type="button" role="radio" aria-checked="false" data-size="s" aria-label="Small">
+            S
+          </button>
+          <button type="button" role="radio" aria-checked="true" data-size="m" aria-label="Medium">
+            M
+          </button>
+          <button type="button" role="radio" aria-checked="false" data-size="l" aria-label="Large">
+            L
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked="false"
+            data-size="xl"
+            aria-label="Extra large"
+          >
+            XL
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked="false"
+            data-size="xxl"
+            aria-label="Largest"
+          >
+            XXL
+          </button>
+        </span>
         <label class="hw-switch annotate">
           <input id="annotate" type="checkbox" role="switch" checked aria-keyshortcuts="A" />
           Annotate
@@ -110,5 +140,6 @@
       </form>
     </dialog>
   </body>
+  <script src="/house/radiogroup.js" defer></script>
   <script type="module" src="/chrome.js"></script>
 </html>

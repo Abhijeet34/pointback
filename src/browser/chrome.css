@@ -124,6 +124,17 @@ body {
   gap: var(--hw-space-12);
 }
 
+/* Five steps in the space of a short label: the house segments, at the bar's quiet small size. */
+.text-size {
+  flex-wrap: nowrap;
+}
+
+.text-size > button {
+  min-width: 1.75rem;
+  padding: 0 var(--hw-space-4);
+  font-size: var(--hw-text-xs);
+}
+
 /* The house switch has no disabled track: an ended review's switch must stop reading as live. */
 .hw-switch input:disabled {
   background: var(--hw-fill);
@@ -497,6 +508,12 @@ body {
   .bar-tools {
     flex-basis: 100%;
     justify-content: space-between;
+  }
+
+  /* No room for five steps beside End review; a phone's own text size moves the chrome already,
+     because the house root is a share of the browser's default. */
+  .text-size {
+    display: none;
   }
 }
 
