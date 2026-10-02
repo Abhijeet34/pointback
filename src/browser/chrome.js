@@ -365,7 +365,8 @@ function render() {
       ? problem
       : fileGone
         ? count === 0
-          ? "Nothing can be sent while the file is gone."
+          ? // The notice above and Send's own label already say it; a third line would only repeat it.
+            ""
           : `${count} ${count === 1 ? "note stays" : "notes stay"} here, and Send opens again if the file comes back.`
         : ended
           ? count === 0

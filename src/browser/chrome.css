@@ -227,6 +227,10 @@ body {
   text-wrap: pretty;
 }
 
+.margin-status:empty {
+  display: none;
+}
+
 .marks {
   display: grid;
   gap: var(--hw-space-8);

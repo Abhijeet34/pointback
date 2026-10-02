@@ -878,7 +878,8 @@ test(
       return {
         notice: notice.checkVisibility() && notice.getBoundingClientRect().height > 0
           ? document.getElementById('noticeText').textContent : null,
-        status: document.getElementById('status').textContent,
+        status: document.getElementById('status').checkVisibility()
+          ? document.getElementById('status').textContent : null,
         send: document.getElementById('send').textContent,
         annotate: look('annotate'),
         end: look('end'),
@@ -895,7 +896,8 @@ test(
     await page.waitFor("document.getElementById('notice').checkVisibility()");
     const gone = JSON.parse(await page.eval(painted));
     assert.equal(gone.notice, "The file was moved or deleted, so this review cannot go on.");
-    assert.equal(gone.status, "Nothing can be sent while the file is gone.");
+    // Said once, in the notice, and Send keeps its short label; no third line repeats it.
+    assert.equal(gone.status, null);
     assert.equal(gone.send, "File is gone");
     for (const control of ["annotate", "end"]) {
       assert.notEqual(gone[control], live[control], `${control} no longer paints as pressable`);
