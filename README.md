@@ -17,6 +17,7 @@ One person, one agent, one local file.
 Node 24 or newer, and a browser to review in.
 CI runs the suite on `ubuntu-24.04` every pull request, and on `macos-15` and `windows-2025` weekly, on the release pull request, and on every push to `main`.
 All three pass the whole suite, with the browser suite driving real Chrome on each.
+A weekly smoke runs the core act in WebKit and Firefox as well; "Develop" says how.
 
 ## Install
 
@@ -245,9 +246,18 @@ Tests use `node:test`; the type check covers `bin`, `src` and `scripts`, and tes
 Coverage thresholds are enforced in `package.json`, not reported and forgotten.
 `scripts/check-deps.js` states the dependency direction of `src/` as an ordered list of layers and fails on an upward import or a cycle; `test/deps.test.js` proves it catches both.
 `test/browser.test.js` drives the slice in a real headless Chromium-family browser over the DevTools protocol using Node's built-in `WebSocket`, by mouse and by keyboard, at 800x600.
+One case runs at 390x844, where the margin becomes a band under the page: it fails if anything in the chrome scrolls sideways or if Annotate, End review, the note card, the note or Send is off screen or covered where a press would land.
 The artifact runs in a sandboxed, opaque-origin iframe, which Chromium puts in a process of its own and leaves out of the page's frame tree, so the test reads its DOM through an auto-attached session and drives it with page-level input.
 A dispatched press, path and release does make a real DOM selection: the test asserts that with annotate off, before any passage assertion leans on it.
 It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROWSER=/path/to/binary`; `POINTBACK_BROWSER=none` skips it loudly.
+
+The CLI opens the reviewer's default browser, which is Safari on an unconfigured Mac, so Chromium alone is not the whole audience.
+`npm run smoke -- webkit firefox` runs the core act in both engines: open the fixture through the CLI, point at the title, write a note, send it, and poll it back.
+The `engines` job in `.github/workflows/cross-platform.yml` runs it every Monday, WebKit on `macos-15` and Firefox on `ubuntu-24.04`, and names the engine and its version in the job summary; it skips when `ci.yml` or `release.yml` calls that workflow, so a browser release cannot hold a tag.
+The DevTools harness above cannot reach either engine: WebKit speaks its own inspector protocol and Firefox removed its CDP support in Firefox 141 in favour of WebDriver BiDi.
+Playwright can, through `playwright-core`, one package with no dependencies and no install script; it fetches nothing until `npx playwright-core install webkit firefox` asks it to.
+It is a dev dependency used by `test/engine-smoke.js` alone, so the Chromium suite keeps its own harness and the tarball is unchanged.
+Playwright's WebKit is the engine Safari is built on rather than Safari itself; driving real Safari takes `safaridriver`, which has no headless mode, and Firefox would then need `geckodriver` beside it.
 
 The product name lives in `package.json` and is derived everywhere else through `src/identity.js`; `test/identity.test.js` fails if it appears anywhere else under `src/`.
 The mark is `src/browser/icon.svg`, a point and the return that carries it back, drawn on a 16px grid so the tab icon stays crisp; it follows the tab strip's light or dark scheme, and the same paths are inlined in `chrome.html` beside the wordmark.

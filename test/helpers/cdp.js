@@ -228,7 +228,8 @@ async function startBrowser(executable, { width = 1200, height = 800 } = {}) {
   }
   return {
     pid: child.pid,
-    async page(url) {
+    /** A tab at the launch size, or at `viewport` for a case about one width. */
+    async page(url, viewport = { width, height }) {
       const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
       const { sessionId } = await browser.send("Target.attachToTarget", {
         targetId,
@@ -238,8 +239,7 @@ async function startBrowser(executable, { width = 1200, height = 800 } = {}) {
       await page.send("Page.enable");
       await page.send("Runtime.enable");
       await page.send("Emulation.setDeviceMetricsOverride", {
-        width,
-        height,
+        ...viewport,
         deviceScaleFactor: 1,
         mobile: false,
       });

@@ -388,6 +388,16 @@ test("a leaked handle cannot turn a finished suite into a hung job", () => {
   assert.match(pkg.scripts.test, /--test-timeout=\d+/);
 });
 
+// The WebKit and Firefox smoke reports a browser release, not a change on main, so it
+// runs only when cross-platform.yml is the top-level workflow. Called from ci.yml or
+// release.yml, `github.workflow` names the caller and the job skips, so no tag waits on it.
+test("the engine smoke never gates a release", () => {
+  const jobs = jobsByName(workflows["cross-platform.yml"]);
+  assert.match(jobs.engines, /^ {4}if: github\.workflow == 'cross-platform'$/m);
+  assert.match(workflows["cross-platform.yml"], /^name: cross-platform$/m);
+  assert.doesNotMatch(jobs.test, /^ {4}if:/m, "the platform matrix itself stays unconditional");
+});
+
 test("the release and scheduled paths never cancel a run in flight", () => {
   for (const file of ["release.yml", "cross-platform.yml"]) {
     assert.doesNotMatch(directives(workflows[file]), /cancel-in-progress/, file);
