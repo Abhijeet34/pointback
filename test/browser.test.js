@@ -2594,9 +2594,23 @@ test(
         ],
         { selector: "main > p:nth-of-type(3)", length: 42 },
       );
+      // A section heading draws a rule along its top; its pin stands clear of the rule, not on it.
+      const rules = JSON.parse(
+        await review.artifact.eval(
+          "JSON.stringify([...document.querySelectorAll('main > h2')].slice(0, 2).map((h) => h.getBoundingClientRect().top))",
+        ),
+      );
+      const onRules = onMarkdown
+        .slice(6, 8)
+        .filter((pin, i) => pin.top < rules[i] + 1 && pin.bottom > rules[i])
+        .map(
+          (pin) =>
+            `${pin.name} sits on its heading's rule at ${rules[onMarkdown.indexOf(pin) - 6]}`,
+        );
       covered[`markdown at ${viewport.width}`] = [
         ...(await wordsUnderPins(review.artifact, onMarkdown)),
         ...(await pinsOffFrame(review.artifact, onMarkdown)),
+        ...onRules,
       ];
       await review.page.close();
       rmSync(dirname(readme.file), { recursive: true, force: true });
@@ -3195,6 +3209,45 @@ test(
     await clickOn(page, step("m"));
     await page.waitFor(`${checked} === "Medium"`);
     await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+/** Picks a text size the way a reviewer does: the Aa button, then the step. */
+async function pickTextSize(page, size) {
+  await clickOn(page, "document.getElementById('textSizeButton')");
+  await page.waitFor("document.getElementById('textSizePanel').matches(':popover-open')");
+  await clickOn(page, `document.querySelector('#textSize [data-size="${size}"]')`);
+  await page.waitFor(`document.documentElement.dataset.textSize === "${size}"`);
+}
+
+test(
+  "the text size reaches a rendered Markdown page, and leaves an HTML page as its author set it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const prose = "parseFloat(getComputedStyle(document.querySelector('main > p')).fontSize)";
+    const readme = copyOfReadme();
+    const review = await openReview((await cli([readme.file], lab.env)).json().session.url);
+    const atM = Number(await review.artifact.eval(prose));
+    await pickTextSize(review.page, "xl");
+    // The house root is 15px at M and 19px at XL, and the page's prose is rem on it.
+    await review.artifact.waitFor(`Math.abs(${prose} - ${atM * (19 / 15)}) < 0.05`);
+    // A reload is a new document, told the size again when it says it is ready.
+    const reattaching = review.page.frame();
+    await review.page.reload();
+    const reloaded = await reattaching;
+    await review.page.waitFor("document.body.dataset.ready === '1'");
+    await reloaded.waitFor(`Math.abs(${prose} - ${atM * (19 / 15)}) < 0.05`);
+
+    const { file } = copyOfFixture();
+    const html = await openReview((await cli([file], lab.env)).json().session.url);
+    await html.page.waitFor("document.documentElement.dataset.textSize === 'xl'");
+    const sizes = `JSON.stringify([document.documentElement.dataset.textSize ?? null, parseFloat(getComputedStyle(document.getElementById('p1')).fontSize)])`;
+    assert.deepEqual(JSON.parse(await html.artifact.eval(sizes)), [null, 16], "the author's 16px");
+    await pickTextSize(html.page, "m");
+    await html.page.close();
+    await review.page.close();
+    rmSync(dirname(readme.file), { recursive: true, force: true });
     rmSync(dirname(file), { recursive: true, force: true });
   },
 );

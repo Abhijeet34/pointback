@@ -920,7 +920,13 @@ window.addEventListener("message", (event) => {
   const data = event.data;
   if (data?.type === "ready") {
     nonce = crypto.randomUUID();
-    post({ type: "init", annotate, scroll: lastScroll, pins: pinData() });
+    post({
+      type: "init",
+      annotate,
+      scroll: lastScroll,
+      pins: pinData(),
+      textSize: frameTextSize(),
+    });
     document.body.dataset.ready = "1";
     announced = true;
     if (strayed) {
@@ -1048,9 +1054,17 @@ try {
 } catch {
   // No storage, as in a private window: every review starts at the default.
 }
+// A rendered Markdown page is this review's own, in the house reading styles, so the reviewer's size
+// reaches it too; an HTML page keeps the sizes its author set.
+const frameTextSize = () =>
+  /\.(md|markdown)$/i.test(session?.fileName ?? "")
+    ? (document.documentElement.dataset.textSize ?? "m")
+    : undefined;
+
 textSize.addEventListener("change", () => {
   const size = textSize.querySelector("[aria-checked=true]")?.getAttribute("data-size") ?? "m";
   document.documentElement.dataset.textSize = size;
+  if (nonce && frameTextSize()) post({ type: "text-size", size });
   try {
     localStorage.setItem(TEXT_SIZE_KEY, size);
   } catch {

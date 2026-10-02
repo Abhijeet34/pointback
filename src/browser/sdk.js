@@ -97,6 +97,7 @@
       if (data.scroll) restoreScroll(data.scroll);
       setAnnotate(data.annotate);
       send({ type: "annotate-ok", on: annotate });
+      setTextSize(data.textSize);
       // The agent may have rewritten the page, so every note is found again by its anchor.
       setPins(data.pins);
       // The chrome counts the page shown only once it has finished loading, been put back where
@@ -116,8 +117,17 @@
       setPins(data.pins);
     } else if (data?.nonce === nonce && data.type === "reveal") {
       reveal(data.n);
+    } else if (data?.nonce === nonce && data.type === "text-size") {
+      setTextSize(data.size);
     }
   });
+
+  // The reviewer's text size, which the chrome sends only to its own Markdown render: one of the
+  // house's five steps on <html>, which that page's scales.css turns into its root size.
+  function setTextSize(size) {
+    if (["s", "m", "l", "xl", "xxl"].includes(size))
+      document.documentElement.dataset.textSize = size;
+  }
 
   function whenLoaded(then) {
     if (document.readyState === "complete") then();
@@ -736,7 +746,14 @@
     const beside = lineTop - (PIN - Math.min(lineBottom - lineTop, PIN)) / 2;
     const candidates = [
       // The pin's point is its lower left corner, so it stands on the line's top right corner.
-      { left: right + 1, top: lineTop - PIN },
+      // Above the element's own box, so a heading's rule or a block's padding stays clear of it.
+      {
+        left: right + 1,
+        top:
+          (anchor instanceof Range
+            ? lineTop
+            : Math.min(lineTop, element.getBoundingClientRect().top)) - PIN,
+      },
       { left: right + GAP, top: beside },
       { left: Math.min(...line.map((r) => r.left)) - width - GAP, top: beside },
       { left: right - width, top: lineBottom + GAP },
