@@ -21,6 +21,14 @@ md.renderer.rules.table_open = (tokens, index, options, _env, self) =>
 md.renderer.rules.table_close = (tokens, index, options, _env, self) =>
   `${self.renderToken(tokens, index, options)}</div>`;
 
+/** The daemon's own stylesheets every rendered page loads, which no root needs to hold. */
+export const MARKDOWN_STYLES = [
+  "/house/brand.tokens.css",
+  "/house/roles.css",
+  "/house/scales.css",
+  "/markdown.css",
+];
+
 /**
  * A Markdown file as a page in the house reading styles. Every block carries its source lines,
  * 1-based and inclusive, so a note on it can say where in the file it points.
@@ -46,10 +54,7 @@ export function renderMarkdown(source, file) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>${title}</title>
-<link rel="stylesheet" href="/house/brand.tokens.css">
-<link rel="stylesheet" href="/house/roles.css">
-<link rel="stylesheet" href="/house/scales.css">
-<link rel="stylesheet" href="/markdown.css">
+${MARKDOWN_STYLES.map((href) => `<link rel="stylesheet" href="${href}">`).join("\n")}
 </head>
 <body><main>
 ${md.renderer.render(tokens, md.options, {})}</main></body>

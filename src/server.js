@@ -237,6 +237,7 @@ async function api(req, res, url, ctx) {
       url: `http://127.0.0.1:${ctx.port}/session/${session.key}`,
       status,
       live: ctx.streams.live(session.key),
+      outside: ctx.store.outside(session.key),
     });
   }
 

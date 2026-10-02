@@ -526,21 +526,42 @@ test(
     const styled = "rgb(10, 120, 200) 9px";
     const opened = await cli([file, "--root", repo], lab.env);
     assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(opened.json().refused_assets, undefined, "under --root nothing is refused");
     const page = await browser.page(opened.json().session.url);
     const artifact = await page.frame();
     await artifact.waitFor(`${painted} === ${JSON.stringify(styled)}`);
     const unstyledAtNewAddress = `document.readyState === 'complete' && ![null, ${JSON.stringify(styled)}].includes(${painted}) && /\\/[0-9a-f]{32}\\/actions\\.html$/.test(location.pathname)`;
+    // The line the reviewer reads about files the review does not serve, or null while it paints nothing.
+    const outsideLine =
+      "(() => { const line = document.getElementById('outside'); return line?.checkVisibility() ? line.textContent : null; })()";
+    await page.waitFor("document.body.dataset.ready === '1'");
+    assert.equal(
+      await page.eval(outsideLine),
+      null,
+      "the tab says nothing while every file is served",
+    );
 
     // Opened again without a root while this tab shows the review, which opens no second tab: this
     // one follows the page to the address the new root gives it, or its next reload paints a 404.
-    const reopened = (await cli([file], lab.env)).json().session.url;
+    // The agent is told which files the page now goes without, and what brings them back.
+    const again = (await cli([file], lab.env)).json();
+    assert.deepEqual(again.refused_assets, ["../../exports/variables.css", "../components.css"]);
+    assert.match(
+      again.next_step,
+      /^The page loads \.\.\/\.\.\/exports\/variables\.css, \.\.\/components\.css from outside the folder the review serves, so it shows without them; run `pointback .*actions\.html --root <dir>`/,
+    );
+    const reopened = again.session.url;
     await artifact.waitFor(unstyledAtNewAddress);
+    const told =
+      "../../exports/variables.css, ../components.css are outside the folder this review serves, so the page shows without them. Your agent can open it with --root to include them.";
+    assert.equal(await page.waitFor(outsideLine), told, "the open tab is told as it follows");
 
-    // A second tab on that open gets today's default and the sheet unstyled.
+    // A second tab on that open gets today's default and the sheet unstyled, and says why.
     const plain = await browser.page(reopened);
     const plainFrame = await plain.frame();
     await plainFrame.waitFor(`document.readyState === 'complete' && ${painted} !== null`);
     assert.notEqual(await plainFrame.eval(painted), styled, "assets stay in the file's folder");
+    assert.equal(await plain.waitFor(outsideLine), told, "a fresh tab is told on opening");
 
     // The first tab gets the review back when the second goes, still at the address the new root
     // gave it rather than the one the wider root did.

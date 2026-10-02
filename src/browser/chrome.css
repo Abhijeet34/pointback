@@ -227,6 +227,11 @@ body {
   text-wrap: pretty;
 }
 
+/* Said once, above the status line it would otherwise be lost under. */
+.margin-outside {
+  padding-bottom: 0;
+}
+
 /* With nothing to say the line goes, and the notes keep the space it gave them. */
 .margin-status:empty {
   display: none;

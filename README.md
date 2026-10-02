@@ -71,6 +71,7 @@ Opening a file prints where the review is and what to do next:
 
 The page loads its own stylesheets, scripts and images from the review's root, which is the file's own folder unless `--root <dir>` names a wider one that holds it.
 A page that links `../components.css` and `../../exports/variables.css`, as a design system's component sheet does, renders unstyled under the default because both files sit above its folder; `--root` at the repository's top makes them reachable.
+When the page's markup loads anything from outside the root, the open output lists it under `refused_assets` and its `next_step` says to open again with `--root`, and the tab says the same to the reviewer once, above the status line.
 The root is resolved to its real path when the review opens, so a symlinked spelling cannot stretch it, and nothing outside it is served: not by `../`, not by an encoding, not by a symlink inside it that points out.
 Every open sets the root again, so opening the file without `--root` goes back to its folder.
 The root is also everything the page under review can load, so name the narrowest folder that holds its assets.

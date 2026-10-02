@@ -7,6 +7,7 @@ const frame = /** @type {HTMLIFrameElement} */ (document.getElementById("artifac
 const marks = document.getElementById("marks");
 const marginBody = document.getElementById("marginBody");
 const statusLine = document.getElementById("status");
+const outsideLine = document.getElementById("outside");
 const notice = document.getElementById("notice");
 const noticeText = document.getElementById("noticeText");
 const takeOverButton = /** @type {HTMLButtonElement} */ (document.getElementById("takeOver"));
@@ -162,6 +163,7 @@ async function boot() {
   document.title = `${session.fileName} · ${app.app}`;
   document.getElementById("fileName").textContent = session.fileName;
   sync(session);
+  tellOutside(session.outside);
   render();
   listen();
   startHeartbeat(typeof app.idleMs === "number" ? app.idleMs : 1_800_000);
@@ -287,6 +289,7 @@ function apply(event) {
     if (current) show();
   } else if (event.type === "rerooted") {
     session.artifactUrl = event.artifactUrl;
+    tellOutside(event.outside);
     if (current) show();
   } else if (event.type === "gone") {
     fileGone = true;
@@ -492,6 +495,17 @@ function notesChanged() {
 }
 
 /** A live region announces every write, so an unchanged status is left alone. */
+/** Says which of the page's files the review does not serve, the reason a page paints unstyled. */
+function tellOutside(outside = []) {
+  const one = outside.length === 1;
+  setText(
+    outsideLine,
+    outside.length === 0
+      ? ""
+      : `${outside.join(", ")} ${one ? "is" : "are"} outside the folder this review serves, so the page shows without ${one ? "it" : "them"}. Your agent can open it with --root to include ${one ? "it" : "them"}.`,
+  );
+}
+
 function setText(element, text) {
   if (element.textContent !== text) element.textContent = text;
 }

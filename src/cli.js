@@ -99,15 +99,23 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     const shown = session.live === true;
     if (!ended && !shown && shouldOpenBrowser({ noOpen: values["no-open"] })) openBrowser(url);
     const poll = `Run \`${name} poll ${file}\` and wait; it returns the reviewer's annotations as JSON.`;
+    // A stylesheet above the page's folder is the usual cause of a review that paints unstyled.
+    const refused = session.outside ?? [];
+    const one = refused.length === 1;
+    const root =
+      refused.length === 0
+        ? ""
+        : `The page loads ${refused.join(", ")} from outside the folder the review serves, so it shows without ${one ? "it" : "them"}; run \`${name} ${file} --root <dir>\` with a folder that holds the page and ${one ? "that file" : "those files"}. `;
     return print(
       stdout,
       JSON.stringify({
         session: { file: session.file, url, status: session.status },
+        ...(refused.length > 0 && { refused_assets: refused }),
         next_step: ended
           ? `The reviewer ended this review. Run \`${name} ${file} --reopen\` only if they asked for another round.`
           : shown
-            ? `The review is already open in the reviewer's browser, so no new tab was opened. ${poll}`
-            : poll,
+            ? `${root}The review is already open in the reviewer's browser, so no new tab was opened. ${poll}`
+            : `${root}${poll}`,
       }),
     );
   }
