@@ -910,6 +910,68 @@ test(
 );
 
 test(
+  "Escape closes the note card each time it opens, and the page goes on answering",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    // Three rounds: on macOS a headless browser froze whole on the second, because the card left
+    // its Escape unhandled and the browser went on to treat it as a menu key equivalent.
+    for (let round = 1; round <= 3; round += 1) {
+      await pointAt(page, artifact, "#title");
+      await page.key("Escape", { keyCode: 27 });
+      await page.waitFor("document.getElementById('card').hidden");
+      await artifact.waitFor("document.activeElement?.id === 'title'");
+    }
+    await noteOn(page, artifact, "#title", "Make the title shorter");
+    assert.equal(
+      await page.eval("document.querySelector('.mark:not(.sent) .mark-note').textContent"),
+      "Make the title shorter",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a frame that leaves the review for a missing page says so in words, and Back brings the review back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    writeFileSync(
+      file,
+      html.replace(
+        '<p id="p1">',
+        '<p><a id="away" href="plan-v2.html">The full plan</a></p><p id="p1">',
+      ),
+    );
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.waitFor("document.body.dataset.revision === '0'");
+    // With Annotate off a click is the page's own, so the link is followed, to a file that is not there.
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    await clickIn(page, artifact, "#away");
+    await page.waitFor("document.getElementById('notice').checkVisibility()");
+    const notice = `JSON.stringify((() => {
+      const back = document.getElementById('back');
+      return {
+        text: document.getElementById('noticeText').textContent,
+        back: back.checkVisibility() ? back.textContent.trim() : null,
+      };
+    })())`;
+    assert.deepEqual(JSON.parse(await page.eval(notice)), {
+      text: "The frame went to a page that is missing or is not plan.html, so nothing on it can be noted.",
+      back: "Back to plan.html",
+    });
+    // Back loads the page under review again, which announces itself as it did the first time.
+    await page.eval("delete document.body.dataset.revision");
+    await clickOn(page, "document.getElementById('back')");
+    await page.waitFor("document.body.dataset.revision === '0'");
+    await page.waitFor("!document.getElementById('notice').checkVisibility()");
+    await page.close();
+  },
+);
+
+test(
   "a save reloads the open page, keeps the reviewer's place, and the notes follow the new text",
   { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
   async () => {
@@ -1293,19 +1355,27 @@ test(
       assert.deepEqual(JSON.parse(await page.eval(unsentNotes)), ["Name the queue in the title"]);
 
       // The agent's next step starts a daemon, which comes back where the tab is looking.
-      const polling = cli(["poll", file, "--timeout-ms", "30000"], own.env, { timeoutMs: 40_000 });
-      await page.waitFor("document.getElementById('presence').dataset.state === 'listening'", {
+      assert.equal(
+        (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().status,
+        "waiting",
+      );
+      await page.waitFor("!document.getElementById('notice').checkVisibility()", {
         timeoutMs: 20_000,
       });
-      assert.equal(await page.eval("document.getElementById('notice').checkVisibility()"), false);
       assert.deepEqual(JSON.parse(await page.eval(SEND_PAINT)), {
-        presence: "Agent listening",
+        presence: "Agent away",
         send: "Send 1 note to agent",
         disabled: false,
         cursor: "pointer",
       });
+      // The reviewer sees the note go, and only then does the agent ask: a poll started first, on
+      // its own 30 s clock, lost the note to a browser that landed Send late. The wait is a hang
+      // guard, not a deadline, so it is as long as a stalled browser may need.
       await page.eval("document.getElementById('send').click()");
-      const polled = (await polling).json();
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1", {
+        timeoutMs: 45_000,
+      });
+      const polled = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json();
       assert.equal(polled.status, "feedback");
       assert.deepEqual(
         polled.prompts.map((p) => p.prompt),
@@ -1598,6 +1668,51 @@ const reachability = (selectors) => `JSON.stringify((() => {
 
 // Every other case runs at 800x600, so the band layout chrome.css switches to below 900 px
 // had no coverage at all. 390x844 is a current phone held upright.
+/** The agent's state as the bar paints it, and the margin's one line. */
+const AGENT_PAINT = `JSON.stringify({
+  presence: document.getElementById('presenceText').textContent,
+  since: document.getElementById('presenceSince').textContent,
+  status: document.getElementById('status').textContent,
+})`;
+
+test(
+  "once the agent has replied to every note it took, the bar stops saying it is working",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Make the title shorter");
+    await noteOn(page, artifact, "#p1", "Say how long each step takes");
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 2");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.equal(polled.prompts.length, 2);
+    await page.waitFor("document.getElementById('presence').dataset.state === 'working'");
+
+    // One answered, one open: the agent is still at work on the other.
+    assert.equal((await cli(["reply", file, "1", "--done"], lab.env)).code, 0);
+    await page.waitFor("document.querySelectorAll('.mark-reply').length === 1");
+    const partway = JSON.parse(await page.eval(AGENT_PAINT));
+    assert.equal(partway.presence, "Agent working");
+    assert.match(partway.since, /^\d+:\d\d$/);
+
+    // Both answered: nothing it took is left, so the bar and the margin agree it is done.
+    const last = await cli(
+      ["reply", file, "2", "--declined", "--message", "Out of scope"],
+      lab.env,
+    );
+    assert.equal(last.code, 0, last.stderr);
+    await page.waitFor("document.querySelectorAll('.mark-reply').length === 2");
+    await page.waitFor("document.getElementById('presence').dataset.state !== 'working'");
+    assert.deepEqual(JSON.parse(await page.eval(AGENT_PAINT)), {
+      presence: "Agent away",
+      since: "",
+      status: "Your agent has answered every note.",
+    });
+    await page.close();
+  },
+);
+
 test(
   "at phone width the bar and the margin stay usable: nothing scrolls sideways and Send is reachable",
   { skip: !executable && "no browser found" },
@@ -1767,6 +1882,139 @@ test(
       "3",
     );
     await page.close();
+  },
+);
+
+/**
+ * The first line of an element as it paints: every run of its text on the line its first text sits
+ * on, and the right edge of the inline code that opens it, if one does. Measured from text nodes,
+ * never from element boxes, so a padded code chip cannot stand in for the line.
+ */
+const firstLine = (selector) => `JSON.stringify((() => {
+  const element = document.querySelector(${JSON.stringify(selector)});
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  const rects = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    rects.push(...[...range.getClientRects()].filter((r) => r.width > 0));
+  }
+  const [first] = rects;
+  const line = rects.filter((r) => r.top + r.height / 2 > first.top && r.top + r.height / 2 < first.bottom);
+  return {
+    top: Math.min(...line.map((r) => r.top)),
+    right: Math.max(...line.map((r) => r.right)),
+    code: element.firstElementChild?.tagName === "CODE" ? element.firstElementChild.getBoundingClientRect().right : null,
+  };
+})())`;
+
+/** Asserts a pin stands at the top right of the first line of its target, past any opening code. */
+async function pinOnFirstLine(artifact, pin, selector) {
+  const line = JSON.parse(await artifact.eval(firstLine(selector)));
+  assert.ok(line.code !== null, `${selector} opens with inline code`);
+  assert.ok(
+    Math.abs(pin.left - (line.right + 1)) <= 2 && pin.bottom <= line.top + 2,
+    `${pin.name} paints at ${JSON.stringify(pin)}; the first line of ${selector} ends at ` +
+      `${line.right} and starts at ${line.top}, its opening code chip ends at ${line.code}`,
+  );
+}
+
+test(
+  "a pin stands at the end of its target's first line and inside a cell it marks, covering no other text",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    // A paragraph that opens with a padded code chip, as rendered Markdown and many pages draw one.
+    writeFileSync(
+      file,
+      html.replace(
+        "<p>Duplicate delivery is the one that costs money.</p>",
+        '<style>code { background: #eee; padding: 2px 6px; border-radius: 4px }</style><p id="lead">' +
+          "<code>visibility_timeout</code> is what a retry hinges on, and duplicate delivery is the one that costs money.</p>",
+      ),
+    );
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, CELL(1), "Priya is on leave that week");
+    await noteOn(
+      page,
+      artifact,
+      "main > table > tbody > tr:nth-of-type(2) > td:nth-of-type(1)",
+      "Say what cutover means",
+    );
+    // Pointed at past the chip, on the paragraph's own words.
+    const unsent = "document.querySelectorAll('.mark:not(.sent)').length";
+    await clickIn(page, artifact, "#lead", { x: 220, y: 10 });
+    await page.waitFor(
+      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+    );
+    await page.type("Link the setting");
+    await page.enter();
+    await page.waitFor(`${unsent} === 3`);
+    assert.equal(
+      await page.eval(
+        "document.querySelector('.mark:not(.sent):nth-child(3) .mark-tag').textContent",
+      ),
+      "Paragraph",
+    );
+
+    const pins = await pinsBesideTargets(
+      artifact,
+      ["Note 1, not sent yet", "Note 2, not sent yet", "Note 3, not sent yet"],
+      [CELL(1), "main > table > tbody > tr:nth-of-type(2) > td:nth-of-type(1)", "#lead"],
+      "as the notes are added",
+    );
+    // What paints under each cell's pin: its own cell's box holds it, and no other cell's words.
+    const cells = JSON.parse(
+      await artifact.eval(`JSON.stringify([...document.querySelectorAll('th, td')].map((cell) => {
+        const range = document.createRange();
+        range.selectNodeContents(cell);
+        const box = cell.getBoundingClientRect();
+        return {
+          text: cell.textContent,
+          box: { left: box.left, top: box.top, right: box.right, bottom: box.bottom },
+          words: [...range.getClientRects()].map((r) => ({ left: r.left, top: r.top, right: r.right, bottom: r.bottom })),
+        };
+      }))`),
+    );
+    const overlaps = (a, b) =>
+      a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    for (const [pin, own] of [
+      [pins[0], "Priya"],
+      [pins[1], "Cutover"],
+    ]) {
+      const cell = cells.find((c) => c.text === own);
+      assert.ok(
+        pin.left >= cell.box.left - 0.5 &&
+          pin.right <= cell.box.right + 0.5 &&
+          pin.top >= cell.box.top - 0.5 &&
+          pin.bottom <= cell.box.bottom + 0.5,
+        `${pin.name} paints at ${JSON.stringify(pin)}, outside its cell ${JSON.stringify(cell.box)}`,
+      );
+      const covered = cells.filter(
+        (c) => c !== cell && c.words.some((words) => overlaps(pin, words)),
+      );
+      assert.deepEqual(
+        covered.map((c) => c.text),
+        [],
+        `${pin.name} covers another cell's words`,
+      );
+    }
+    await pinOnFirstLine(artifact, pins[2], "#lead");
+    await page.close();
+
+    // The same rule on a rendered Markdown page: the README's Install paragraph opens with `parse5`.
+    const readme = copyOfReadme();
+    const review = await openReview((await cli([readme.file], lab.env)).json().session.url);
+    const install = await noteOnInstall(review.page, review.artifact, "Say why two");
+    const [pin] = await pinsBesideTargets(
+      review.artifact,
+      ["Note 1, not sent yet"],
+      [install],
+      "on the Markdown page",
+    );
+    await pinOnFirstLine(review.artifact, pin, install);
+    await review.page.close();
+    rmSync(dirname(readme.file), { recursive: true, force: true });
   },
 );
 

@@ -659,6 +659,28 @@ test("ending while the agent is working says so, so no tab is left holding a dis
   assert.equal(store.presence(key).state, "waiting", "and a reopened review has no working agent");
 });
 
+test("the agent stops working once it has replied to every note it took, and not before", async () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  store.queue(key, [prompt("one")]);
+  await store.waitForFeedback(key, 5000);
+  store.reply(key, 1, { status: "done" });
+  // A note sent while it worked on the first is not part of what it took.
+  store.queue(key, [prompt("two"), prompt("three")]);
+  await store.waitForFeedback(key, 5000, undefined, cursor(store, key, 1));
+  assert.equal(store.presence(key).state, "working");
+  const seen = [];
+  store.on(key, (event) => event.type === "presence" && seen.push(event.state));
+  store.reply(key, 1, { status: "declined", message: "Not this one after all" });
+  store.reply(key, 2, { status: "done" });
+  assert.equal(store.presence(key).state, "working", "one note it took is still unanswered");
+  assert.deepEqual(seen, []);
+  store.reply(key, 3, { status: "question", message: "Which week?" });
+  assert.deepEqual(store.presence(key), { state: "waiting" });
+  assert.deepEqual(seen, ["waiting"], "the tab is told the agent is no longer working");
+});
+
 test("an agent end never relabels a review the reviewer ended", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);
