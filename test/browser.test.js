@@ -1063,6 +1063,14 @@ async function openReview(url) {
 async function noteOn(page, artifact, selector, text) {
   const unsent = "document.querySelectorAll('.mark:not(.sent)').length";
   const before = Number(await page.eval(unsent));
+  await pointAt(page, artifact, selector);
+  await page.type(text);
+  await page.enter();
+  await page.waitFor(`${unsent} === ${before + 1}`);
+}
+
+/** Clicks an element in the artifact with Annotate on, and waits for the card to take focus. */
+async function pointAt(page, artifact, selector) {
   const frameBox = JSON.parse(
     await page.eval("JSON.stringify(document.getElementById('artifact').getBoundingClientRect())"),
   );
@@ -1080,9 +1088,6 @@ async function noteOn(page, artifact, selector, text) {
   await page.waitFor(
     "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
   );
-  await page.type(text);
-  await page.enter();
-  await page.waitFor(`${unsent} === ${before + 1}`);
 }
 
 /** What the reviewer sees of the agent and of Send, read from what paints. */
@@ -1431,5 +1436,87 @@ test(
       `browser reply: the margin showed Done ${shownMs} ms after the reply command started`,
     );
     await page.close();
+  },
+);
+
+/**
+ * Whether each selector's element is on screen and is what a press at its centre lands on,
+ * and what scrolls sideways: the two things a reviewer on a phone runs into first. Every
+ * scroller counts, not only the page: `.marks` scrolls on y, which makes it scroll on x too,
+ * so a note too wide for the margin scrolls inside the list and leaves the page's width alone.
+ */
+const reachability = (selectors) => `JSON.stringify((() => {
+  const reach = (selector) => {
+    const element = document.querySelector(selector);
+    const b = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+    const inside = b.width > 0 && b.height > 0 && b.left >= 0 && b.top >= 0 &&
+      b.right <= innerWidth && b.bottom <= innerHeight;
+    return {
+      selector,
+      box: [b.left, b.top, b.right, b.bottom].map(Math.round),
+      lands: hit ? hit.id || hit.className || hit.tagName : null,
+      reachable: inside && element.contains(hit),
+    };
+  };
+  return {
+    viewport: [innerWidth, innerHeight],
+    sideways: [...new Set([document.scrollingElement, ...document.querySelectorAll("*")])]
+      .filter((e) => e === document.scrollingElement || /auto|scroll/.test(getComputedStyle(e).overflowX))
+      .filter((e) => e.scrollWidth > e.clientWidth)
+      .map((e) => (e.id || e.className || e.tagName) + " " + e.scrollWidth + " px in " + e.clientWidth),
+    controls: ${JSON.stringify(selectors)}.map(reach),
+  };
+})())`;
+
+// Every other case runs at 800x600, so the band layout chrome.css switches to below 900 px
+// had no coverage at all. 390x844 is a current phone held upright.
+test(
+  "at phone width the bar and the margin stay usable: nothing scrolls sideways and Send is reachable",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const page = await browser.page(session.url, { width: 390, height: 844 });
+    const attaching = page.frame();
+    await page.waitFor("document.body.dataset.ready === '1'");
+    const artifact = await attaching;
+    await artifact.waitFor("document.readyState === 'complete'");
+    const usable = async (when, selectors) => {
+      const seen = JSON.parse(await page.eval(reachability(selectors)));
+      assert.deepEqual(seen.viewport, [390, 844], "the tab is phone sized");
+      assert.deepEqual(seen.sideways, [], `${when}: something scrolls sideways`);
+      for (const control of seen.controls) {
+        assert.ok(control.reachable, `${when}: ${JSON.stringify(control)}`);
+      }
+      return Object.fromEntries(seen.controls.map((c) => [c.selector, c.box]));
+    };
+
+    const bar = await usable("on opening", ["#annotate", "#end", "#send"]);
+    const [left, top, right, bottom] = bar["#annotate"];
+    await page.click((left + right) / 2, (top + bottom) / 2);
+    await page.waitFor("document.body.dataset.annotate === '1'");
+
+    await pointAt(page, artifact, "#title");
+    await usable("with the note card open", ["#cardText", "#cardAdd"]);
+    // A pasted digest is the widest thing a note holds: a path breaks at its slashes and
+    // hyphens, 64 hex characters have no break opportunity at all.
+    const note = `Pin it to ${"3f9a2c7e1b5d8f0a".repeat(4)}`;
+    await page.type(note);
+    await page.enter();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    const margin = await usable("with a note in the margin", [".mark", "#send"]);
+
+    const polling = cli(["poll", file, "--timeout-ms", "10000"], lab.env);
+    const [sendLeft, sendTop, sendRight, sendBottom] = margin["#send"];
+    await page.click((sendLeft + sendRight) / 2, (sendTop + sendBottom) / 2);
+    const polled = (await polling).json();
+    assert.equal(polled.status, "feedback");
+    assert.deepEqual(
+      polled.prompts.map(({ prompt, selector }) => ({ prompt, selector })),
+      [{ prompt: note, selector: "#title" }],
+    );
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
   },
 );
