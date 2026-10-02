@@ -313,7 +313,7 @@ test("a missing file argument or file is an error exit, not a stack trace", asyn
     const noFile = await cli(args, lab.env);
     assert.equal(noFile.code, 1, args[0]);
     assert.equal(noFile.stdout, "", args[0]);
-    assert.match(noFile.stderr, /^error: no such file: \S*missing\.html$/m, args[0]);
+    assert.match(noFile.stderr, /^error: no such file: \S*missing\.html\n$/, args[0]);
   }
 });
 

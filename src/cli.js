@@ -158,7 +158,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   const cursor = readPollCursor(dir, canonical);
   const ack = cursor === undefined ? "" : `&ack=${cursor.uid}&epoch=${cursor.epoch}`;
   const query = `file=${encodeURIComponent(canonical)}${timeout}${ack}`;
-  print(stderr, `waiting for feedback on ${file}...`);
+  // A path with no file answers at once, with its last notes, gone, or no such file.
+  if (existsSync(canonical)) print(stderr, `waiting for feedback on ${file}...`);
   const result = await api(server, "GET", `/api/poll?${query}`).catch(refused(canonical));
   if (result.status === "gone") return printGone(stdout, file, result);
   const { receipt, epoch } = result;
