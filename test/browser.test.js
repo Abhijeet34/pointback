@@ -1602,8 +1602,12 @@ test(
       JSON.parse(
         await page.eval(`JSON.stringify((() => {
           const name = document.getElementById('fileName');
-          const lines = (e) => { const r = document.createRange(); r.selectNodeContents(e);
-            return new Set([...r.getClientRects()].map((b) => Math.round(b.top))).size; };
+          // Lines of the label's own words: the switch's track is a box beside them, not a line.
+          const lines = (e) => { const tops = new Set(); const walk = document.createTreeWalker(e, NodeFilter.SHOW_TEXT);
+            for (let t = walk.nextNode(); t; t = walk.nextNode()) { if (!t.textContent.trim()) continue;
+              const r = document.createRange(); r.selectNodeContents(t);
+              for (const b of r.getClientRects()) tops.add(Math.round(b.top)); }
+            return tops.size; };
           return { file: name.textContent, shown: name.getBoundingClientRect().width >= name.scrollWidth && name.scrollWidth > 0,
             end: lines(document.getElementById('end')), annotate: lines(document.getElementById('annotate').parentElement) };
         })())`),
