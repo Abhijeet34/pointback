@@ -15,7 +15,7 @@ One person, one agent, one local file.
 
 Node 24 or newer, and a browser to review in.
 CI runs the suite on `ubuntu-24.04` every pull request, and on `macos-15` and `windows-2025` weekly, on the release pull request, and on every push to `main`.
-All three pass it: 148 tests, 147 passing and one skipped, with the browser suite driving real Chrome on each.
+All three pass the whole suite, with the browser suite driving real Chrome on each.
 
 ## Install
 
