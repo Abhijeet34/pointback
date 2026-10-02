@@ -1920,50 +1920,21 @@ async function pinOnFirstLine(artifact, pin, selector) {
 }
 
 test(
-  "a pin stands at the end of its target's first line and inside a cell it marks, covering no other text",
+  "a pin on a table cell stands inside that cell, covering no other cell's words",
   { skip: !executable && "no browser found" },
   async () => {
-    const { file, html } = copyOfFixture();
-    // A paragraph that opens with a padded code chip, as rendered Markdown and many pages draw one.
-    writeFileSync(
-      file,
-      html.replace(
-        "<p>Duplicate delivery is the one that costs money.</p>",
-        '<style>code { background: #eee; padding: 2px 6px; border-radius: 4px }</style><p id="lead">' +
-          "<code>visibility_timeout</code> is what a retry hinges on, and duplicate delivery is the one that costs money.</p>",
-      ),
-    );
+    const { file } = copyOfFixture();
     const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const CUTOVER = "main > table > tbody > tr:nth-of-type(2) > td:nth-of-type(1)";
     await noteOn(page, artifact, CELL(1), "Priya is on leave that week");
-    await noteOn(
-      page,
-      artifact,
-      "main > table > tbody > tr:nth-of-type(2) > td:nth-of-type(1)",
-      "Say what cutover means",
-    );
-    // Pointed at past the chip, on the paragraph's own words.
-    const unsent = "document.querySelectorAll('.mark:not(.sent)').length";
-    await clickIn(page, artifact, "#lead", { x: 220, y: 10 });
-    await page.waitFor(
-      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
-    );
-    await page.type("Link the setting");
-    await page.enter();
-    await page.waitFor(`${unsent} === 3`);
-    assert.equal(
-      await page.eval(
-        "document.querySelector('.mark:not(.sent):nth-child(3) .mark-tag').textContent",
-      ),
-      "Paragraph",
-    );
-
+    await noteOn(page, artifact, CUTOVER, "Say what cutover means");
     const pins = await pinsBesideTargets(
       artifact,
-      ["Note 1, not sent yet", "Note 2, not sent yet", "Note 3, not sent yet"],
-      [CELL(1), "main > table > tbody > tr:nth-of-type(2) > td:nth-of-type(1)", "#lead"],
+      ["Note 1, not sent yet", "Note 2, not sent yet"],
+      [CELL(1), CUTOVER],
       "as the notes are added",
     );
-    // What paints under each cell's pin: its own cell's box holds it, and no other cell's words.
+    // What paints under each pin: its own cell's box holds it, and no other cell's words.
     const cells = JSON.parse(
       await artifact.eval(`JSON.stringify([...document.querySelectorAll('th, td')].map((cell) => {
         const range = document.createRange();
@@ -1983,6 +1954,12 @@ test(
       [pins[1], "Cutover"],
     ]) {
       const cell = cells.find((c) => c.text === own);
+      const covered = cells.filter((c) => c !== cell && c.words.some((w) => overlaps(pin, w)));
+      assert.deepEqual(
+        covered.map((c) => c.text),
+        [],
+        `${pin.name} at ${JSON.stringify(pin)} covers another cell's words`,
+      );
       assert.ok(
         pin.left >= cell.box.left - 0.5 &&
           pin.right <= cell.box.right + 0.5 &&
@@ -1990,29 +1967,55 @@ test(
           pin.bottom <= cell.box.bottom + 0.5,
         `${pin.name} paints at ${JSON.stringify(pin)}, outside its cell ${JSON.stringify(cell.box)}`,
       );
-      const covered = cells.filter(
-        (c) => c !== cell && c.words.some((words) => overlaps(pin, words)),
-      );
-      assert.deepEqual(
-        covered.map((c) => c.text),
-        [],
-        `${pin.name} covers another cell's words`,
-      );
     }
-    await pinOnFirstLine(artifact, pins[2], "#lead");
+    await page.close();
+  },
+);
+
+test(
+  "a pin on a paragraph that opens with inline code stands at the end of its first line, not the code's",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    // A padded code chip opening a paragraph, as rendered Markdown and many pages draw one.
+    writeFileSync(
+      file,
+      html.replace(
+        "<p>Duplicate delivery is the one that costs money.</p>",
+        '<style>code { background: #eee; padding: 2px 6px; border-radius: 4px }</style><p id="lead">' +
+          "<code>visibility_timeout</code> is what a retry hinges on, and duplicate delivery is the one that costs money.</p>",
+      ),
+    );
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    // Pointed at past the chip, on the paragraph's own words.
+    await clickIn(page, artifact, "#lead", { x: 220, y: 10 });
+    await page.waitFor(
+      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+    );
+    await page.type("Link the setting");
+    await page.enter();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    assert.equal(await page.eval("document.querySelector('.mark-tag').textContent"), "Paragraph");
+    const [pin] = await pinsBesideTargets(
+      artifact,
+      ["Note 1, not sent yet"],
+      ["#lead"],
+      "on the HTML page",
+    );
+    await pinOnFirstLine(artifact, pin, "#lead");
     await page.close();
 
-    // The same rule on a rendered Markdown page: the README's Install paragraph opens with `parse5`.
+    // The same on a rendered Markdown page: the README's Install paragraph opens with `parse5`.
     const readme = copyOfReadme();
     const review = await openReview((await cli([readme.file], lab.env)).json().session.url);
     const install = await noteOnInstall(review.page, review.artifact, "Say why two");
-    const [pin] = await pinsBesideTargets(
+    const [onInstall] = await pinsBesideTargets(
       review.artifact,
       ["Note 1, not sent yet"],
       [install],
       "on the Markdown page",
     );
-    await pinOnFirstLine(review.artifact, pin, install);
+    await pinOnFirstLine(review.artifact, onInstall, install);
     await review.page.close();
     rmSync(dirname(readme.file), { recursive: true, force: true });
   },
