@@ -676,38 +676,41 @@ test(
     const session = (await cli([file], lab.env)).json().session;
     const page = await browser.page(session.url);
     await page.waitFor("document.body.dataset.revision === '0'");
-    const state = `JSON.stringify({
-      notice: document.getElementById('notice').hidden ? null : document.getElementById('noticeText').textContent,
-      annotate: document.getElementById('annotate').disabled,
-      end: document.getElementById('end').disabled,
-      send: document.getElementById('send').disabled,
-    })`;
+    // What paints, never the attribute behind it: the notice's box, the text, and how each
+    // control the reviewer could press is drawn.
+    const painted = `JSON.stringify((() => {
+      const notice = document.getElementById('notice');
+      const look = (id) => { const s = getComputedStyle(document.getElementById(id)); return s.color + ' ' + s.cursor; };
+      return {
+        notice: notice.checkVisibility() && notice.getBoundingClientRect().height > 0
+          ? document.getElementById('noticeText').textContent : null,
+        status: document.getElementById('status').textContent,
+        send: document.getElementById('send').textContent,
+        annotate: look('annotate'),
+        end: look('end'),
+      };
+    })())`;
+    const live = JSON.parse(await page.eval(painted));
+    assert.equal(live.notice, null);
     const away = `${file}.away`;
     renameSync(file, away);
     // The agent's poll is the path that tells the tab whether or not the watcher saw the move.
     const polled = await cli(["poll", file, "--timeout-ms", "0"], lab.env);
     assert.equal(polled.code, 1);
     assert.equal(polled.json().status, "gone");
-    await page.waitFor("!document.getElementById('notice').hidden");
-    assert.deepEqual(JSON.parse(await page.eval(state)), {
-      notice: "The file was moved or deleted, so this review cannot go on.",
-      annotate: true,
-      end: true,
-      send: true,
-    });
-    assert.equal(
-      await page.eval("document.getElementById('status').textContent"),
-      "Nothing can be sent while the file is gone.",
-    );
+    await page.waitFor("document.getElementById('notice').checkVisibility()");
+    const gone = JSON.parse(await page.eval(painted));
+    assert.equal(gone.notice, "The file was moved or deleted, so this review cannot go on.");
+    assert.equal(gone.status, "Nothing can be sent while the file is gone.");
+    assert.equal(gone.send, "File is gone");
+    for (const control of ["annotate", "end"]) {
+      assert.notEqual(gone[control], live[control], `${control} no longer paints as pressable`);
+      assert.match(gone[control], / default$/, `${control} stops promising a press`);
+    }
 
     renameSync(away, file);
-    await page.waitFor("document.getElementById('notice').hidden");
-    assert.deepEqual(JSON.parse(await page.eval(state)), {
-      notice: null,
-      annotate: false,
-      end: false,
-      send: true,
-    });
+    await page.waitFor("!document.getElementById('notice').checkVisibility()");
+    assert.deepEqual(JSON.parse(await page.eval(painted)), live, "the review is back as it was");
     await page.close();
   },
 );
