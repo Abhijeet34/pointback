@@ -11,6 +11,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -489,6 +490,79 @@ test(
       `document.readyState === 'complete' && ![null, ${JSON.stringify(styled)}].includes(${painted})`,
     );
     assert.match(await artifact.eval("location.pathname"), /\/[0-9a-f]{32}\/actions\.html$/);
+    await page.close();
+  },
+);
+
+/**
+ * A page set in a web font from its own folder, beside a secret, with a symlink inside the root that
+ * leads out of it. `block.woff2` is an original test font: every printable ASCII glyph is one filled
+ * box on a 1000-unit advance at 1000 units per em, so text set in it is exactly 1em per character.
+ */
+function fontSheet() {
+  const outside = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-font-"));
+  const site = join(outside, "site");
+  mkdirSync(join(site, "fonts"), { recursive: true });
+  copyFileSync(join(dirname(fixture), "block.woff2"), join(site, "fonts", "block.woff2"));
+  copyFileSync(join(dirname(fixture), "block.woff2"), join(outside, "outside.woff2"));
+  symlinkSync(join(outside, "outside.woff2"), join(site, "fonts", "link.woff2"));
+  writeFileSync(join(site, ".env"), "SECRET=hunter2\n");
+  const file = join(site, "type.html");
+  writeFileSync(
+    file,
+    `<!doctype html><meta charset="utf-8"><title>Type</title>
+<style>
+@font-face { font-family: Block; src: url(fonts/block.woff2) format("woff2"); }
+#set { font: 40px Block, monospace; }
+</style>
+<body><span id="set">iiii</span></body>`,
+  );
+  return file;
+}
+
+test(
+  "an artifact's web font paints from its root, and the frame can read no other file cross-origin",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const opened = await cli([fontSheet()], lab.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    const page = await browser.page(opened.json().session.url);
+    const artifact = await page.frame();
+    await artifact.waitFor("document.readyState === 'complete'");
+    // Settled either way: on a refused font, ready resolves with the face in "error".
+    const face = await artifact.eval(
+      "document.fonts.ready.then(() => [...document.fonts].map((f) => f.family + ' ' + f.status).join())",
+    );
+    assert.equal(face, "Block loaded", "the @font-face in the page loaded");
+    assert.equal(await artifact.eval("document.fonts.check('40px Block')"), true);
+    // Four boxes at 40px are 160px wide; the monospace fallback sets "iiii" at 96px.
+    assert.equal(
+      await artifact.eval("document.getElementById('set').getBoundingClientRect().width"),
+      160,
+      "the text is laid out in the web font, not the fallback",
+    );
+
+    // What the frame can read: the font, and nothing else, whether a sibling, the page or the api.
+    const read = (path) => artifact.eval(`fetch(${path}).then((r) => r.status, (e) => e.name)`);
+    assert.equal(await read("'fonts/block.woff2'"), 200);
+    assert.equal(await read("'.env'"), "TypeError", "a secret beside the page");
+    assert.equal(await read("location.href"), "TypeError", "the page's own source");
+    assert.equal(
+      await read("`/api/${location.pathname.split('/')[2]}/session`"),
+      "TypeError",
+      "the api",
+    );
+
+    // A font outside the root does not load, through dot segments or a symlink inside the root.
+    for (const src of ["../outside.woff2", "fonts/link.woff2"]) {
+      assert.equal(
+        await artifact.eval(
+          `new FontFace("Out", "url(${src})").load().then((f) => f.status, (e) => e.name)`,
+        ),
+        "NetworkError",
+        src,
+      );
+    }
     await page.close();
   },
 );
