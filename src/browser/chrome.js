@@ -275,6 +275,9 @@ function apply(event) {
     marksDirty = true;
   }
   render();
+  // A question waits on the reviewer, so it is brought into view; any other reply stays put.
+  if (event.type === "reply" && event.reply.status === "question")
+    marks.querySelector(`[data-uid="${event.uid}"]`)?.scrollIntoView({ block: "nearest" });
 }
 
 /** Adopts the server's answer to a change of the unsent notes, or says why it was refused. */
@@ -427,6 +430,7 @@ function renderNotice() {
 function mark(entry, sent) {
   const li = document.createElement("li");
   li.className = sent ? "mark sent" : "mark";
+  if (sent) li.dataset.uid = String(entry.uid);
   const target = document.createElement("div");
   target.className = "mark-target";
   const tag = document.createElement("span");

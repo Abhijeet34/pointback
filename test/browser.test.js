@@ -1359,11 +1359,21 @@ test(
       "Your agent asked you a question. Answer it on its note, then send.",
     );
 
+    // At 800x600 the notes are a short band under the page; a question is brought into it.
+    assert.equal(
+      await page.eval(`(() => {
+        const list = document.getElementById('marks').getBoundingClientRect();
+        const answer = document.querySelector('.mark-answer').getBoundingClientRect();
+        return answer.top >= list.top && answer.bottom <= list.bottom;
+      })()`),
+      true,
+      "the question and its Answer button are in view without the reviewer scrolling",
+    );
+
     // Answering is a note like any other, pointed where the question's note was and naming it.
-    // At 800x600 the notes are a short band under the page, so the reviewer scrolls to it first.
     const button = JSON.parse(
       await page.eval(
-        "(() => { const b = document.querySelector('.mark-answer'); b.scrollIntoView({ block: 'nearest' }); return JSON.stringify(b.getBoundingClientRect()); })()",
+        "JSON.stringify(document.querySelector('.mark-answer').getBoundingClientRect())",
       ),
     );
     await page.click(button.left + button.width / 2, button.top + button.height / 2);
