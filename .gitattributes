@@ -6,3 +6,8 @@
 # line ending in the repository, the working tree and the packed tarball, and
 # leaves the formatter free to keep saying what it sees.
 * text=auto eol=lf
+
+# The house design system's files are upstream's bytes, pinned by SHA-256 in
+# src/browser/house/pin.json; IBM Plex Mono's OFL.txt is CRLF upstream, and
+# normalising it would fail test/house.test.js on every fresh checkout.
+src/browser/house/** -text
