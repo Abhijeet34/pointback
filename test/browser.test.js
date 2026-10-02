@@ -222,6 +222,13 @@ test(
 
     const polling = cli(["poll", fixture, "--timeout-ms", "10000"], lab.env);
     await new Promise((r) => setTimeout(r, 400));
+    // Every state Send passes through from the press to the server's answer, as it paints.
+    await page.eval(`(() => {
+      const send = document.getElementById("send");
+      globalThis.sendStates = [];
+      new MutationObserver(() => sendStates.push([send.disabled, send.textContent]))
+        .observe(send, { attributes: true, childList: true, characterData: true, subtree: true });
+    })()`);
     const sentAt = Date.now();
     await page.eval("document.getElementById('send').click()");
     const polled = (await polling).json();
@@ -311,12 +318,29 @@ test(
     );
     // Nothing is waiting to go, so Send has nothing to do; it is not locked by the agent working.
     assert.equal(await page.eval("document.getElementById('send').textContent"), "Send to agent");
-    // Working is a still dot. Ask for motion explicitly, or a machine with Reduce Motion on
-    // would pass this with the old 1.4 s pulse still in the stylesheet.
+    // A send in flight never offers the notes it is sending again: an event that lands before
+    // the server's answer once re-rendered Send as "Send 4 notes to agent" for a frame.
+    await page.waitFor("document.getElementById('send').textContent === 'Send to agent'");
+    const offered = JSON.parse(await page.eval("JSON.stringify(sendStates)")).filter(
+      ([disabled]) => !disabled,
+    );
+    assert.deepEqual(offered, [], "Send stays shut from the press to the server's answer");
+    // Working is a still dot, and nothing on the page loops. Ask for motion explicitly, or a
+    // machine with Reduce Motion on would pass this with the old 1.4 s pulse still in the
+    // stylesheet. A finite house transition, such as Send's colour settling after the press, is
+    // feedback rather than a loop.
     await page.send("Emulation.setEmulatedMedia", {
       features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
     });
-    assert.equal(await page.eval("document.getAnimations().length"), 0);
+    assert.deepEqual(
+      JSON.parse(
+        await page.eval(`JSON.stringify({
+          dot: document.querySelector(".presence-dot").getAnimations().length,
+          loops: document.getAnimations().filter((a) => a.effect.getComputedTiming().iterations === Infinity).length,
+        })`),
+      ),
+      { dot: 0, loops: 0 },
+    );
     await page.send("Emulation.setEmulatedMedia", { features: [] });
     // The house roles arrived: the accent is the pinned brand's pencil, and dark is pinned.
     assert.equal(

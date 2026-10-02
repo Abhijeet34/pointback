@@ -62,6 +62,8 @@ let liveReload = true;
 let connection = "live";
 let editing = false;
 let deferredReload = false;
+// A send is in flight: Send stays shut until the server's answer has replaced the unsent notes.
+let sending = false;
 let lastScroll = null;
 let workingTimer = null;
 let stream = null;
@@ -332,16 +334,20 @@ function render() {
   const count = pending.length;
   const asking = chat.some((entry) => unanswered(entry));
   const replied = chat.length > 0 && chat.every((entry) => entry.reply);
-  sendButton.disabled = count === 0 || fileGone || offline;
-  sendButton.textContent = fileGone
-    ? "File is gone"
-    : offline
-      ? "Not connected"
-      : count === 0
-        ? ended
-          ? "Review ended"
-          : "Send to agent"
-        : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
+  // An event landing mid-send renders before this tab has the server's answer, with the notes
+  // still listed as unsent; Send must not offer them again in that gap.
+  sendButton.disabled = sending || count === 0 || fileGone || offline;
+  sendButton.textContent = sending
+    ? "Sending…"
+    : fileGone
+      ? "File is gone"
+      : offline
+        ? "Not connected"
+        : count === 0
+          ? ended
+            ? "Review ended"
+            : "Send to agent"
+          : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
   annotateSwitch.disabled = ended !== null || fileGone;
   endButton.disabled = ended !== null || fileGone;
   // A failure the reviewer needs to see outlives the render that would otherwise write over it.
@@ -982,14 +988,16 @@ sendForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (pending.length === 0) return;
   if (!(await saveEdit())) return;
-  sendButton.disabled = true;
-  sendButton.textContent = "Sending…";
+  sending = true;
   problem = null;
+  render();
   try {
     await api("POST", `/api/${key}/prompts`);
     ({ chat, drafts: pending } = await api("GET", `/api/${key}/session`));
   } catch (error) {
     problem = `Could not send: ${error.message}`;
+  } finally {
+    sending = false;
   }
   notesChanged();
 });
