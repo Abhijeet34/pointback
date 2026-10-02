@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -10,8 +18,11 @@ function lab() {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-store-"));
   const artifact = join(dir, "plan.html");
   writeFileSync(artifact, "<p>plan</p>");
-  return { dir, artifact, file: join(dir, "state.json") };
+  return { dir, artifact };
 }
+
+/** Where a session is kept on disk: one file per session, under the state directory. */
+const sessionFile = (dir, key) => join(dir, "sessions", `${key}.json`);
 
 /** What the CLI would send back: the high uid it received, in the session life that numbered it. */
 const cursor = (store, key, uid) => ({ uid, epoch: store.get(key).epoch });
@@ -24,8 +35,8 @@ const prompt = (text = "Make it shorter") => ({
 });
 
 test("a key that names an inherited property never resolves to an object", () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   store.open(artifact);
   for (const key of [
     "__proto__",
@@ -49,12 +60,12 @@ test("a key that names an inherited property never resolves to an object", () =>
 });
 
 test("a poisoned state file is skipped entry by entry, not trusted", () => {
-  const { file } = lab();
+  const { dir } = lab();
   // Repeated digit rather than a written-out 16-hex literal: a session key's
   // shape reads as a credential to a secret scanner, and this is a fixture.
   const key = "0".repeat(16);
   writeFileSync(
-    file,
+    join(dir, "state.json"),
     JSON.stringify({
       sessions: {
         __proto__: { assetToken: "0".repeat(32), chat: [] },
@@ -63,32 +74,38 @@ test("a poisoned state file is skipped entry by entry, not trusted", () => {
       },
     }),
   );
-  const store = new SessionStore(file);
-  assert.throws(
-    () => store.get(key),
-    (e) => e.status === 404,
-  );
+  // A session's own file is held to the same: its name must be a key, and the key it records.
+  const other = "1".repeat(16);
+  mkdirSync(join(dir, "sessions"));
+  writeFileSync(sessionFile(dir, "__proto__"), JSON.stringify({ assetToken: "0".repeat(32) }));
+  writeFileSync(sessionFile(dir, other), JSON.stringify({ key, assetToken: "0".repeat(32) }));
+  const store = new SessionStore(dir);
+  for (const missing of [key, other])
+    assert.throws(
+      () => store.get(missing),
+      (e) => e.status === 404,
+    );
   assert.equal(Object.prototype.assetToken, undefined);
 });
 
 test("opening the same file twice yields one session, and it survives a restart", () => {
-  const { file, artifact, dir } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const a = store.open(artifact);
   const b = store.open(join(dir, ".", "plan.html"));
   assert.equal(a, b);
   assert.match(a.assetToken, /^[0-9a-f]{32}$/);
   store.queue(a.key, [prompt()]);
-  const reopened = new SessionStore(file);
+  const reopened = new SessionStore(dir);
   assert.equal(reopened.get(a.key).assetToken, a.assetToken);
   assert.equal(reopened.take(a.key).length, 1);
   assert.equal(reopened.bootstrap(a.key).chat.length, 1);
-  assert.equal(readFileSync(file, "utf8").includes("nextUid"), true);
+  assert.equal(readFileSync(sessionFile(dir, a.key), "utf8").includes("nextUid"), true);
 });
 
 test("prompts are validated field by field", () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const bad = [
     [[], "prompts[] required"],
@@ -114,8 +131,8 @@ test("prompts are validated field by field", () => {
 });
 
 test("uids are monotonic per session and extra fields are dropped", () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   store.queue(key, [{ ...prompt("one"), evil: "x" }, prompt("two")]);
   store.queue(key, [prompt("three")]);
@@ -141,8 +158,8 @@ test("uids are monotonic per session and extra fields are dropped", () => {
 });
 
 test("a target is rebuilt field by field, and an anchor that cannot be trusted is refused", () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const range = { type: "text-range", start: 3, end: 40, before: "", after: " cron" };
   store.queue(key, [
@@ -174,8 +191,8 @@ test("a target is rebuilt field by field, and an anchor that cannot be trusted i
 });
 
 test("the page outline is bounded, replaced with each batch, and delivered with the prompts", async () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   store.queue(key, [prompt()], "main\n  #title");
   assert.deepEqual(await store.waitForFeedback(key, 20), {
@@ -220,8 +237,8 @@ test("the page outline is bounded, replaced with each batch, and delivered with 
 });
 
 test("pending prompts and chat entries are capped", () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const batch = Array.from({ length: limits.promptsPerRequest }, () => prompt());
   for (let i = 0; i < limits.pendingPromptsPerSession / limits.promptsPerRequest; i += 1)
@@ -237,8 +254,8 @@ test("pending prompts and chat entries are capped", () => {
 });
 
 test("sessions are bounded: opening past the cap disposes the oldest instead of wedging", () => {
-  const { file, artifact, dir } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const first = store.open(artifact).key;
   const keys = [first];
   for (let i = 1; i < limits.sessions; i += 1) {
@@ -251,6 +268,11 @@ test("sessions are bounded: opening past the cap disposes the oldest instead of 
   writeFileSync(oneMore, "<p></p>");
   const fresh = store.open(oneMore).key;
   assert.equal(store.count, limits.sessions, "the session count never grows past the cap");
+  assert.equal(
+    readdirSync(join(dir, "sessions")).length,
+    limits.sessions,
+    "and neither does what is kept on disk",
+  );
   assert.ok(store.get(fresh).file.endsWith("one-more.html"), "the fresh review opened");
   // The oldest, least-recently-active session is the one disposed, so a review is bounded and a
   // machine holds at most `limits.sessions` sessions no matter how many files have been reviewed.
@@ -262,8 +284,8 @@ test("sessions are bounded: opening past the cap disposes the oldest instead of 
 });
 
 test("an ended review is disposed before a live one, and a polled session is never disposed", async () => {
-  const { file, artifact, dir } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const live = store.open(artifact).key;
   const files = [];
   for (let i = 1; i < limits.sessions; i += 1) {
@@ -292,8 +314,8 @@ test("an ended review is disposed before a live one, and a polled session is nev
 });
 
 test("a session with undelivered notes is never disposed, even when it is the oldest", async () => {
-  const { file, artifact, dir } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const live = store.open(artifact).key;
   // Deliver a batch to `live` but never acknowledge it, so it sits in `unacked`. This also touches
   // lastActive, but every session opened below is touched later still, so `live` remains the
@@ -320,8 +342,8 @@ test("a session with undelivered notes is never disposed, even when it is the ol
 });
 
 test("a session holding unsent notes is never disposed, even when it is the oldest", () => {
-  const { file, artifact, dir } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const drafted = store.open(artifact).key;
   store.addDraft(drafted, prompt("not sent yet"));
   for (let i = 1; i <= limits.sessions; i += 1) {
@@ -340,8 +362,8 @@ test("a session holding unsent notes is never disposed, even when it is the olde
 // An evicted session opened again restarts its uids at 1. The agent's cursor from the old life
 // still says 3, and before epochs it acknowledged the new life's first batch unseen.
 test("a cursor from a session's earlier life acknowledges nothing in its next one", async () => {
-  const { file, artifact, dir } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const firstLife = store.get(key).epoch;
   assert.match(firstLife, EPOCH_PATTERN);
@@ -381,19 +403,19 @@ test("a cursor from a session's earlier life acknowledges nothing in its next on
 });
 
 test("a session stored before epochs gets one on load, and keeps it across restarts", async () => {
-  const { file, artifact } = lab();
-  const first = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const first = new SessionStore(dir);
   const { key } = first.open(artifact);
   first.queue(key, [prompt()]);
   await first.waitForFeedback(key, 10);
-  const stored = JSON.parse(readFileSync(file, "utf8"));
-  delete stored.sessions[key].epoch;
-  writeFileSync(file, JSON.stringify(stored));
+  const stored = JSON.parse(readFileSync(sessionFile(dir, key), "utf8"));
+  delete stored.epoch;
+  writeFileSync(sessionFile(dir, key), JSON.stringify(stored));
 
-  const upgraded = new SessionStore(file);
+  const upgraded = new SessionStore(dir);
   const epoch = upgraded.get(key).epoch;
   assert.match(epoch, EPOCH_PATTERN);
-  assert.equal(new SessionStore(file).get(key).epoch, epoch, "the new epoch was persisted");
+  assert.equal(new SessionStore(dir).get(key).epoch, epoch, "the new epoch was persisted");
   // Without one, no cursor could ever match and the outstanding batch would come back forever.
   const redelivered = await upgraded.waitForFeedback(key, 10);
   assert.equal(redelivered.epoch, epoch);
@@ -403,25 +425,21 @@ test("a session stored before epochs gets one on load, and keeps it across resta
 });
 
 test("a session stored before roots resolves its assets in the file's own folder", () => {
-  const { file, artifact } = lab();
-  const { key } = new SessionStore(file).open(artifact);
-  const stored = JSON.parse(readFileSync(file, "utf8"));
-  delete stored.sessions[key].root;
-  writeFileSync(file, JSON.stringify(stored));
+  const { dir, artifact } = lab();
+  const { key } = new SessionStore(dir).open(artifact);
+  const stored = JSON.parse(readFileSync(sessionFile(dir, key), "utf8"));
+  delete stored.root;
+  writeFileSync(sessionFile(dir, key), JSON.stringify(stored));
 
-  const upgraded = new SessionStore(file);
+  const upgraded = new SessionStore(dir);
   assert.equal(upgraded.get(key).root, dirname(realpathSync.native(artifact)));
   assert.equal(upgraded.status(key).artifactUrl.split("/").pop(), "plan.html");
-  assert.equal(
-    new SessionStore(file).get(key).root,
-    upgraded.get(key).root,
-    "and it was persisted",
-  );
+  assert.equal(new SessionStore(dir).get(key).root, upgraded.get(key).root, "and it was persisted");
 });
 
 test("a moved file's session still delivers what it holds, then answers gone and tells the tab", async () => {
-  const { file, artifact, dir } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const events = [];
   store.on(key, (event) => events.push(event.type));
@@ -456,8 +474,8 @@ test("a moved file's session still delivers what it holds, then answers gone and
 });
 
 test("a poller wakes on feedback, times out to waiting, and a losing poller keeps waiting", async () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   assert.deepEqual(await store.waitForFeedback(key, 20), { status: "waiting" });
   const first = store.waitForFeedback(key, 5000);
@@ -479,8 +497,8 @@ test("a poller wakes on feedback, times out to waiting, and a losing poller keep
 });
 
 test("a batch whose delivery is lost is redelivered by uid until the agent acknowledges it", async () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   store.queue(key, [prompt("keep me")], "main\n  #t");
   const first = await store.waitForFeedback(key, 20);
@@ -502,8 +520,8 @@ test("a batch whose delivery is lost is redelivered by uid until the agent ackno
 });
 
 test("presence follows the polls: waiting, listening, working, and back after the bound", async (t) => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const seen = [];
   store.on(key, (event) => event.type === "presence" && seen.push(event.state));
@@ -531,8 +549,8 @@ test("presence follows the polls: waiting, listening, working, and back after th
 });
 
 test("a file change bumps the revision, persists it and is announced", () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const events = [];
   store.on(key, (event) => events.push(event));
@@ -542,12 +560,12 @@ test("a file change bumps the revision, persists it and is announced", () => {
     { type: "reload", revision: 1 },
     { type: "reload", revision: 2 },
   ]);
-  assert.equal(new SessionStore(file).status(key).revision, 2);
+  assert.equal(new SessionStore(dir).status(key).revision, 2);
 });
 
 test("ending queues the last prompts in the same step, wakes a waiting poll, and reopens", async () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   assert.throws(
     () => store.addDraft(key, { ...prompt(), prompt: "" }),
@@ -577,7 +595,7 @@ test("ending queues the last prompts in the same step, wakes a waiting poll, and
     },
   );
   assert.equal(store.presence(key).state, "waiting", "an ended session has no working agent");
-  assert.equal(new SessionStore(file).status(key).ended.by, "user");
+  assert.equal(new SessionStore(dir).status(key).ended.by, "user");
 
   store.reopen(key);
   assert.equal(store.status(key).ended, null);
@@ -587,8 +605,8 @@ test("ending queues the last prompts in the same step, wakes a waiting poll, and
 });
 
 test("ending while the agent is working says so, so no tab is left holding a disabled Send", async () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   store.queue(key, [prompt()]);
   await store.waitForFeedback(key, 5000);
@@ -603,18 +621,18 @@ test("ending while the agent is working says so, so no tab is left holding a dis
 });
 
 test("an agent end never relabels a review the reviewer ended", () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   store.end(key, "user");
   assert.deepEqual(store.end(key, "agent"), { status: "ended", ended_by: "user", queued: 0 });
   assert.equal(store.status(key).ended.by, "user");
-  assert.equal(new SessionStore(file).status(key).ended.by, "user");
+  assert.equal(new SessionStore(dir).status(key).ended.by, "user");
 });
 
 test("each note keeps the time it was written, and an unusable stamp falls back to arrival", async () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const written = new Date().toISOString();
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -635,8 +653,8 @@ test("each note keeps the time it was written, and an unusable stamp falls back 
 });
 
 test("concurrent polls are capped", async () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const polls = Array.from({ length: limits.concurrentPolls }, () =>
     store.waitForFeedback(key, 50),
@@ -649,8 +667,8 @@ test("concurrent polls are capped", async () => {
 });
 
 test("a reply lands on its note, survives a restart, reaches every tab, and is validated", () => {
-  const { file, artifact } = lab();
-  const store = new SessionStore(file);
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   store.queue(key, [prompt("one"), prompt("two")]);
   const heard = [];
@@ -661,7 +679,7 @@ test("a reply lands on its note, survives a restart, reaches every tab, and is v
   assert.deepEqual(heard, [{ type: "reply", uid: 2, reply: answered.reply }]);
   assert.equal(store.bootstrap(key).chat[1].reply.message, "<b>Out</b> of scope");
   assert.equal(store.status(key).chat[1].reply.status, "declined", "a tab's hello carries it");
-  assert.equal(new SessionStore(file).get(key).chat[1].reply.status, "declined");
+  assert.equal(new SessionStore(dir).get(key).chat[1].reply.status, "declined");
   // A message of nothing but space says nothing, so it is not kept.
   assert.deepEqual(Object.keys(store.reply(key, 1, { status: "done", message: "  " }).reply), [
     "status",

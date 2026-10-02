@@ -13,7 +13,7 @@ function lab() {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-events-"));
   const artifact = join(dir, "plan.html");
   writeFileSync(artifact, "<p>one</p>");
-  const store = new SessionStore(join(dir, "state.json"));
+  const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   return { dir, artifact, store, key, streams: new EventStreams(store) };
 }

@@ -90,7 +90,7 @@ export async function ensureServer(stateDir, environment = process.env) {
 
 /**
  * Asks the recorded server to stop. A daemon from before the proof existed answers as this app
- * but cannot prove it holds the token, and still has to stop, or two would share state.json; it
+ * but cannot prove it holds the token, and still has to stop, or two would share its sessions; it
  * has then been shown the token, so the token is retired and the next daemon mints a fresh one.
  */
 export async function stopServer(stateDir, info, status) {
