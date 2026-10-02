@@ -220,7 +220,7 @@ test(
       "notes stay visible at 800x600",
     );
 
-    // Every state Send passes through from the press to the server's answer, as it paints.
+    // Every state Send passes through from the press to the notes showing sent, as it paints.
     await page.eval(`(() => {
       const send = document.getElementById("send");
       globalThis.sendStates = [];
@@ -328,7 +328,7 @@ test(
     const offered = JSON.parse(await page.eval("JSON.stringify(sendStates)")).filter(
       ([disabled]) => !disabled,
     );
-    assert.deepEqual(offered, [], "Send stays shut from the press to the server's answer");
+    assert.deepEqual(offered, [], "Send stays shut from the press until the notes show sent");
     // Working is a still dot, and nothing on the page loops. Ask for motion explicitly, or a
     // machine with Reduce Motion on would pass this with the old 1.4 s pulse still in the
     // stylesheet. A finite house transition, such as Send's colour settling after the press, is
@@ -2879,7 +2879,8 @@ test(
       );
     }
     await page.eval("document.getElementById('send').click()");
-    const polled = (await cli(["poll", file, "--timeout-ms", "3000"], lab.env)).json();
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
     assert.deepEqual(
       polled.prompts.map((p) => p.tag),
       ["h1", "td", "mark", "svg"],

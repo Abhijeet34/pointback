@@ -69,7 +69,7 @@ let liveReload = true;
 let connection = "live";
 let editing = false;
 let deferredReload = false;
-// A send is in flight: Send stays shut until the server's answer has replaced the unsent notes.
+// A send is in flight: Send stays shut until the stream reports the notes sent (or the send fails).
 let sending = false;
 let lastScroll = null;
 let workingTimer = null;
@@ -359,8 +359,8 @@ function render() {
   const count = pending.length;
   const asking = chat.some((entry) => unanswered(entry));
   const replied = chat.length > 0 && chat.every((entry) => entry.reply);
-  // An event landing mid-send renders before this tab has the server's answer, with the notes
-  // still listed as unsent; Send must not offer them again in that gap.
+  // An event or the POST's own answer can land mid-send while the notes still list as unsent;
+  // Send must not offer them again in that gap.
   sendButton.disabled = sending || count === 0 || fileGone || offline;
   sendButton.textContent = sending
     ? "Sending…"
