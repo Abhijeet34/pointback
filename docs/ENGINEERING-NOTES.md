@@ -1,0 +1,148 @@
+# Engineering notes
+
+The reasoning, measurements, run ids and incidents behind the rules in `AGENTS.md`.
+`AGENTS.md` states each rule in short and is loaded into every agent session; this file keeps the full record and is read on demand.
+Read the matching entry here before changing anything a rule there names.
+
+Each section below is the text `AGENTS.md` carried under the same heading before it was trimmed, so every fact, run id and measurement survives.
+
+## Working here
+
+- `npm run check` is the whole gate; `README.md` explains what each step is and why.
+- Dependency direction for `src/` is the layer list in `scripts/check-deps.js`; add a new module to a layer there or the check fails.
+- The product name is a parameter: `package.json` `name`, derived through `src/identity.js`; never write it as a literal under `src/`.
+- A review has a bounded lifecycle.
+  The daemon idles out on inactivity (`touch` in `src/server.js`), and a tab keeps it alive only by heartbeating while visible (`startHeartbeat` in `src/browser/chrome.js`, paced by the `idleMs` that `/health` reports), so an abandoned tab releases the process instead of pinning it open.
+  `SessionStore.#evict` disposes the least-recently-active session (an ended review first, never one with a poll attached) when `open` hits `limits.sessions`, so `sessions/` in the state directory stays bounded.
+  `test/server.test.js` and `test/browser.test.js` prove both.
+- Each session is its own file under `sessions/` (`#persist` in `src/session-store.js`), so a write costs one session whatever the count; `npm run bench` measures it.
+  A `state.json` from before the split is split on first start and renamed to `state.json.migrated` only after every session reads back (`#split`), and `test/session-files.test.js` proves the split from real fixtures written by the old code, never hand-written ones.
+- Delivery is at-least-once.
+  `#answer` in `src/session-store.js` moves a batch from `pending` to `unacked` and holds it there until a later poll's `ack` cursor (its high `uid`) confirms receipt; a fresh poll redelivers an unacknowledged batch, an event-woken poll does not, so a lost response redelivers by `uid` and two pollers never split one batch.
+  `pointback poll` threads that cursor through `poll-cursor.json` in the state dir (`readPollCursor`/`writePollCursor`), keyed by the canonical path and carrying the session `epoch`, writing it only after the batch is on stdout; eviction restarts uids under a new epoch and the server ignores an ack from another one.
+  A moved or deleted file is found through `canonicalPath` and answers `gone` (HTTP 410) to poll and end.
+  A tab must hear every change to what it shows: a `gone` from poll or end resets the watcher's baseline (`missing` in `src/watch.js`), or a file renamed back inside the 100 ms debounce reads as no change and the tab stays on its notice; an open under another `--root` sends `rerooted`, or a live tab reloads into a 404.
+  `test/events.test.js` pins both.
+  The note card is composed in the chrome, never in the artifact (`src/browser/chrome.js`); the artifact proposes a target, heard only while Annotate is on and no card is open, and the chrome copies its fields by name and reads the instruction from its own textarea, so a hostile page can neither forge nor rewrite a note.
+  `test/browser.test.js` asserts that as a property, against pages proposing every field a note has; `test/server.test.js`/`test/session-store.test.js` prove redelivery.
+- The agent answers a note with `pointback reply <file> <uid>`: the reply is stored on its chat entry (`reply` in `src/session-store.js`), reaches tabs as a `reply` event, and is set as text, never HTML, in the margin (`replyLine` in `src/browser/chrome.js`).
+  A tab learns of sent notes only from the stream: the `drafts` event that empties the drafts carries them as `sent` (`#draftsChanged`), and Send and End never refetch the session, because a refetch raced the stream, emptied the margin until it landed, and one answered before a reply wiped the reply off its note; `test/browser.test.js` holds every response to prove it.
+  A change to the drafts adopts its own answer only if the stream set no drafts while it was in flight (`changeDrafts`): always adopting it put a sent note back, never adopting it left the send key with nothing to send while the stream lagged, and the browser suite holds the answer and the stream in turn to pin both.
+  A send in flight holds its notes' ids (`sending`), and a `hello` or `current` ends it only once the drafts no longer list them: one landing before the server had the send re-offered the notes it was sending.
+  `skills/pointback/SKILL.md` is the agent-facing copy of the CLI contract and ships outside the npm package, so change it with any command, flag or field it names.
+- A reviewer's work survives the tab and the daemon.
+  Unsent notes are drafts on the session (`addDraft`/`send` in `src/session-store.js`), never tab storage, and a restart reuses the port and token in `server.json` so an open tab reconnects (`serve` in `src/server.js`, `listen` in `src/browser/chrome.js`).
+  Because the token outlives the process, nothing may present it to a server that has not answered a fresh challenge with `tokenProof` (`src/http-guard.js`): the CLI's `health` and the chrome's `health` both check it first, and a token shown to an unproven server, or carried to a new port, is replaced.
+  `test/cli.test.js` asserts a squatter on the old port sees nothing but the challenge.
+- The artifact frame is opaque-origin, so every asset load from it is a CORS request.
+  Only a font under the root (`FONT_HEADERS` in `src/http-guard.js`) and the daemon's own vendored house faces, which a rendered Markdown page loads, are served with `Access-Control-Allow-Origin`, never the page, another file or the API: the frame has unrestricted egress, so widening it lets a hostile page read and send out anything under `--root`.
+  `test/browser.test.js` and `test/server.test.js` fail on either side of that line.
+- A review shows HTML or Markdown and refuses anything else at open with a 415 (`artifactKind` in `src/markdown.js`).
+  Markdown is rendered by markdown-it with raw HTML on, in `src/browser/markdown.css`, and every block carries `data-source-lines`, which the SDK turns into a note's `lines` (`sourceLines` in `src/browser/sdk.js`); the store keeps `lines` only on a Markdown session's notes, so an HTML page carrying the attribute names nothing.
+  `test/browser.test.js` proves both against a copy of `README.md`, which is therefore also a fixture: its Install paragraph opens with `` `parse5` ``.
+- A key the chrome acts on is `preventDefault`ed.
+  On macOS Chromium offers an unhandled key to its menus as a key equivalent, and a headless browser blocks there in `SLSObscureCursor` and freezes whole; the note card's Escape did that on its second press (`test/browser.test.js`, "Escape closes the note card"), and a headed browser never shows it.
+- Only the page under review announces itself (`ready` from the SDK), so a frame `load` without one is the frame gone somewhere else, a followed link or a missing page; the chrome covers the frame with a notice and Back (`strayed` and `renderCover` in `src/browser/chrome.js`), and a missing path inside a review answers with `src/browser/missing.html`, never JSON.
+- Browser-side code (`src/browser/`) is served as static files, is excluded from coverage, and is tested only by the real-browser suite in `test/browser.test.js`.
+- The browser suite is the one part that a restrictive sandbox still breaks, so run `npm run check` from an ordinary shell: it launches a headless browser that binds a process-singleton unix socket, which a sandbox denying `AF_UNIX` bind refuses.
+  `fs.watch` fails under such a sandbox too, with `EMFILE: too many open files, watch` on the first event, but `watch`, `events` and `server` survive it: `test/helpers/watch.js` decides watch support by watching a real file with the product's own watcher, and each test that depends on it states which path it is exercising and asserts that one.
+  Never assert on the next line of an event stream in those suites.
+  `src/events.js` turns a failed watch into a `reload-off` on the same stream that carries `superseded`, so a test taking whichever line arrives next reports the identical result whether the behaviour it exists for works or is broken - which is how one sandboxed `superseded` assertion spent a day being read as a known environment artifact.
+- WebKit and Firefox are covered only by `npm run smoke` (`test/engine-smoke.js`, Playwright through `playwright-core`), weekly by the `engines` job in `.github/workflows/cross-platform.yml`, which skips when that workflow is called so it never gates a release; never import Playwright into `test/*.test.js`, which stays on the CDP harness.
+  The chrome's CSP refuses string evaluation, so a Playwright wait in the tab is a function, never a string.
+- A Chromium tab in the background starves queued tasks, including the `close` event of a `<dialog>`; a test that opens a second tab and then drives the first must bring it to the front (`page.front()` in `test/helpers/cdp.js`) or it will wait on an event that arrives seconds later.
+- Tests that touch the daemon use `test/helpers/env.js` for a private state directory and an ephemeral port; never point a test at the real `~/.pointback`.
+- The artifact iframe is sandboxed to an opaque origin, so Chromium runs it out of process and leaves it out of the page's frame tree; `Page.frame()` in `test/helpers/cdp.js` auto-attaches a session that can read its DOM, and input still goes to the page in page coordinates.
+- No test may wait on an external process without its own deadline: `test/helpers/cdp.js` and `test/helpers/env.js` bound every browser and CLI wait and name what they waited for, and the browser is killed on every failure path.
+  A leaked child keeps Node's event loop open after the suite has its verdict, so `npm test` also carries `--test-force-exit`; `--test-timeout` alone does not close a handle (measured on Node 24.11.1: a file leaking a child ran until killed from outside, force-exit ended the same run in 0.13 s).
+- The browser suite says on stdout which of the two it did, `browser suite: running against <path>` or `browser suite: SKIPPED`, and CI lifts that line into the job summary.
+  A skip needs an explicit `<PREFIX>BROWSER=none`; finding no browser at all fails.
+- The mark is one geometry in two places, `src/browser/icon.svg` for the tab and the same paths inlined in `chrome.html` for the header; `README.md`, "Develop", says how `icon-32.png` is regenerated when the SVG changes.
+  Neither file may contain the product name (`test/identity.test.js`).
+- Windows is a supported platform and several things in this tree exist only because it is.
+  Never use `new URL(...).pathname` as a filesystem path: it yields `/D:/a/...` there, which is why the daemon never started and why `npm run deps` and the release preflight both exited 0 having checked nothing; `fileURLToPath` is the only correct form.
+  Resolve with `realpathSync.native`, never the JavaScript `realpathSync`, anywhere a path is watched or keyed: only the native call expands an 8.3 short name such as `C:\Users\RUNNER~1\...`, and `fs.watch` on an unexpanded one trips a libuv assertion that aborts the whole daemon.
+  Never read a file another process is writing without treating the read's own failure as "not yet": Windows locks `DevToolsActivePort` while Chromium holds it, `readFileSync` answers EBUSY rather than a partial line, and that threw out of the launcher's poll and failed the whole browser suite in 5 of 20 consecutive `windows-2025` runs (run 33864656156).
+  Never remove a directory a process has just been told to exit and treat the removal as an assertion: the exit is not every handle being released, Windows answers EPERM until it is, and that threw out of `after()` and failed a whole browser file whose every test had passed - twice measured, run 33867055764 and again run 33874545761 with `rmSync`'s own 20 x 100 ms in place.
+  `discard` in `test/helpers/cdp.js` now waits for a real budget and reports what it could not reclaim.
+  In a test, `shasum` does not exist and `npm` is a `.cmd` Node refuses to spawn without `shell: true`.
+- No wait in this suite is bounded by the clock alone, and no test asserts a latency.
+  A budget written in milliseconds is really a budget in however much the runner charges for one observation: on run 33874545761, attempt 8, one DevTools round trip on `windows-2025` cost about five seconds, so a 5000 ms wait dispatched exactly one mouse move and reported the pointer as never having reached the frame.
+  An agent's poll in a browser test runs after the reviewer sees the notes sent, with `--timeout-ms 0`: a poll started first races its own clock against the browser, which is how a stalled browser failed the annotate test as `waiting`.
+  A test that needs a review in a known state takes one of its own (`copyOfFixture`), never the shared one `before()` opens: an earlier test's unsent notes there pushed the presence test past the one-send cap.
+  A gesture after Enter waits for the card to close, not only for the note on the margin: the stream draws the note before the add's answer closes the card, and the page ignores what it is pointed at while a card is open.
+  `until` in `test/helpers/wait.js` is the one wait - a minimum number of attempts as well as a deadline, so a slow runner costs the suite time and never a verdict - and `Page.waitFor`, `pointerInto` and the text-size test's `painted` go through it.
+  Three rules follow from the same measurement, and a seventh point fix is what breaking any of them buys: a positive expectation waits for its condition and only a negative one sleeps; a latency is printed, never asserted, because a functional bound already catches the hang the number was aimed at; and a probe that is itself activity cannot poll for the thing it keeps alive, which is why the idle tests space their probes wider than the window instead of polling it.
+  A render that lands first, such as Send relabelled by a stream event, replaces the element's text node; the new node reports no platform fonts from `CSS.getPlatformFontsForNode` until it has painted, which is why `painted` polls that call through `until` rather than reading it once.
+  A wait that polls a flag living in another document has to arm that flag as it polls, not once in front of the loop: the document can be replaced under it.
+  `pointerInto` is the one that had it, and its failure message separates the three things that reach it - geometry measured too early, an unarmed frame, and input that was never routed.
+- An atomic write is not atomic against a reader on Windows: a replace-rename is refused while any other process merely has the destination open, and this daemon's own CLI reads `server.json` every 50 ms while waiting for the daemon to come up.
+  `pastSharingViolations` in `src/state-dir.js` waits that out and rethrows anything a reader cannot have caused; run 33877405478, attempt 6, is the measurement.
+  What identified it in one run is that `ensureServer` now reports the daemon's own last lines rather than the path of a log nobody on a runner can reach afterwards.
+  Keep that: a start failure the product cannot describe is one nobody can fix.
+- A cold Chrome launch on `windows-2025` fails outright about once in twenty runs: on run 33874545761, attempt 2, `chrome.exe` was still running 45 s after it was spawned, had written no `DevToolsActivePort` and had printed nothing at all, and it took every test in the browser file with it.
+  `launchBrowser` gets two attempts for that reason; lengthening `STARTUP_MS` would not have helped, because the browser was not slow, it was never coming.
+- A flake is proved absent by a count, never by a green tick.
+  `.github/workflows/windows-flake-hunt.yml` is the instrument: dispatch it and read twenty independent verdicts off the job list.
+  The bar this repository has used and should keep using is the whole suite, twenty Windows runs, before and after: 17/20 on `main` (run 33874545761), then 18/20, 20/20 and 19/20 across the passes that followed (runs 33875622583, 33876393712, 33877405478) - each red attempt naming something the pass before it could not see - and 40/40 over the two runs that closed it (33878156179, 33878425638).
+- The state directory's owner-only protection is a security property with two platform spellings, both in `src/state-dir.js`: POSIX mode bits, and on Windows an ACL reset to one full-control entry for the current user that every file inside inherits.
+  `/inheritance:r` alone is not enough, because a directory an administrator creates carries SYSTEM and `BUILTIN\Administrators` as its own explicit entries.
+  Assert the property through `test/helpers/private.js`, never `statSync(...).mode` directly, and keep the re-tightening test's `loosen()` call so it cannot pass vacuously.
+- The chrome is the house design system's components (`hw-btn`, `hw-switch`, `hw-popover`, `hw-dialog`, `hw-note`, `hw-pin`, `hw-textarea`) laid out by `src/browser/chrome.css` with `--hw-*` roles and rem scales only, vendored byte for byte with Archivo, IBM Plex Mono and Literata (the rendered Markdown page's reading face) into `src/browser/house/` and pinned by commit and SHA-256 in `pin.json` (`README.md`, "Develop").
+  Never edit those files, give the chrome a colour that is not a role, or a size that is not rem: move the pin with `node scripts/sync-house.js <halderworks-design checkout>`.
+  `test/house.test.js` refuses a drifted vendored file by its pin digest.
+  A house component sets `display` on itself, which beats `[hidden]`, so `chrome.css` and the SDK's pin sheet each restore `[hidden]`; the pin test caught that one.
+  The reviewer reads what a note points at in words (`KINDS` in `src/browser/chrome.js`), never the element's tag, which only the agent's note carries; the card's line is built from the target's fields there, never from a label the page sends.
+  `test/browser.test.js` proves against the real CSSOM that the house sheets load in order, every `--hw-*` role `chrome.css` uses resolves, dark is pinned, and nothing loops in the working state (a finite house transition is feedback, not a loop).
+  Headless Chromium inherits the OS Reduce Motion setting, which the maintainer's Mac has on, so an animation assertion passes vacuously unless the test emulates `prefers-reduced-motion: no-preference` first, as `test/browser.test.js` does.
+- Every note is a numbered pin the SDK draws inside the frame (`setPins` in `src/browser/sdk.js`) from `pinData` in `src/browser/chrome.js`: a number, a state and the anchor the page itself proposed, never the instruction or the agent's reply, and the frame answers with nothing but a pin number.
+  The chrome acts on what the frame proposes, a target, a pin press or a review key (`key` in `src/browser/chrome.js`: A and the send key), only under `gesture` (transient user activation with focus in the frame), which is what lets Annotate start on.
+  `pinsOn` in `test/browser.test.js` reads pins from the frame's accessibility tree, and a spy page there asserts no note's words reach it.
+- In Annotate mode the SDK's listeners sit on the window in the capture phase, so a control is noted and the page never sees the press; cancelling that `mousedown` also keeps focus out of the frame, which `gesture` needs, so the SDK calls `window.focus()` itself.
+  Drive it with the CDP harness, never chrome-devtools-axi: chrome-devtools-mcp 1.9.0 sends a click on an element inside the out-of-process frame straight to that frame's renderer, the browser never moves focus into the frame, and the card stays shut although a reviewer's real click opens it.
+- The page outline the SDK sends with every batch is capped in characters at both ends (`MAX_OUTLINE_CHARS` in `src/browser/sdk.js`, `structureChars` in `src/limits.js`) because it lands in an agent's context window; `pointback poll` repeats it only when it changed, by the digest the poll cursor keeps (`outline` in `src/state-dir.js`), and `README.md` carries the measured before and after.
+
+## Delivery
+
+- `docs/GIT-WORKFLOW.md` is the whole of it: branch protection, required checks, versioning, release, rollback, and how the settings that are not files are applied and verified.
+- The settings that are not files live under `.github/rulesets/` and `.github/settings/`, and `scripts/apply-repo-settings.sh OWNER/REPO` is the only thing that applies them; never hand-type an API call it already carries.
+- The one required status check is `checks` in `.github/workflows/ci.yml`; anything worth blocking a merge becomes a job there, never a second required context.
+- `.gitleaks.toml` and `.githooks/pre-push` are copies of one canonical secret-scanning gate maintained outside this repository, in `Abhijeet34/gates` and shared across its siblings.
+  Never hand-edit either: the `secrets` job in `ci.yml` calls gates' `shared-secret-scan.yml@main`, which pins the SHA-256 of both, so a drifted copy fails the required check and the fix is to re-sync from upstream.
+  Never pin those digests locally: a local pin silently skips every fleet repin, and `test/pipeline.test.js` refuses one.
+- `test/pipeline.test.js` pins the load-bearing lines of the workflows and rulesets, so a change that quietly unprotects something fails the gate.
+- A release pull request is opened with `GITHUB_TOKEN`, so GitHub creates its `pull_request` run in an approval-required state and it completes as `action_required` with zero check runs.
+  The `release-pr-checks` job in `release.yml` releases it, through `scripts/approve-release-checks.js`, which may only ever reach a pull request authored by `github-actions[bot]` from a `release-please--` branch in this repository against the default branch; never widen those four clauses.
+  `docs/GIT-WORKFLOW.md`, "Releasing", carries the measurement and the run ids on both sides of it.
+  Anything asserted about the pre-release state, such as the `0.0.0` manifest sentinel, must stop asserting once `CHANGELOG.md` exists, or the release pull request's own diff fails the gate.
+- Release automation runs as `github-actions[bot]` holding the per-run `GITHUB_TOKEN`, and no stored credential exists anywhere on the release path.
+  Do not introduce one: `docs/GIT-WORKFLOW.md`, "The identity release automation runs as", prices the two alternatives that were refused.
+- `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `NOTICE`, `.github/CODEOWNERS`, `.github/ISSUE_TEMPLATE/` and `.github/PULL_REQUEST_TEMPLATE.md` are rendered by `repo-standard apply` from `automation`'s `system-maintenance/github/repo-standard/`, and `repo-standard check .` compares them line by line.
+  Never hand-edit or reformat them (they are in `.prettierignore` for that reason); change the standard instead.
+  Project security scope lives in `docs/THREAT-MODEL.md`.
+- The repository is public and licensed Apache-2.0 (`LICENSE`, copyright Abhijeet Halder); `SECURITY.md` routes vulnerability reports through GitHub private advisories, and no email address or other personal contact detail belongs anywhere in this repository.
+  Publishing to npm stays off behind the `NPM_PUBLISH_ENABLED` repository variable, pinned by `test/pipeline.test.js`.
+- Never put `provenance` in `publishConfig`.
+  `ensureProvenanceGeneration` in npm's own `libnpmpublish/lib/publish.js` throws `EUSAGE: Automatic provenance generation not supported for provider: <name>` anywhere but GitHub Actions or GitLab CI, and `npm publish --dry-run --provenance` returns before that code runs, so a dry run never reveals it.
+  Trusted publishing generates provenance without the flag, which is why `release.yml` does not pass it either; the manifest's `publishConfig.access` is `public` because the same function refuses to generate provenance for a package it cannot see as public.
+  A trusted publisher is configured on an existing package's settings page on npmjs.com, so the first publish of a new name is necessarily manual and necessarily unattested; every release after it is neither.
+- `files` in `package.json` is an allowlist with one negation, `!src/browser/tsconfig.json`, because `src/` otherwise drags a typecheck-only file into the tarball.
+  `test/identity.test.js` runs `npm pack --json` and asserts the whole entry list, so prove a packaging change by packing rather than by reading the field.
+
+## CI runner platforms
+
+A pull request runs Linux runners only.
+GitHub bills a macOS minute at about 10x a Linux one and a Windows minute at about 1.67x, all against the same allowance, so a three-platform matrix on `pull_request` spends most of the budget proving what the cheapest runner already proved.
+macOS and Windows coverage lives in `.github/workflows/cross-platform.yml`, on a weekly `schedule:`, on `workflow_dispatch`, and through `workflow_call` from both `ci.yml` and `release.yml`.
+Do not add a `macos-*` or `windows-*` runner to a job that runs on `pull_request`, with the one exception the `cross-platform` job in `ci.yml` already is: that pull request alone calls the matrix, guarded on `startsWith(github.head_ref, 'release-please--')` and same-repository head, and every other one skips it.
+Every push to `main` runs the matrix too, and that is not optional: it is what gates the tag.
+Nothing in this repository may create a tag or a GitHub release until all three platforms have passed in the same run, and `release-please` is therefore split across two jobs by its own skip inputs - `release-pr` (`skip-github-release: true`) in front of the matrix so the release pull request is still opened, `release-tag` (`skip-github-pull-request: true`) behind it as the only job that can tag.
+Never condition that matrix on whether the push looks like a release: release-please owns that answer, and a second opinion answering "no" wrongly skips the matrix, skips `release-tag` with it, and drops the release in silence.
+Two empty releases came from getting this wrong - v0.1.0 on run 33822348514 and v0.1.1 on run 33859541647, both `assets: []` - and `test/pipeline.test.js` now pins the ordering; `docs/GIT-WORKFLOW.md`, "Releasing", carries the measurement.
+The step that runs the suite carries its own `timeout-minutes`, always smaller than its job's, and `test/pipeline.test.js` pins that: a step over budget fails and reports a verdict, while a job over `timeout-minutes` is reported `cancelled`, which the `checks` aggregate can only refuse.
+Never add `cancel-in-progress` to a release, publish, or scheduled workflow: cancelling a publish mid-flight causes real damage, and a superseded scheduled run is the only record of its own result.
+`.gitattributes` pins the working tree to LF everywhere, because the Windows runner checks out under `core.autocrlf=true` and `prettier --check` then refuses every text file in the tree; that, not a missing browser, is what failed `windows-2025` on the 0.1.0 release, and `test/pipeline.test.js` pins the file.
+Chrome is present on all three runner images, and both workflows resolve it through `KNOWN_BROWSERS` in `test/helpers/cdp.js` rather than naming a path, so a moved binary is one edit there.
+Never quote a glob in a `package.json` script: npm runs a script through `cmd.exe` on Windows and cmd keeps the quotes, so `'test/*.test.js'` reached `node --test` with its quote characters, matched nothing, and passed `windows-2025` green over zero tests on run 33824393013.
+Each leg reports in its own job summary which browser it drove, and a leg that reports no verdict fails; that is the guard against the same silence going green again.
+All three platforms pass the whole suite; keep it that way by reading the two Windows entries under "Working here" before touching a path, a spawn or a file mode.
