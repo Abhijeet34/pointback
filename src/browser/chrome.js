@@ -81,6 +81,8 @@ let shownMarks = 0;
 let appName = "";
 // The reviewer's unsent notes, as the server holds them: every change goes through it first.
 let pending = [];
+// How many times the stream has set `pending`, so a change's own answer can tell it is stale.
+let draftsHeard = 0;
 // The note last shown from the margin or its pin, by number; the draft being edited in place;
 // and the notes whose pin found nothing on the page to stand on.
 let shownNote = 0;
@@ -175,6 +177,7 @@ function sync(state) {
   chat = state.chat;
   pending = state.drafts;
   sending = false;
+  draftsHeard += 1;
   marksDirty = true;
   // A gone file has no page to load; the last one shown stays up under the notice.
   fileGone = state.gone === true;
@@ -300,6 +303,7 @@ function apply(event) {
     liveReload = false;
   } else if (event.type === "drafts") {
     pending = event.drafts;
+    draftsHeard += 1;
     // The notes a send moved arrive here, and so does the end of "Sending…".
     if (event.sent) {
       chat.push(...event.sent);
@@ -321,14 +325,17 @@ function apply(event) {
 }
 
 /**
- * Asks the server to change the unsent notes, or says why it was refused. The new list reaches
- * this tab on the event stream, like every other change to it: a slow response here raced a
- * later "drafts" event and overwrote it with its own stale list, same bug Send already had.
+ * Asks the server to change the unsent notes, or says why it was refused. The answer's list is
+ * adopted only if the stream said nothing about the drafts meanwhile: a later event is newer than
+ * it, and an earlier one is followed by this change's own. Ignoring every answer let the send key
+ * find no note to send while the stream lagged; adopting every one could put a sent note back.
  */
 async function changeDrafts(what, method, path, body) {
   problem = null;
+  const heard = draftsHeard;
   try {
-    await api(method, path, body);
+    const { drafts } = await api(method, path, body);
+    if (draftsHeard === heard) pending = drafts;
     return true;
   } catch (error) {
     problem = `Could not ${what}: ${error.message}`;

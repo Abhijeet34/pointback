@@ -1739,6 +1739,93 @@ test(
 );
 
 /**
+ * Holds every chunk of the tab's event stream until the returned function lets it through, so an
+ * answer the tab gets over HTTP lands first. The chrome's reader looks `read` up on each call, so
+ * the hold covers every read issued after it is installed; an empty poll's presence events make
+ * the stream issue one.
+ */
+async function holdStream(page, file) {
+  await page.eval(`(() => {
+    const proto = ReadableStreamDefaultReader.prototype;
+    const read = proto.read;
+    window.streamReads = 0;
+    window.streamHeld = new Promise((resolve) => (window.releaseStream = resolve));
+    proto.read = function () {
+      window.streamReads += 1;
+      return read.call(this).then((chunk) => window.streamHeld.then(() => chunk));
+    };
+  })()`);
+  await cli(["poll", file, "--timeout-ms", "0"], lab.env);
+  await page.waitFor("window.streamReads >= 1");
+  return () => page.eval("window.releaseStream()");
+}
+
+test(
+  "the send key sends the note it adds, even when the stream tells the tab about it late",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const release = await holdStream(page, file);
+    await pointAt(page, artifact, "#title");
+    await page.type("Make the title shorter");
+    await page.key("Enter", { keyCode: 13, modifiers: 2 });
+    // The card closes once the server has kept the note, and the send key decides then whether to
+    // send; only after that is the stream let through.
+    await page.waitFor("document.getElementById('card').hidden");
+    await release();
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => p.prompt),
+      ["Make the title shorter"],
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a note's answer that lands after the note was sent leaves it sent",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const held = [];
+    const hold = (message) => {
+      if (message.sessionId === page.sessionId && message.method === "Fetch.requestPaused")
+        held.push(message.params.requestId);
+    };
+    page.browser.listeners.push(hold);
+    await page.send("Fetch.enable", {
+      patterns: [{ urlPattern: "*/drafts", requestStage: "Response" }],
+    });
+    try {
+      await pointAt(page, artifact, "#title");
+      await page.type("Make the title shorter");
+      await page.enter();
+      // The stream says the server kept the note; the answer to adding it is still held.
+      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    } finally {
+      for (const requestId of held) await page.send("Fetch.continueRequest", { requestId });
+      await page.send("Fetch.disable");
+      page.browser.listeners.splice(page.browser.listeners.indexOf(hold), 1);
+    }
+    // The held answer is older than the send, so landing now must not put the note back as unsent.
+    // A negative, so it sleeps rather than waits.
+    await new Promise((r) => setTimeout(r, 500));
+    assert.deepEqual(
+      await page.eval(
+        "[document.querySelectorAll('.mark.sent').length, document.querySelectorAll('.mark:not(.sent)').length]",
+      ),
+      [1, 0],
+    );
+    await page.close();
+  },
+);
+
+/**
  * Whether each selector's element is on screen and is what a press at its centre lands on,
  * and what scrolls sideways: the two things a reviewer on a phone runs into first. Every
  * scroller counts, not only the page: `.marks` scrolls on y, which makes it scroll on x too,
