@@ -399,15 +399,15 @@ class Page {
   }
 
   /**
-   * The page under review. The chrome frames pointback's wrapper, an opaque-origin page of its
-   * own, and the wrapper frames the page; Chromium gives the two sandboxed, same-site documents one
-   * process apart from the chrome's. So the wrapper is an auto-attached target of its own, and the
-   * page is a child frame inside that target, reached by its frame id and the execution context its
-   * document gets; a browser that puts the page in a process of its own makes it a target instead,
-   * and that is found too. Input still goes to the chrome page, in its coordinates.
+   * The page under review. The chrome frames pointback's wrapper, an opaque-origin data: document
+   * that Chromium keeps in the chrome's process, and the wrapper frames the page, which is sandboxed
+   * and so goes to a process of its own: an auto-attached target whose root frame is the page. A
+   * browser that keeps the page in its parent's process makes it a child frame instead, reached by its
+   * frame id and the execution context its document gets; that is found too. Input still goes to the
+   * chrome page, in its coordinates.
    *
-   * Resolves once the page's own document is there, never the frame's initial blank one, and after
-   * a reload with the new document's frame, so a caller asks for it after the navigation it awaits.
+   * Resolves once the page's own document is there, never a frame's initial blank one, and after a
+   * reload with the new document's frame, so a caller asks for it after the navigation it awaits.
    */
   async frame() {
     if (!this.children) {
@@ -456,24 +456,18 @@ class Page {
       if (tree) trees.set(session, tree);
     }
     const isPage = (url) => /\/artifact\//.test(url);
-    const wrappers = (node) =>
-      node.frame.url.endsWith("/wrapper.html")
-        ? [node]
-        : (node.childFrames ?? []).flatMap((child) => wrappers(child));
     for (const [session, tree] of trees) {
-      for (const wrapper of wrappers(tree)) {
-        const child = wrapper.childFrames?.[0]?.frame;
-        if (child && isPage(child.url)) {
-          return new ArtifactFrame(this.browser, session, child.id, () =>
-            this.contexts.get(`${session} ${child.id}`),
-          );
-        }
-        // In a process of its own the page is a target under the session that holds the wrapper.
-        for (const [inner, parent] of this.children) {
-          if (parent === session && isPage(trees.get(inner)?.frame.url ?? "")) {
-            return new Page(this.browser, inner);
-          }
-        }
+      if (session !== this.sessionId && isPage(tree.frame.url)) return new Page(this.browser, session);
+    }
+    // The outermost frame at a page's address; the page's own frames are below it.
+    const outermost = (node) =>
+      isPage(node.frame.url) ? node.frame : (node.childFrames ?? []).map(outermost).find(Boolean);
+    for (const [session, tree] of trees) {
+      const frame = outermost(tree);
+      if (frame && frame !== tree.frame) {
+        return new ArtifactFrame(this.browser, session, frame.id, () =>
+          this.contexts.get(`${session} ${frame.id}`),
+        );
       }
     }
     return null;

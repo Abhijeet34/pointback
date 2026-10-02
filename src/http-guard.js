@@ -91,22 +91,10 @@ export const CHROME_HEADERS = {
   ...COMMON_HEADERS,
   "content-security-policy":
     "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "connect-src 'self'; frame-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "x-frame-options": "DENY",
   "cross-origin-opener-policy": "same-origin",
   "cross-origin-resource-policy": "same-origin",
-};
-
-/**
- * The frame that holds the page under review: this server's own markup, in an opaque origin of its
- * own so that no click or key in the chrome counts as a gesture in it. Only the chrome may frame it,
- * and it loads nothing but its own script and sheet and the page it holds.
- */
-export const WRAPPER_HEADERS = {
-  ...COMMON_HEADERS,
-  "content-security-policy":
-    "sandbox allow-scripts allow-forms allow-popups; default-src 'none'; script-src 'self'; " +
-    "style-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
 };
 
 /**

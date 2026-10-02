@@ -200,7 +200,8 @@ function show() {
   deferredReload = false;
   shownRevision = revision;
   shownUrl = session.artifactUrl;
-  showing = `${shownUrl}?r=${revision}`;
+  // Absolute: the wrapper's own address is a data: URL, against which nothing relative resolves.
+  showing = new URL(`${shownUrl}?r=${revision}`, location.href).href;
   if (wrapperReady) frame.contentWindow.postMessage({ type: "show", url: showing }, "*");
 }
 
@@ -1173,7 +1174,14 @@ cardText.addEventListener("keydown", (event) => {
 });
 cardCancel.addEventListener("click", () => closeCompose(true));
 
-// Loaded from here rather than the markup: a wrapper served from cache can announce itself before
-// a module script runs, and an announcement nobody heard would leave the frame empty for good.
-frame.src = "/wrapper.html";
+// The wrapper is a data: document, which is opaque-origin, so no click or key in this chrome activates
+// it; and, unlike a sandboxed one, Chromium keeps it in this page's process, which leaves the page
+// under review an out-of-process frame whose timers run at full rate. A sandboxed wrapper shared the
+// page's process, and the page's timers fired once a second in about half the runs measured. It is
+// set from here rather than the markup, so it cannot announce itself before this script listens.
+frame.src = `data:text/html;charset=utf-8,${encodeURIComponent(
+  `<!doctype html><html lang="en"><meta name="color-scheme" content="dark">` +
+    `<title>The page under review</title><link rel="stylesheet" href="${location.origin}/wrapper.css">` +
+    `<body><script src="${location.origin}/wrapper.js"></script></body></html>`,
+)}`;
 boot();
