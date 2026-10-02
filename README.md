@@ -61,19 +61,24 @@ Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (d
 
 ## What comes back
 
-`poll` returns one of three statuses.
+`poll` returns one of four statuses.
 
-| `status`   | What it means                                                        |
-| ---------- | -------------------------------------------------------------------- |
-| `feedback` | `prompts` carries the notes and `structure` carries the page outline |
-| `waiting`  | The timeout passed with nothing sent; poll again                     |
-| `ended`    | The review is over, and `ended_by` names who ended it                |
+| `status`   | What it means                                                               |
+| ---------- | --------------------------------------------------------------------------- |
+| `feedback` | `prompts` carries the notes and `structure` carries the page outline        |
+| `waiting`  | The timeout passed with nothing sent; poll again                            |
+| `ended`    | The review is over, and `ended_by` names who ended it                       |
+| `gone`     | The file was moved or deleted; `file` names where it was, and the exit is 1 |
+
+`end` on a moved or deleted file prints the same `gone` answer and exits 1, and the open tab says the file is gone.
+Notes already sent before the file went are still delivered first.
 
 A final batch arrives as `feedback` with `session_ended: true`, so the last notes are never lost to the end of the session.
 
 Delivery is at-least-once.
 A batch stays on the queue until the poll that took it succeeds, and `pointback poll` acknowledges each batch on the next poll, so a poll whose response never arrived (a dropped connection, a killed poller) redelivers the identical batch rather than dropping it.
 A redelivered batch carries the same `uid` values it did the first time, which increase within a session, so an agent that tracks the highest `uid` it has applied can tell a repeat from a new note.
+The acknowledgement is keyed by the file's canonical path, so `/tmp/plan.html` and `/private/tmp/plan.html` share it, and it carries the session's epoch: a session evicted and opened again restarts its `uid` values at 1 under a new epoch, and an acknowledgement from its earlier life confirms nothing in the new one.
 There is no packet loss: the queue is never emptied for a response the agent did not receive.
 
 Each note in `prompts` looks like this:
@@ -143,11 +148,12 @@ Hold Shift and press an arrow key to grow a real selection a word at a time insi
 
 The tab holds one connection, `GET /api/<key>/events`, and the server writes a line of NDJSON on it per event.
 A capability token travels in a header, and an `EventSource` cannot send one, so the stream is NDJSON read with `fetch` rather than server-sent events.
-It carries four things.
+It carries five things.
 
 - **Live reload.** The server watches the artifact's directory, not its inode, so an editor's write-and-rename save still counts, and a burst of writes inside 100 ms is one change. Each change numbers a new revision; the tab reloads the artifact at that revision and puts the element the reviewer was reading back where it was on screen, so a section added above it does not push their line down the page. A reload that would interrupt a half-typed note waits until the note is added.
 - **Presence.** `waiting` when no poll is attached, `listening` while one is, `working` from the moment a poll takes a batch. Working is bounded by `workingMaxMs` in `src/limits.js`: an agent that took the feedback and never came back stops holding the reviewer's Send after three minutes.
 - **The handover.** Opening the file again opens a second tab, and the newest tab owns the artifact view. The older one is told the moment it happens and offers to take the review back, rather than finding out at the next save.
+- **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
 
 The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on sessions, prompts and open polls.

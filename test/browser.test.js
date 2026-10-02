@@ -3,7 +3,15 @@
 // its anchor and an outline of the page. Runs in a real headless browser through DevTools;
 // no browser means a loud skip, never a silent pass.
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
@@ -659,6 +667,50 @@ function copyOfFixture() {
   writeFileSync(file, html);
   return { file, html };
 }
+
+test(
+  "a file moved away under review says so and stops the page; its return brings the review back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const page = await browser.page(session.url);
+    await page.waitFor("document.body.dataset.revision === '0'");
+    const state = `JSON.stringify({
+      notice: document.getElementById('notice').hidden ? null : document.getElementById('noticeText').textContent,
+      annotate: document.getElementById('annotate').disabled,
+      end: document.getElementById('end').disabled,
+      send: document.getElementById('send').disabled,
+    })`;
+    const away = `${file}.away`;
+    renameSync(file, away);
+    // The agent's poll is the path that tells the tab whether or not the watcher saw the move.
+    const polled = await cli(["poll", file, "--timeout-ms", "0"], lab.env);
+    assert.equal(polled.code, 1);
+    assert.equal(polled.json().status, "gone");
+    await page.waitFor("!document.getElementById('notice').hidden");
+    assert.deepEqual(JSON.parse(await page.eval(state)), {
+      notice: "The file was moved or deleted, so this review cannot go on.",
+      annotate: true,
+      end: true,
+      send: true,
+    });
+    assert.equal(
+      await page.eval("document.getElementById('status').textContent"),
+      "Nothing can be sent while the file is gone.",
+    );
+
+    renameSync(away, file);
+    await page.waitFor("document.getElementById('notice').hidden");
+    assert.deepEqual(JSON.parse(await page.eval(state)), {
+      notice: null,
+      annotate: false,
+      end: false,
+      send: true,
+    });
+    await page.close();
+  },
+);
 
 test(
   "a save reloads the open page, keeps the reviewer's place, and the notes follow the new text",
