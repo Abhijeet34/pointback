@@ -55,6 +55,11 @@ test("the chrome and its wrapper frame are each served under the loopback name t
   assert.equal(pairedHost("LOCALHOST:4000"), "127.0.0.1:4000");
   const chrome = chromeHeaders("127.0.0.1:4000")["content-security-policy"];
   assert.match(chrome, /frame-src http:\/\/localhost:4000;/, "the chrome frames only its wrapper");
+  assert.match(
+    chrome,
+    /connect-src 'self' ws:\/\/127\.0\.0\.1:4000;/,
+    "its stream is this server's",
+  );
   assert.match(chrome, /frame-ancestors 'none'/);
   const wrapper = wrapperHeaders("localhost:4000")["content-security-policy"];
   assert.match(

@@ -14,6 +14,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, before, test } from "node:test";
@@ -193,7 +194,10 @@ test(
 
     // Keyboard only from here. Adding a note hands focus back to the element in the artifact, so
     // Shift+Arrow grows a real selection there and Enter opens the chrome card to type the note.
+    // The note was made with the mouse, so focus comes back without its box: one drawn now would
+    // read as a selection the reviewer never made.
     await artifact.waitFor("document.activeElement && document.activeElement.id === 'p1'");
+    assert.equal(await highlights(artifact), 0, "no focus box after a note made by mouse");
     await page.key("Escape", { keyCode: 27 });
     for (let word = 0; word < 5; word += 1) await page.shiftArrow("right");
     assert.equal(
@@ -210,6 +214,8 @@ test(
     await page.waitFor(
       "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 3",
     );
+    await artifact.waitFor("document.activeElement && document.activeElement.id === 'p1'");
+    assert.equal(await highlights(artifact), 1, "a note made by keyboard keeps the focus box");
 
     // Five more stops reach the owner of the first step: the three header cells, then the first
     // body row's first two. A table is its cells; neither it nor a row is a stop of its own.
@@ -851,6 +857,31 @@ test(
 );
 
 test(
+  "eight review tabs all load, and a note added in the eighth reaches the agent",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // A browser gives one host six HTTP connections. Each tab's event stream once held one of them,
+    // so the sixth tab's add hung and the seventh never loaded; the stream is a WebSocket now.
+    const tabs = [];
+    for (let i = 0; i < 8; i += 1) {
+      const { file } = copyOfFixture();
+      tabs.push({ file, ...(await openReview((await cli([file], lab.env)).json().session.url)) });
+    }
+    const { file, page, artifact } = tabs[7];
+    await page.front();
+    await noteOn(page, artifact, "#title", "Make the title shorter");
+    await clickOn(page, "document.getElementById('send')");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map((p) => p.prompt),
+      ["Make the title shorter"],
+    );
+    for (const tab of tabs) await tab.page.close();
+  },
+);
+
+test(
   "a hidden tab stops heartbeating so the daemon idles out, a visible one keeps it alive",
   { skip: !executable && "no browser found" },
   async () => {
@@ -1438,6 +1469,37 @@ const SEND_PAINT = `JSON.stringify((() => {
     cursor: getComputedStyle(send).cursor,
   };
 })())`;
+/** How many highlight boxes the review script draws over the page, read through its closed shadow root. */
+async function highlights(artifact) {
+  const root = artifact.frameId
+    ? await artifact.document()
+    : (await artifact.send("DOM.getDocument", { depth: -1, pierce: true })).root;
+  const count = (node) =>
+    (node.attributes?.[node.attributes.indexOf("class") + 1] === "box" ? 1 : 0) +
+    [...(node.children ?? []), ...(node.shadowRoots ?? [])].reduce((n, c) => n + count(c), 0);
+  return count(root);
+}
+/** How many times the visible page says it is not connected, and that the notes are kept. */
+const SAID_OFFLINE = `JSON.stringify({
+  notConnected: document.body.innerText.split("Not connected").length - 1,
+  kept: document.body.innerText.split(" kept").length - 1,
+})`;
+/** How many times the visible page says it is disconnected, that it reconnects, and where notes are kept. */
+const SAID_GONE = `JSON.stringify({
+  disconnected: document.body.innerText.split("Disconnected").length - 1,
+  reconnect: document.body.innerText.split("reconnect").length - 1,
+  kept: document.body.innerText.split(" kept").length - 1,
+})`;
+/** The note card as the reviewer sees it, and the margin's one line beside it. */
+const CARD_PAINT = `JSON.stringify({
+  open: !document.getElementById('card').hidden,
+  typed: document.getElementById('cardText').value,
+  add: !document.getElementById('cardAdd').disabled,
+  reason: document.getElementById('cardReason').checkVisibility()
+    ? document.getElementById('cardReason').textContent
+    : null,
+  status: document.getElementById('status').textContent,
+})`;
 const unsentNotes =
   "JSON.stringify([...document.querySelectorAll('.mark:not(.sent) .mark-note')].map((e) => e.textContent))";
 
@@ -1494,14 +1556,40 @@ test(
       const offline = JSON.parse(await page.eval(SEND_PAINT));
       assert.deepEqual(
         offline,
-        { presence: "Not connected", send: "Not connected", disabled: true, cursor: "not-allowed" },
+        {
+          presence: "Not connected",
+          send: "Send 1 note to agent",
+          disabled: true,
+          cursor: "not-allowed",
+        },
         "a page that cannot reach the daemon says so, and offers no Send that cannot work",
       );
       assert.match(
         await page.eval("document.getElementById('noticeText').textContent"),
-        /Not connected\. Your notes are kept/,
+        /Your notes are kept, and it reconnects when your agent next runs/,
+      );
+      assert.deepEqual(
+        JSON.parse(await page.eval(SAID_OFFLINE)),
+        { notConnected: 1, kept: 1 },
+        "the page says it is not connected once, and that the notes are kept once",
       );
       assert.deepEqual(JSON.parse(await page.eval(unsentNotes)), ["Name the queue in the title"]);
+
+      // Pointing still opens the card, but Add waits for the connection, saying so on the card.
+      await pointAt(page, artifact, "#p1");
+      await page.type("Say how long each step takes");
+      await page.enter();
+      assert.deepEqual(
+        JSON.parse(await page.eval(CARD_PAINT)),
+        {
+          open: true,
+          typed: "Say how long each step takes",
+          add: false,
+          reason: "Add note opens again when this page reconnects. Your words stay here.",
+          status: "",
+        },
+        "offline, the note stays in the card with the reason beside it, and nothing in the margin",
+      );
 
       // The agent's next step starts a daemon, which comes back where the tab is looking.
       assert.equal(
@@ -1517,21 +1605,81 @@ test(
         disabled: false,
         cursor: "pointer",
       });
+      const { status, ...back } = JSON.parse(await page.eval(CARD_PAINT));
+      assert.deepEqual(
+        back,
+        { open: true, typed: "Say how long each step takes", add: true, reason: null },
+        "back online, the card's reason is gone and Add works",
+      );
+      assert.match(status, /^1 note ready to send\./, "and no stale failure is left in the margin");
+      await page.eval("document.getElementById('cardAdd').click()");
+      await page.waitFor(
+        "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 2",
+      );
       // The reviewer sees the note go, and only then does the agent ask: a poll started first, on
       // its own 30 s clock, lost the note to a browser that landed Send late. The wait is a hang
       // guard, not a deadline, so it is as long as a stalled browser may need.
       await page.eval("document.getElementById('send').click()");
-      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1", {
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 2", {
         timeoutMs: 45_000,
       });
       const polled = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json();
       assert.equal(polled.status, "feedback");
       assert.deepEqual(
         polled.prompts.map((p) => p.prompt),
-        ["Name the queue in the title"],
+        ["Name the queue in the title", "Say how long each step takes"],
       );
       await page.close();
     } finally {
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a tab whose port another server took says once that it cannot reconnect, and promises nothing",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    let impostor;
+    try {
+      const { file } = copyOfFixture();
+      const session = (await cli([file], own.env)).json().session;
+      const { page, artifact } = await openReview(session.url);
+      await noteOn(page, artifact, "#title", "Name the queue in the title");
+      const { port } = own.serverInfo();
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      // Something else answers on the port now, and cannot prove it holds the page's token.
+      impostor = createServer((req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ app: "impostor" }));
+      });
+      await new Promise((resolve) => impostor.listen(port, "127.0.0.1", resolve));
+      await page.waitFor("document.getElementById('presence').dataset.state === 'gone'", {
+        timeoutMs: 20_000,
+      });
+      assert.match(
+        await page.eval("document.getElementById('noticeText').textContent"),
+        /can no longer reach its review\. Run .+ on this file again for a fresh page/,
+      );
+      assert.deepEqual(
+        JSON.parse(await page.eval(SAID_GONE)),
+        { disconnected: 1, reconnect: 0, kept: 1 },
+        "it says once that it is disconnected and where the notes are kept, and never that it reconnects",
+      );
+      await pointAt(page, artifact, "#p1");
+      await page.type("Say how long each step takes");
+      await page.enter();
+      assert.deepEqual(JSON.parse(await page.eval(CARD_PAINT)), {
+        open: true,
+        typed: "Say how long each step takes",
+        add: false,
+        reason: "This page can no longer add notes. Copy your words before you leave it.",
+        status: "",
+      });
+      await page.close();
+    } finally {
+      await new Promise((resolve) => (impostor ? impostor.close(resolve) : resolve()));
       await own.stop();
     }
   },
@@ -1974,25 +2122,35 @@ test(
 );
 
 /**
- * Holds every chunk of the tab's event stream until the returned function lets it through, so an
- * answer the tab gets over HTTP lands first. The chrome's reader looks `read` up on each call, so
- * the hold covers every read issued after it is installed; an empty poll's presence events make
- * the stream issue one.
+ * Holds every event on the tab's stream, in order, until the returned function lets them through, so
+ * an answer the tab gets over HTTP lands first. The hold wraps the stream's message listener, which
+ * the chrome adds as it connects, so it is installed before the page loads and the tab reloaded;
+ * an empty poll's presence events prove it holds.
  */
 async function holdStream(page, file) {
-  await page.eval(`(() => {
-    const proto = ReadableStreamDefaultReader.prototype;
-    const read = proto.read;
-    window.streamReads = 0;
-    window.streamHeld = new Promise((resolve) => (window.releaseStream = resolve));
-    proto.read = function () {
-      window.streamReads += 1;
-      return read.call(this).then((chunk) => window.streamHeld.then(() => chunk));
-    };
-  })()`);
+  await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const add = WebSocket.prototype.addEventListener;
+      window.streamHeldEvents = 0;
+      WebSocket.prototype.addEventListener = function (type, listener, options) {
+        if (type !== "message") return add.call(this, type, listener, options);
+        return add.call(this, type, (event) => {
+          if (!window.streamHeld) return listener(event);
+          window.streamHeldEvents += 1;
+          window.streamHeld.then(() => listener(event));
+        }, options);
+      };
+    })()`,
+  });
+  await page.reload();
+  const artifact = await page.frame();
+  await page.waitFor("document.body.dataset.annotate === '1'");
+  await page.eval(
+    "window.streamHeld = new Promise((resolve) => (window.releaseStream = resolve)), 0",
+  );
   await cli(["poll", file, "--timeout-ms", "0"], lab.env);
-  await page.waitFor("window.streamReads >= 1");
-  return () => page.eval("window.releaseStream()");
+  await page.waitFor("window.streamHeldEvents >= 1");
+  return { artifact, release: () => page.eval("window.releaseStream()") };
 }
 
 test(
@@ -2000,8 +2158,8 @@ test(
   { skip: !executable && "no browser found" },
   async () => {
     const { file } = copyOfFixture();
-    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
-    const release = await holdStream(page, file);
+    const { page } = await openReview((await cli([file], lab.env)).json().session.url);
+    const { artifact, release } = await holdStream(page, file);
     await pointAt(page, artifact, "#title");
     await page.type("Make the title shorter");
     await page.key("Enter", { keyCode: 13, modifiers: 2 });

@@ -221,8 +221,10 @@ The pins are buttons after the page's own content, each named by its number and 
 
 ## While the review is open
 
-The tab holds one connection, `GET /api/<key>/events`, and the server writes a line of NDJSON on it per event.
-A capability token travels in a header, and an `EventSource` cannot send one, so the stream is NDJSON read with `fetch` rather than server-sent events.
+The tab holds one WebSocket, `/api/<key>/events`, and the server sends a JSON message on it per event.
+It was first a held `fetch` response, and a browser gives one host six HTTP connections, so the sixth review tab could not add a note and the seventh never loaded; a WebSocket does not count against those six.
+A browser cannot put a header on a WebSocket, so the capability token travels as the offered subprotocol `bearer.<token>` and the server answers with `events`.
+Every call the tab makes over HTTP gives up after 10 seconds and says so, so no add, edit or send leaves the reviewer waiting on nothing.
 It carries seven things.
 
 - **Live reload.** The server watches the artifact's directory, not its inode, so an editor's write-and-rename save still counts, and a burst of writes inside 100 ms is one change. Each change numbers a new revision; the tab reloads the artifact at that revision and puts the element the reviewer was reading back where it was on screen, so a section added above it does not push their line down the page. A reload that would interrupt a half-typed note waits until the note is added.
@@ -233,9 +235,10 @@ It carries seven things.
 - **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back turns Annotate on again, if the reviewer had wanted it on, and reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
 
-When the stream drops, the tab says it is not connected, in the header and the notice, and turns Send off until it is back.
+When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send turns off until it is back, and a note being written stays in its card with Add note held until then.
 It keeps trying, because a daemon that idled out or was stopped comes back at the agent's next command on the same port with the same token, and the tab picks the review up from there.
 If something else took that port in the meantime, the new daemon starts on another port with a fresh token; the old tab cannot follow it there, so it keeps saying it is not connected, and running the command on the file again opens a tab with the notes in it.
+A tab that finds something else answering on its port, unable to prove it holds the tab's token, says it is disconnected and promises no reconnection.
 
 The frame can leave the page under review too: a link followed with Annotate off, or an address with nothing at it, which the server answers inside a review with a short page in the house reading styles rather than JSON.
 Only the page under review announces itself to the chrome, so a page that loads without doing so is covered, where the reviewer is looking, by a notice saying the frame went to a page that is missing or is not the file, with a button back to it.

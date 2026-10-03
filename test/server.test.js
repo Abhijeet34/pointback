@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -8,7 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -474,32 +475,38 @@ test("bad input on the api is a 4xx, not a crash", async () => {
   assert.equal(Object.prototype.status, undefined);
 });
 
-/** Opens an event stream and yields one parsed line at a time, so a test can await an event. */
-async function eventStream(path) {
-  const controller = new AbortController();
-  const res = await fetch(base + path, { headers, signal: controller.signal });
-  if (!res.ok) {
-    controller.abort();
-    return { status: res.status, close: () => {} };
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+/**
+ * Opens an event stream and yields one parsed event at a time, so a test can await an event.
+ * `closed` settles with the code the server closed it with, which is how it refuses a stream.
+ */
+async function eventStream(path, token = srv.token) {
+  const socket = new WebSocket(base.replace("http:", "ws:") + path, ["events", `bearer.${token}`]);
+  const events = [];
+  const waiting = [];
+  let ended = false;
+  socket.addEventListener("message", (message) => {
+    const event = JSON.parse(message.data);
+    if (waiting.length) waiting.shift()(event);
+    else events.push(event);
+  });
+  const closed = new Promise((resolve) =>
+    socket.addEventListener("close", (event) => {
+      ended = true;
+      for (const resolveNext of waiting.splice(0)) resolveNext(null);
+      resolve(event.code);
+    }),
+  );
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve);
+    socket.addEventListener("error", () => reject(new Error(`the stream at ${path} did not open`)));
+  });
   return {
-    status: res.status,
-    contentType: res.headers.get("content-type"),
-    async next() {
-      for (;;) {
-        const newline = buffer.indexOf("\n");
-        if (newline !== -1) {
-          const line = buffer.slice(0, newline);
-          buffer = buffer.slice(newline + 1);
-          if (line !== "") return JSON.parse(line);
-        }
-        const { value, done } = await reader.read();
-        if (done) return null;
-        buffer += decoder.decode(value, { stream: true });
-      }
+    protocol: socket.protocol,
+    closed,
+    next() {
+      if (events.length) return Promise.resolve(events.shift());
+      if (ended) return Promise.resolve(null);
+      return new Promise((resolve) => waiting.push(resolve));
     },
     /**
      * Reads until an event of `type` arrives and returns the ones that preceded it, so the
@@ -521,7 +528,7 @@ async function eventStream(path) {
         before.push(event);
       }
     },
-    close: () => controller.abort(),
+    close: () => socket.close(),
   };
 }
 
@@ -540,7 +547,7 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
   const { chat } = await get(`/api/${opened.key}/session`);
   assert.ok(chat.length > 0);
   const first = await eventStream(`/api/${opened.key}/events`);
-  assert.equal(first.contentType, "application/x-ndjson; charset=utf-8");
+  assert.equal(first.protocol, "events", "the token is offered, never echoed back");
   assert.deepEqual(await first.next(), {
     type: "hello",
     artifactUrl,
@@ -565,9 +572,44 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
     rest.push(await eventStream(`/api/${opened.key}/events`));
   }
   const overflow = await eventStream(`/api/${opened.key}/events`);
-  assert.equal(overflow.status, 429, `the ${limits.eventStreams + 1}th stream is refused`);
+  assert.equal(await overflow.closed, 4429, `the ${limits.eventStreams + 1}th stream is refused`);
   for (const stream of [first, second, ...rest]) stream.close();
-  assert.equal(await status(`/api/0000000000000000/events`, { headers }), 404);
+  const unknown = await eventStream(`/api/0000000000000000/events`);
+  assert.equal(await unknown.closed, 4404, "a review that does not exist is refused for good");
+  const forged = await eventStream(`/api/${opened.key}/events`, "0".repeat(48));
+  assert.equal(await forged.closed, 4401, "a stream without the token is refused for good");
+});
+
+test("an event stream handshake from another origin or host, or without the subprotocol, is refused", async () => {
+  const opened = await post("/api/sessions", { file: fixture });
+  const handshake = (extra) =>
+    new Promise((resolve, reject) => {
+      const req = request(`${base}/api/${opened.key}/events`, {
+        headers: {
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-version": "13",
+          "sec-websocket-key": randomBytes(16).toString("base64"),
+          "sec-websocket-protocol": `events, bearer.${srv.token}`,
+          ...extra,
+        },
+      });
+      req.on("upgrade", (res, socket) => {
+        socket.destroy();
+        resolve(res.statusCode);
+      });
+      req.on("response", (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  assert.equal(await handshake({}), 101, "the well-formed handshake is accepted");
+  assert.equal(await handshake({ origin: "http://evil.com" }), 403);
+  assert.equal(await handshake({ host: "evil.com" }), 403);
+  assert.equal(await handshake({ "sec-websocket-protocol": `bearer.${srv.token}` }), 400);
+  assert.equal(await handshake({ "sec-websocket-version": "8" }), 400);
 });
 
 test("a poll whose connection dies before the reply redelivers the batch, never loses it", async () => {
@@ -837,11 +879,11 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
     headers: info,
     body: JSON.stringify({ file: fixture }),
   }).then((r) => r.json());
-  const watching = new AbortController();
-  await fetch(`http://127.0.0.1:${held.port}/api/${session.key}/events`, {
-    headers: info,
-    signal: watching.signal,
-  });
+  const watching = new WebSocket(`ws://127.0.0.1:${held.port}/api/${session.key}/events`, [
+    "events",
+    `bearer.${held.token}`,
+  ]);
+  await new Promise((resolve) => watching.addEventListener("open", resolve));
   await sleep(idleMs * 4);
   beating = false;
   await heartbeat;
@@ -861,6 +903,6 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
     what: "an open but no-longer-heartbeating tab to let the daemon idle out",
     timeoutMs: 10_000,
   });
-  watching.abort();
+  watching.close();
   await held.close();
 });

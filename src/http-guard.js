@@ -99,7 +99,7 @@ export function pairedHost(host) {
 
 /**
  * The chrome page runs only this server's own scripts, styles and fonts, frames only its wrapper,
- * and can never be framed. `host` is the request's Host header, which `assertHost` already held to
+ * connects only here, its event stream included, and can never be framed. `host` is the request's Host header, which `assertHost` already held to
  * the loopback names.
  */
 export function chromeHeaders(host) {
@@ -107,7 +107,8 @@ export function chromeHeaders(host) {
     ...COMMON_HEADERS,
     "content-security-policy":
       "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; " +
-      `connect-src 'self'; frame-src http://${pairedHost(host)}; base-uri 'none'; form-action 'none'; ` +
+      `connect-src 'self' ws://${host}; frame-src http://${pairedHost(host)}; base-uri 'none'; ` +
+      "form-action 'none'; " +
       "frame-ancestors 'none'",
     "x-frame-options": "DENY",
     "cross-origin-opener-policy": "same-origin",

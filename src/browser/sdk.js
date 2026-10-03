@@ -509,11 +509,17 @@
     });
   }
 
+  // Whether the focused element is outlined; not after a note made by mouse, until a key is pressed.
+  let focusShown = true;
+
   function closeTarget(refocus) {
     if (!open) return;
-    const { element } = open;
+    const { element, pointed } = open;
     open = null;
     outlineRects([]);
+    // Focus goes back either way, so the next Tab starts from the note; only a target reached by
+    // keyboard is outlined there, since after a click the box reads as a selection never made.
+    focusShown = !pointed;
     if (refocus && annotate && element.isConnected) element.focus({ preventScroll: true });
   }
 
@@ -937,7 +943,11 @@
       event.preventDefault();
       event.stopImmediatePropagation();
       // The click that ends a text drag arrives after the card has opened for the passage.
-      if (!open) selectTarget(elementHit(element, { x: event.clientX, y: event.clientY }));
+      if (!open)
+        selectTarget({
+          ...elementHit(element, { x: event.clientX, y: event.clientY }),
+          pointed: true,
+        });
     },
     true,
   );
@@ -947,7 +957,7 @@
       if (!annotate || open) return;
       const selection = getSelection();
       const hit = selection.isCollapsed ? null : passageHit(selection.getRangeAt(0));
-      if (hit) selectTarget(hit);
+      if (hit) selectTarget({ ...hit, pointed: true });
     },
     true,
   );
@@ -1029,14 +1039,16 @@
   // element now is, rather than leaving a box over whatever moved under the old spot.
   const reoutline = () => {
     if (!annotate) return;
-    if (!open) outline(candidate(document.activeElement));
+    if (!open) outline(focusShown ? candidate(document.activeElement) : null);
     else if (open.tag !== "text") outline(open.element);
   };
   window.addEventListener("scroll", reoutline, { capture: true, passive: true });
   window.addEventListener("resize", reoutline);
   document.addEventListener("focusin", (event) => {
-    if (annotate && !open) outline(candidate(event.target));
+    if (annotate && !open && focusShown) outline(candidate(event.target));
   });
+  // A key in the page is the reviewer using the keyboard again, so focus is outlined from here on.
+  window.addEventListener("keydown", () => (focusShown = true), true);
 
   // One report per frame at most: the chrome only needs the last position before a reload.
   let scrolling = false;

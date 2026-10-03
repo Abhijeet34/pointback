@@ -28,6 +28,7 @@ const cardTarget = document.getElementById("cardTarget");
 const cardText = /** @type {HTMLTextAreaElement} */ (document.getElementById("cardText"));
 const cardCancel = /** @type {HTMLButtonElement} */ (document.getElementById("cardCancel"));
 const cardAdd = /** @type {HTMLButtonElement} */ (document.getElementById("cardAdd"));
+const cardReason = document.getElementById("cardReason");
 const presenceSince = document.getElementById("presenceSince");
 
 // Every label is read by a reviewer mid-review, so the resting state between two polls
@@ -42,10 +43,9 @@ const PRESENCE = {
     "Agent working",
     "Your agent took your last notes and is working on them. New notes queue for its next check.",
   ],
-  offline: [
-    "Not connected",
-    "This page lost its connection. Your notes are kept and nothing can be sent until it is back.",
-  ],
+  // The notice beside the notes says what happens next, which differs between these two.
+  lost: ["Not connected", "This page cannot reach its review right now."],
+  gone: ["Disconnected", "This page's link to its review no longer works."],
 };
 
 let nonce = "";
@@ -80,6 +80,8 @@ let workingTimer = null;
 let stream = null;
 let retaking = false;
 let problem = null;
+// Why the note in the card was not added, said on the card itself.
+let cardProblem = null;
 let marksDirty = true;
 let shownMarks = 0;
 let appName = "";
@@ -94,6 +96,9 @@ let editingNote = null;
 let missingPins = new Set();
 const SEND_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘Enter" : "Ctrl+Enter";
 
+// Every call ends, one way or the other, within this: a request the browser queues behind other
+// connections, or a server that took it and never answered, must not leave the card or Send waiting.
+const API_DEADLINE_MS = 10_000;
 const api = (method, path, body) => {
   // The token goes only to the server this page proved holds it; a lost connection may mean the
   // port now belongs to something else.
@@ -102,11 +107,20 @@ const api = (method, path, body) => {
     method,
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }).then(async (res) => {
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json.error ?? `${res.status}`);
-    return json;
-  });
+    signal: AbortSignal.timeout(API_DEADLINE_MS),
+  })
+    .catch((error) => {
+      throw new Error(
+        error.name === "TimeoutError"
+          ? `the review server did not answer within ${API_DEADLINE_MS / 1000} seconds`
+          : "the review server did not answer",
+      );
+    })
+    .then(async (res) => {
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error ?? `${res.status}`);
+      return json;
+    });
 };
 
 /**
@@ -220,25 +234,23 @@ const wrapperOrigin = `http://${location.hostname === "localhost" ? "127.0.0.1" 
 async function listen() {
   let failures = 0;
   for (;;) {
-    stream = new AbortController();
-    let spent = false;
+    let code = 0;
     try {
-      spent = !(await health()).proven;
-      if (spent) break;
-      const res = await fetch(`/api/${key}/events`, {
-        headers: { authorization: `Bearer ${token}` },
-        signal: stream.signal,
+      if (!(await health()).proven) break;
+      code = await follow(() => {
+        failures = 0;
+        connection = "live";
+        // A failure the lost connection caused is over once it is back.
+        problem = null;
+        cardProblem = null;
+        render();
       });
-      spent = !res.ok;
-      if (spent) break;
-      failures = 0;
-      connection = "live";
-      render();
-      for await (const line of lines(res.body)) apply(line);
     } catch {
-      // A dropped stream and a taken-over one arrive the same way; the difference is intent.
+      // Nothing answered the health check: the daemon is down or restarting.
     }
-    if (spent) break;
+    // The server's own refusals after the handshake (`eventStream` in server.js): the token or the
+    // review no longer holds, so this page's link is spent.
+    if (code === 4401 || code === 4404) break;
     if (retaking) {
       retaking = false;
       continue;
@@ -250,6 +262,20 @@ async function listen() {
   }
   connection = "gone";
   render();
+}
+
+/** Follows the event stream until it closes, and answers with the code it closed with. */
+function follow(opened) {
+  return new Promise((resolve) => {
+    // The token rides as an offered subprotocol, since a WebSocket can carry no header.
+    stream = new WebSocket(`ws://${location.host}/api/${key}/events`, [
+      "events",
+      `bearer.${token}`,
+    ]);
+    stream.addEventListener("open", opened);
+    stream.addEventListener("message", (event) => apply(JSON.parse(event.data)));
+    stream.addEventListener("close", (event) => resolve(event.code));
+  });
 }
 
 // The daemon idles out on inactivity, so a tab keeps it alive only while the reviewer is actually on
@@ -268,20 +294,6 @@ function startHeartbeat(idleMs) {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") beat();
   });
-}
-
-async function* lines(body) {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) return;
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split("\n");
-    buffer = parts.pop();
-    for (const part of parts) if (part !== "") yield JSON.parse(part);
-  }
 }
 
 function apply(event) {
@@ -377,18 +389,27 @@ function render() {
   // An event or the POST's own answer can land mid-send while the notes still list as unsent;
   // Send must not offer them again in that gap.
   sendButton.disabled = sending !== null || count === 0 || fileGone || offline;
+  // Offline, Send is shut but keeps its label: the bar and the notice already say why.
   sendButton.textContent = sending
     ? "Sending…"
     : fileGone
       ? "File is gone"
-      : offline
-        ? "Not connected"
-        : count === 0
-          ? ended
-            ? "Review ended"
-            : "Send to agent"
-          : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
+      : count === 0
+        ? ended
+          ? "Review ended"
+          : "Send to agent"
+        : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
   annotateSwitch.disabled = ended !== null || fileGone;
+  // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
+  cardAdd.disabled = offline;
+  const reason =
+    connection === "gone"
+      ? "This page can no longer add notes. Copy your words before you leave it."
+      : offline
+        ? `${cardAdd.textContent} opens again when this page reconnects. Your words stay here.`
+        : cardProblem;
+  cardReason.hidden = !reason;
+  setText(cardReason, reason ?? "");
   endButton.disabled = ended !== null || fileGone;
   // A failure the reviewer needs to see outlives the render that would otherwise write over it.
   setText(
@@ -405,9 +426,8 @@ function render() {
             ? "Nothing more can be sent from this page."
             : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
           : offline
-            ? count === 0
-              ? "Nothing can be sent until this page reconnects."
-              : `${count} ${count === 1 ? "note is" : "notes are"} kept, and Send opens again when this page reconnects.`
+            ? // The notice above says what happens next; a second line would only repeat it.
+              ""
             : strayed && count === 0
               ? "Go back to the page under review to point at it again."
               : deferredReload
@@ -522,7 +542,7 @@ function setText(element, text) {
 
 function renderPresence() {
   // What the server last said about the agent is stale the moment the connection goes.
-  const state = connection === "live" ? presence.state : "offline";
+  const state = connection === "live" ? presence.state : connection;
   const [label, explanation] = PRESENCE[state] ?? PRESENCE.waiting;
   presencePill.dataset.state = state;
   presencePill.title = explanation;
@@ -558,7 +578,7 @@ function renderNotice() {
             ]
           : connection === "lost"
             ? [
-                `Not connected. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
+                `This page lost its review. Your notes are kept, and it reconnects when your agent next runs ${appName}.`,
                 false,
               ]
             : !liveReload
@@ -1034,7 +1054,7 @@ backButton.addEventListener("click", show);
 
 takeOverButton.addEventListener("click", () => {
   retaking = true;
-  stream?.abort();
+  stream?.close();
 });
 
 endButton.addEventListener("click", () => {
@@ -1154,7 +1174,7 @@ card.addEventListener("submit", (event) => {
 /** Adds the note in the card; true when the server kept it and the card closed. */
 async function addNote() {
   const prompt = cardText.value.trim();
-  if (!composing || prompt === "" || adding) return false;
+  if (!composing || prompt === "" || adding || connection !== "live") return false;
   // The instruction is this textarea's value; the other fields are copied by name from the target
   // the artifact proposed, so nothing else it sent rides along and nothing it sent can displace
   // `prompt`. This is the only path that adds a note, and it runs only on the reviewer's submit;
@@ -1168,6 +1188,11 @@ async function addNote() {
   adding = false;
   // A note the server did not take stays in the card, still typed, beside the reason.
   if (kept) closeCompose(true);
+  else {
+    cardProblem = problem;
+    problem = null;
+    render();
+  }
   return kept;
 }
 cardText.addEventListener("keydown", (event) => {
