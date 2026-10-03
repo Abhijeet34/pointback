@@ -6,7 +6,8 @@ import { KEY_PATTERN, TOKEN_PATTERN, resolveAsset } from "./artifact-path.js";
 import {
   ARTIFACT_HEADERS,
   CHALLENGE_PATTERN,
-  CHROME_HEADERS,
+  chromeHeaders,
+  wrapperHeaders,
   FONT_HEADERS,
   HttpError,
   SERVER_TOKEN_PATTERN,
@@ -35,6 +36,8 @@ const staticFiles = new Map(
     "/sdk.js": "text/javascript; charset=utf-8",
     "/chrome.js": "text/javascript; charset=utf-8",
     "/chrome.css": "text/css; charset=utf-8",
+    "/wrapper.js": "text/javascript; charset=utf-8",
+    "/wrapper.css": "text/css; charset=utf-8",
     "/markdown.css": "text/css; charset=utf-8",
     "/house/brand.tokens.css": "text/css; charset=utf-8",
     "/house/roles.css": "text/css; charset=utf-8",
@@ -53,6 +56,7 @@ const staticFiles = new Map(
   ]),
 );
 const chromeHtml = readFileSync(new URL("chrome.html", browserDir), "utf8");
+const wrapperHtml = readFileSync(new URL("wrapper.html", browserDir), "utf8");
 const missingHtml = readFileSync(new URL("missing.html", browserDir), "utf8");
 
 const contentTypes = {
@@ -202,8 +206,18 @@ async function route(req, res, ctx) {
   const chrome = pathname.match(/^\/session\/([^/]+)$/);
   if (req.method === "GET" && chrome) {
     ctx.store.get(chrome[1]);
-    res.writeHead(200, { ...CHROME_HEADERS, "content-type": "text/html; charset=utf-8" });
+    res.writeHead(200, {
+      ...chromeHeaders(req.headers.host),
+      "content-type": "text/html; charset=utf-8",
+    });
     return res.end(chromeHtml);
+  }
+  if (req.method === "GET" && pathname === "/wrapper.html") {
+    res.writeHead(200, {
+      ...wrapperHeaders(req.headers.host),
+      "content-type": "text/html; charset=utf-8",
+    });
+    return res.end(wrapperHtml);
   }
 
   const artifact = pathname.match(/^\/artifact\/([^/]+)\/([^/]+)\/(.*)$/);

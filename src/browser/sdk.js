@@ -1,6 +1,5 @@
 // Runs inside the sandboxed artifact: finds the element, passage or cell the reviewer points at and hands the note up.
 (() => {
-  const chromeOrigin = new URL(location.href).origin;
   const SKIP = new Set([
     "HTML",
     "HEAD",
@@ -85,14 +84,19 @@
   let activePin = 0;
   let missingSent = "";
 
-  const send = (message) => parent.postMessage({ ...message, nonce }, chromeOrigin);
+  // The parent is the review's wrapper frame, which relays this to the chrome stamped with whether the
+  // reviewer's own gesture is live. This page's own origin is opaque, but its address is not.
+  const { hostname, port } = new URL(location.href);
+  const wrapperOrigin = `http://${hostname === "localhost" ? "127.0.0.1" : "localhost"}:${port}`;
+  const send = (message) => parent.postMessage({ ...message, nonce }, wrapperOrigin);
   // SVG elements report a lowercase tagName, so every comparison against the lists above goes through this.
   const tagName = (element) => element.tagName.toUpperCase();
   const squash = (text) => text.replace(/\s+/g, " ");
   const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
   window.addEventListener("message", (event) => {
-    if (event.source !== parent || event.origin !== chromeOrigin) return;
+    // The chrome's messages arrive through the wrapper, served under the loopback name this page is not.
+    if (event.source !== parent || event.origin !== wrapperOrigin) return;
     const data = event.data;
     if (data?.type === "init") {
       nonce = data.nonce;

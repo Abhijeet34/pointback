@@ -251,8 +251,8 @@ There is one exception: a daemon from 0.1.4 or earlier cannot answer the challen
 A process squatting the port with that answer receives a token that no running daemon accepts.
 Every API call, from the CLI or from the chrome page, carries that token; the browser receives it in the URL fragment, which never reaches a server log.
 A session is keyed by a hash of the file's canonical path, but that key opens nothing: the artifact bytes are served under a second random per-session token, and the store is a `Map`, so no key can resolve to an inherited property.
-The page under review runs in a sandboxed iframe with an opaque origin.
-It cannot read the chrome, cannot call the API, and talks to the chrome only through messages checked by source and origin in both directions.
+The page under review runs in a sandboxed iframe with an opaque origin, framed by a wrapper the daemon serves under the other loopback name (`pairedHost` in `src/http-guard.js`).
+The page cannot read the chrome, cannot call the API, and reaches the chrome only through that wrapper, which relays each message stamped with its own `navigator.userActivation` rather than the page's; the chrome acts on a proposed target, a pin or a review key only while that stamp is active (`docs/THREAT-MODEL.md`).
 The review script is inserted into the artifact as a DOM node through a real HTML parser, so nothing in the page's own markup can swallow or reshape it.
 Assets resolve within the review's root through a path check that survives encoded traversal, backslashes, unicode lookalikes, null bytes, absolute paths and symlink escape.
 A font (`.woff2`, `.woff`, `.ttf`, `.otf`) is the one asset served with `Access-Control-Allow-Origin`, because the opaque origin makes every `@font-face` load a CORS request; any other file under the root, and the API, stay unreadable to the page's own script, so a stray `.env` beside the artifact cannot be read and sent out.
@@ -288,6 +288,7 @@ It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROW
 
 The CLI opens the reviewer's default browser, which is Safari on an unconfigured Mac, so Chromium alone is not the whole audience.
 `npm run smoke -- webkit firefox` runs the core act in both engines: open the fixture through the CLI, point at the title, write a note, send it, and poll it back.
+It then has a hostile page try to spend the note card's Enter, which exercises the gate those engines rely on (`docs/THREAT-MODEL.md`).
 The `engines` job in `.github/workflows/cross-platform.yml` runs it every Monday, WebKit on `macos-15` and Firefox on `ubuntu-24.04`, and names the engine and its version in the job summary; it skips when `ci.yml` or `release.yml` calls that workflow, so a browser release cannot hold a tag.
 The DevTools harness above cannot reach either engine: WebKit speaks its own inspector protocol and Firefox removed its CDP support in Firefox 141 in favour of WebDriver BiDi.
 Playwright can, through `playwright-core`, one package with no dependencies and no install script; it fetches nothing until `npx playwright-core install webkit firefox` asks it to.

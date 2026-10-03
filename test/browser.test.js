@@ -429,6 +429,7 @@ test(
         `keyboard; Send to notes shown sent ${sentMs} ms; ` +
         `page structure ${structureBytes} B against ${referenceBytes} B in the reference's format`,
     );
+    await page.close();
   },
 );
 
@@ -789,6 +790,63 @@ test(
     await handled(page, artifact, "rounds");
     assert.equal((await state()).hidden, true, "turning Annotate off closes the card for good");
     await page.close();
+  },
+);
+
+test(
+  "a page cannot spend the reviewer's Enter or Cancel in the note card, even by taking the focus first",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // The page waits for the card to close and, in that instant, presses the send key and proposes
+    // its own target. The chrome's Enter or Cancel is a fresh activation of the chrome, and the chrome
+    // hands focus back to the frame, so the old check on the chrome's own activation let both through.
+    const cases = [
+      { close: "enter", selfFocus: false },
+      { close: "cancel", selfFocus: true },
+    ];
+    for (const { close, selfFocus } of cases) {
+      const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-after-"));
+      const file = join(dir, "rollout.html");
+      copyFileSync(join(dirname(fixture), "hostile-after-gesture.html"), file);
+      const session = (await cli([file], lab.env)).json().session;
+      // Already queued, so a send the page forces has something to send.
+      await api(session, "POST", "drafts", {
+        draft: { prompt: "Already queued", selector: "#p3", tag: "p", text: "Keep the old path" },
+      });
+      const { page, artifact } = await openReview(session.url);
+      await artifact.eval(`globalThis.selfFocus = ${selfFocus}`);
+      await pointAt(page, artifact, "#p1");
+      // The click on #p1 is the reviewer's own gesture in the page, and the page may act inside it
+      // (the limit docs/THREAT-MODEL.md names); it is let lapse, so all that is left to borrow is the
+      // chrome's. Typing is inserted text, which activates nothing.
+      await page.waitFor("!navigator.userActivation.isActive", { timeoutMs: 15_000 });
+      await page.type("Name the region");
+      if (close === "enter") await page.enter();
+      else await clickOn(page, "document.getElementById('cardCancel')");
+      await artifact.waitFor("globalThis.log.length === 1");
+      // Posted behind the page's two messages through the same frames, so both have been handled.
+      await handled(page, artifact);
+      assert.deepEqual(
+        JSON.parse(
+          await page.eval(
+            "JSON.stringify({ card: !document.getElementById('card').hidden, sent: document.querySelectorAll('.mark.sent').length })",
+          ),
+        ),
+        { card: false, sent: 0 },
+        `after ${close}${selfFocus ? ", with the page taking the focus," : ""} no card opens and nothing is sent`,
+      );
+      const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+      assert.equal(
+        polled.status,
+        "waiting",
+        "the agent receives nothing the reviewer did not send",
+      );
+      // Chromium keeps the chrome's keys and clicks out of the page, so it is trusted without the
+      // gate Firefox and WebKit get: the reviewer's next click, straight after, opens the card. A
+      // Chromium that ever shares them makes the case above red rather than being trusted silently.
+      await pointAt(page, artifact, "#p3");
+      await page.close();
+    }
   },
 );
 
@@ -1336,7 +1394,9 @@ async function api(session, method, action, body) {
  * the ring it paints, and whether it takes keyboard focus. A pin that paints nothing is not one.
  */
 async function pinsOn(artifact) {
-  const { nodes } = await artifact.send("Accessibility.getFullAXTree");
+  const { nodes } = await artifact.send("Accessibility.getFullAXTree", {
+    frameId: artifact.frameId,
+  });
   const pins = [];
   for (const node of nodes) {
     const name = node.name?.value ?? "";
@@ -2273,9 +2333,8 @@ test(
     );
 
     // A fresh page draws them again from the notes the server keeps.
-    const reattaching = page.frame();
     await page.reload();
-    const reloaded = await reattaching;
+    const reloaded = await page.frame();
     await page.waitFor("document.body.dataset.ready === '1'");
     await pinsBesideTargets(reloaded, names, targets, "after a reload");
 
@@ -3489,7 +3548,7 @@ test(
     await artifact.eval("document.fonts.ready.then(() => true)");
     await artifact.send("DOM.enable");
     await artifact.send("CSS.enable");
-    const { root } = await artifact.send("DOM.getDocument");
+    const root = await artifact.document();
     const painted = async (selector) => {
       const { nodeId } = await artifact.send("DOM.querySelector", {
         nodeId: root.nodeId,

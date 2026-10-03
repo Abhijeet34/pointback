@@ -200,8 +200,16 @@ function show() {
   deferredReload = false;
   shownRevision = revision;
   shownUrl = session.artifactUrl;
-  frame.src = `${shownUrl}?r=${revision}`;
+  // Absolute: the wrapper is served under the other loopback name, and the page under this one.
+  showing = new URL(`${shownUrl}?r=${revision}`, location.href).href;
+  if (wrapperReady) frame.contentWindow.postMessage({ type: "show", url: showing }, wrapperOrigin);
 }
+
+// The wrapper frame loads once with this page and is never navigated; the page under review is
+// shown inside it, and an address asked for before the wrapper listens is sent when it does.
+let wrapperReady = false;
+let showing = "";
+const wrapperOrigin = `http://${location.hostname === "localhost" ? "127.0.0.1" : "localhost"}:${location.port}`;
 
 /**
  * Reads the stream until it ends, then reconnects for as long as nothing answers: a daemon that
@@ -412,7 +420,7 @@ function render() {
                       ? "Your agent is working on your last notes. Anything you send now waits for its next check."
                       : chat.length === 0 && count === 0
                         ? annotate
-                          ? `Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, ${SEND_KEY} sends.`
+                          ? `Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, ${SEND_KEY} sends.${keysShared ? " In this browser, a click in the page is heard only 5 seconds after your last key outside it." : ""}`
                           : "Turn on Annotate, or press A, to point at the page."
                         : count === 0
                           ? "Every note has been sent."
@@ -844,8 +852,8 @@ function describe(entry) {
 const locatorOf = (note) => [kindOf(note), describe(note)].filter(Boolean).join(" · ");
 
 function post(message) {
-  // The artifact has an opaque origin, so "*" is the only target that can name it.
-  frame.contentWindow?.postMessage({ ...message, nonce }, "*");
+  // To the wrapper, which hands it on to the page under review.
+  frame.contentWindow?.postMessage({ ...message, nonce }, wrapperOrigin);
 }
 
 function setAnnotate(on) {
@@ -864,8 +872,20 @@ function followAnnotate() {
 
 // A page under review can post at any moment. What it proposes is acted on only straight after the
 // reviewer's own click or key inside it, so it can neither pop the card nor move focus by itself.
-const gesture = () =>
-  navigator.userActivation?.isActive === true && document.activeElement === frame;
+// `active` is the wrapper's own activation, which a click or key in this chrome never sets in
+// Chromium. Firefox and WebKit set it on a key here, which would hand the page the reviewer's Enter in
+// the card, so there, and in any engine not known to be Chromium, nothing is heard for ACTIVATION_MS
+// after one. docs/THREAT-MODEL.md says what each engine's trust rests on.
+const ACTIVATION_MS = 5000;
+// Not in every engine's typings, being Chromium's own.
+const agent = /** @type {{ userAgentData?: { brands: { brand: string }[] } }} */ (navigator);
+const keysShared = !agent.userAgentData?.brands.some(({ brand }) => brand === "Chromium");
+let chromeKeyAt = -Infinity;
+window.addEventListener("keydown", () => (chromeKeyAt = performance.now()), true);
+const gesture = (active) =>
+  active === true &&
+  document.activeElement === frame &&
+  !(keysShared && performance.now() - chromeKeyAt < ACTIVATION_MS);
 
 // The note card is composed in the chrome, from a target the artifact proposed. The artifact
 // sends the fields that describe what the reviewer pointed at, and never the note text, so a
@@ -922,9 +942,17 @@ function placeCard(rects) {
 }
 
 window.addEventListener("message", (event) => {
-  // Only the artifact frame's own window, which is always opaque-origin, is heard.
-  if (event.source !== frame.contentWindow || event.origin !== "null") return;
-  const data = event.data;
+  // Only the wrapper this page framed is heard; the page under review reaches the chrome only through
+  // it, never directly.
+  if (event.source !== frame.contentWindow || event.origin !== wrapperOrigin) return;
+  if (event.data?.type === "wrapper") {
+    wrapperReady = true;
+    if (showing) frame.contentWindow.postMessage({ type: "show", url: showing }, wrapperOrigin);
+    return;
+  }
+  if (event.data?.type === "loaded") return pageLoaded();
+  if (event.data?.type !== "page") return;
+  const { active, message: data } = event.data;
   if (data?.type === "ready") {
     nonce = crypto.randomUUID();
     post({
@@ -955,7 +983,7 @@ window.addEventListener("message", (event) => {
     // A proposal is heard only while the reviewer has Annotate on, no card open, and has just
     // clicked or pressed a key in the page: the page can send one at any moment, and must not pop
     // the card, take focus, or wipe a note being typed.
-    if (!annotate || composing || !gesture()) return;
+    if (!annotate || composing || !gesture(active)) return;
     // Only what the reviewer pointed at: `answers` is the chrome's to set, from the margin.
     const { selector, lines, tag, text, target } = data.note;
     const note = { selector, lines, tag, text, target };
@@ -963,13 +991,13 @@ window.addEventListener("message", (event) => {
   } else if (data.type === "key") {
     // The review's keys pressed in the page. Like a target, a key is heard only under the
     // reviewer's own press in the frame; the controls it reaches are the ones the bar offers.
-    if (!gesture()) return;
+    if (!gesture(active)) return;
     if (data.action === "annotate") annotateSwitch.click();
     else if (data.action === "send") sendNow();
   } else if (data.type === "pin" && Number.isInteger(data.n)) {
     // Only the number crosses back; the note it names is the chrome's own, and focusing it is all
     // a pin can do, and only under the reviewer's own press.
-    if (gesture()) focusNote(data.n);
+    if (gesture(active)) focusNote(data.n);
   } else if (data.type === "placed" && Array.isArray(data.missing)) {
     // Toggled in place, never by a rebuild: the page can send this as often as it likes, and must
     // not be able to take the focus or a half-typed edit out of the margin by doing so.
@@ -993,14 +1021,14 @@ annotateSwitch.addEventListener("click", () => {
   setAnnotate(wantAnnotate);
 });
 
-frame.addEventListener("load", () => {
+function pageLoaded() {
   if (!shownUrl) return;
   strayed = !announced;
   announced = false;
   render();
   // The page the focus was in is covered now; Back is the one thing left to press there.
   if (strayed && document.activeElement === frame) backButton.focus();
-});
+}
 
 backButton.addEventListener("click", show);
 
@@ -1158,4 +1186,9 @@ cardText.addEventListener("keydown", (event) => {
 });
 cardCancel.addEventListener("click", () => closeCompose(true));
 
+// The wrapper is served under the loopback name this page is not, which makes it another origin, so
+// no click or key in this chrome activates it, and another site, so Chromium gives it a process of
+// its own and the page under review stays an out-of-process frame whose timers run at full rate.
+// It is set from here rather than the markup, so it cannot announce itself before this script listens.
+frame.src = `${wrapperOrigin}/wrapper.html`;
 boot();

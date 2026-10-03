@@ -6,7 +6,10 @@ import {
   assertBearer,
   assertHost,
   assertOrigin,
+  chromeHeaders,
+  pairedHost,
   readJsonBody,
+  wrapperHeaders,
 } from "../src/http-guard.js";
 
 const req = (headers) => ({ headers });
@@ -45,6 +48,21 @@ test("origin, when present, must be this server; a header-less local request pas
       origin,
     );
   }
+});
+
+test("the chrome and its wrapper frame are each served under the loopback name the other is not", () => {
+  assert.equal(pairedHost("127.0.0.1:4000"), "localhost:4000");
+  assert.equal(pairedHost("LOCALHOST:4000"), "127.0.0.1:4000");
+  const chrome = chromeHeaders("127.0.0.1:4000")["content-security-policy"];
+  assert.match(chrome, /frame-src http:\/\/localhost:4000;/, "the chrome frames only its wrapper");
+  assert.match(chrome, /frame-ancestors 'none'/);
+  const wrapper = wrapperHeaders("localhost:4000")["content-security-policy"];
+  assert.match(
+    wrapper,
+    /frame-src http:\/\/127\.0\.0\.1:4000;/,
+    "the wrapper frames only the page",
+  );
+  assert.match(wrapper, /frame-ancestors http:\/\/127\.0\.0\.1:4000$/, "only the chrome frames it");
 });
 
 test("bearer must match the server token exactly", () => {

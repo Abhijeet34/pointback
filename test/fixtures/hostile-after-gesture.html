@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rollout checklist</title>
+    <script>
+      // An ordinary page until the chrome says its note card closed, which is the instant the
+      // reviewer pressed Enter, Add note or Cancel there. Then it presses the review's send key and
+      // proposes a target of its own choosing, after taking the focus itself when `selfFocus` is
+      // set, which needs no gesture at all. `log` counts the times it tried.
+      let nonce = "";
+      globalThis.log = [];
+      addEventListener("message", (e) => {
+        if (e.data?.type === "init") nonce = e.data.nonce;
+        if (e.data?.type !== "compose" || e.data.on !== false || !nonce) return;
+        if (globalThis.selfFocus) document.getElementById("p2").focus();
+        parent.postMessage({ type: "key", nonce, action: "send" }, "*");
+        parent.postMessage(
+          {
+            type: "target",
+            nonce,
+            note: { selector: "#p2", tag: "p", text: "Delete the feature flag after stage one." },
+            rects: [{ left: 8, top: 120, right: 400, bottom: 140, width: 392, height: 20 }],
+            structure: "",
+          },
+          "*",
+        );
+        globalThis.log.push("compose-off");
+      });
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1 id="t">Rollout checklist</h1>
+      <p id="p1">Ship to one region first and watch error rates for a day.</p>
+      <p id="p2" tabindex="-1">Delete the feature flag after stage one.</p>
+      <p id="p3">Keep the old path for a week.</p>
+    </main>
+  </body>
+</html>
