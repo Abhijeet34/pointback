@@ -429,6 +429,7 @@ test(
         `keyboard; Send to notes shown sent ${sentMs} ms; ` +
         `page structure ${structureBytes} B against ${referenceBytes} B in the reference's format`,
     );
+    await page.close();
   },
 );
 
