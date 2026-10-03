@@ -578,7 +578,7 @@ function renderNotice() {
             ]
           : connection === "lost"
             ? [
-                `This page lost its review. Your notes are kept, and it reconnects when your agent next runs ${appName}.`,
+                `The review server stopped answering. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
                 false,
               ]
             : !liveReload

@@ -1566,7 +1566,7 @@ test(
       );
       assert.match(
         await page.eval("document.getElementById('noticeText').textContent"),
-        /Your notes are kept, and it reconnects when your agent next runs/,
+        /stopped answering\. Your notes are kept, and this page reconnects when your agent next runs/,
       );
       assert.deepEqual(
         JSON.parse(await page.eval(SAID_OFFLINE)),
