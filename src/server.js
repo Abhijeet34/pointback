@@ -26,6 +26,7 @@ import { limits } from "./limits.js";
 import { artifactKind, renderMarkdown } from "./markdown.js";
 import { DRAFT_ID_PATTERN, EPOCH_PATTERN, SessionStore } from "./session-store.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
+import { acceptWebSocket, isWebSocketHandshake, offeredProtocols } from "./websocket.js";
 
 const SDK_PATH = "/sdk.js";
 const browserDir = new URL("./browser/", import.meta.url);
@@ -124,11 +125,27 @@ export async function serve({
   });
   server.requestTimeout = limits.pollTimeoutMaxMs + 10_000;
   server.headersTimeout = 30_000;
+  // An upgraded socket leaves the server's own connection tracking, so these are closed by hand.
+  const sockets = new Set();
+  server.on("upgrade", (req, socket) => {
+    touch();
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+    try {
+      eventStream(req, socket, { store, streams, token, port: boundPort() });
+    } catch (error) {
+      const status = error instanceof HttpError ? error.status : 500;
+      if (!(error instanceof HttpError)) console.error(error);
+      socket.end(`HTTP/1.1 ${status} ${error.message}\r\nconnection: close\r\n\r\n`);
+    }
+  });
 
   const close = () =>
     new Promise((resolve) => {
       clearTimeout(idleTimer);
       streams.closeAll();
+      for (const socket of sockets) socket.destroy();
       server.close(() => resolve(undefined));
       server.closeAllConnections();
     });
@@ -285,7 +302,6 @@ async function api(req, res, url, ctx) {
   const [, key, action] = keyed;
   if (req.method === "GET" && action === "session")
     return sendJson(res, 200, ctx.store.bootstrap(key));
-  if (req.method === "GET" && action === "events") return eventStream(req, res, ctx, key);
   if (req.method === "POST" && action === "drafts") {
     const body = await readJsonBody(req);
     return sendJson(res, 200, ctx.store.addDraft(key, body.draft, body.structure));
@@ -321,20 +337,34 @@ function reopenStatus(store, session, asked) {
   return "opened";
 }
 
-/** One line of NDJSON per event, flushed as it happens; the client reads it with fetch. */
-function eventStream(req, res, ctx, key) {
-  // Both refusals have to happen before the head goes out, or they arrive as a broken stream.
-  ctx.store.get(key);
-  if (ctx.streams.size >= limits.eventStreams) throw new HttpError(429, "too many event streams");
-  res.writeHead(200, { ...STATIC_HEADERS, "content-type": "application/x-ndjson; charset=utf-8" });
-  res.flushHeaders();
-  // A tab that vanishes between an event and its write is a close, not a crash: without this
-  // listener the stream error would go unhandled and take the whole daemon with it.
-  res.on("error", () => {});
-  const detach = ctx.streams.open(key, (event) => {
-    if (!res.destroyed) res.write(JSON.stringify(event) + "\n");
-  });
-  req.on("close", detach);
+/**
+ * The event stream is a WebSocket rather than a held HTTP response: a browser gives one host six
+ * HTTP connections in all, and a stream held per tab left the sixth review tab unable to add a
+ * note and the seventh unable to load. A browser cannot set a header on a WebSocket, so the token
+ * travels as the offered subprotocol `bearer.<token>`, and the server answers with `events`.
+ * Whatever the handshake itself proves wrong is refused outright; a refusal the tab must act on
+ * is a close code after it, since a refused handshake reaches a page only as a failed connection:
+ * 4401 the token, 4404 the review, both spent for good, and 4429 too many streams, worth retrying.
+ */
+function eventStream(req, socket, ctx) {
+  assertHost(req, ctx.port);
+  assertOrigin(req, ctx.port);
+  const keyed = new URL(req.url, "http://127.0.0.1").pathname.match(/^\/api\/([^/]+)\/events$/);
+  if (!keyed) throw new HttpError(404, "not found");
+  const offered = offeredProtocols(req);
+  if (!isWebSocketHandshake(req) || !offered.includes("events"))
+    throw new HttpError(400, "not an event stream handshake");
+  const channel = acceptWebSocket(req, socket, "events");
+  const bearer = offered.find((name) => name.startsWith("bearer.")) ?? "";
+  try {
+    assertBearer({ headers: { authorization: `Bearer ${bearer.slice(7)}` } }, ctx.token);
+    ctx.store.get(keyed[1]);
+  } catch (error) {
+    return channel.close(error.status === 401 ? 4401 : 4404, error.message);
+  }
+  if (ctx.streams.size >= limits.eventStreams) return channel.close(4429, "too many event streams");
+  const detach = ctx.streams.open(keyed[1], (event) => channel.send(JSON.stringify(event)));
+  socket.on("close", detach);
 }
 
 function pollTimeout(raw) {

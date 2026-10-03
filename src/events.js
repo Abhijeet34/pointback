@@ -1,9 +1,9 @@
 import { watchFile } from "./watch.js";
 
 /**
- * The live channel to open review tabs: one NDJSON stream per tab and one file watcher per
- * session with a tab on it. NDJSON over `fetch` rather than an event source, because the
- * capability token travels in a header and an event source cannot send one.
+ * The live channel to open review tabs: one event stream per tab, a WebSocket carrying one JSON
+ * message per event (`eventStream` in server.js says why), and one file watcher per session with
+ * a tab on it.
  *
  * The newest tab on a session is the current one and owns the artifact view; older tabs are
  * told the moment they lose it and are promoted back when the current tab goes away, so a

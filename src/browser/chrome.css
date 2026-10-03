@@ -220,6 +220,14 @@ body {
   font-size: var(--hw-text-xs);
 }
 
+/* Why the note has not been added yet, beside the words it is about rather than in the margin. */
+.card-reason {
+  margin: 0;
+  color: var(--hw-warning);
+  font-size: var(--hw-text-sm);
+  text-wrap: pretty;
+}
+
 .card-row {
   display: flex;
   flex-wrap: wrap;
@@ -438,11 +446,13 @@ body {
 
 /* Not connected says nothing about the agent, only that this page cannot reach it: a warning,
    in the label as well as the ring, so it is not mistaken for the ordinary "away". */
-.presence[data-state="offline"] {
+.presence[data-state="lost"],
+.presence[data-state="gone"] {
   color: var(--hw-warning);
 }
 
-.presence[data-state="offline"] .presence-dot {
+.presence[data-state="lost"] .presence-dot,
+.presence[data-state="gone"] .presence-dot {
   box-shadow: inset 0 0 0 var(--hw-focus-w) var(--hw-warning);
 }
 
