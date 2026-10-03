@@ -128,6 +128,17 @@ test(
     const line = await boxOf(
       "(() => { const r = document.createRange(); r.setStart(document.getElementById('p1').firstChild, 0); r.setEnd(document.getElementById('p1').firstChild, 14); return r; })()",
     );
+    const PROBE =
+      "(() => { const r = document.createRange(); const t = document.getElementById('p1').firstChild; r.setStart(t, 0); r.setEnd(t, 14); return JSON.stringify({ t: Math.round(performance.now()), href: location.href, ready: document.readyState, vis: document.visibilityState, w: innerWidth, h: innerHeight, dpr: devicePixelRatio, range: r.getBoundingClientRect(), p1: document.getElementById('p1').getBoundingClientRect(), body: document.body.getBoundingClientRect(), rects: r.getClientRects().length, display: getComputedStyle(document.body).display, sheets: document.styleSheets.length }); })()";
+    console.log(
+      "PROBE measure",
+      artifact.constructor.name,
+      JSON.stringify({ frameBox, line }),
+      await artifact.eval(PROBE),
+      await page.eval(
+        "JSON.stringify({ rev: document.body.dataset.revision, ready: document.body.dataset.ready, r: document.getElementById('artifact').getBoundingClientRect() })",
+      ),
+    );
     const passage = {
       from: { x: frameBox.left + line.left + 1, y: frameBox.top + line.top + line.height / 2 },
       to: { x: frameBox.left + line.right - 1, y: frameBox.top + line.top + line.height / 2 },
@@ -149,7 +160,12 @@ test(
     // The reference's own text-range row was recorded NOT EXERCISED because a synthetic drag
     // might not select anything. With annotate off nothing of ours can touch the selection,
     // so this settles it before the passage tests lean on it.
-    await page.pointerInto(artifact, passage.from);
+    try {
+      await page.pointerInto(artifact, passage.from);
+    } catch (error) {
+      console.log("PROBE failed", await artifact.eval(PROBE));
+      throw error;
+    }
     await page.drag(passage.from, passage.to);
     assert.equal(
       await artifact.eval("getSelection().toString()"),
