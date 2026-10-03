@@ -1637,6 +1637,51 @@ test(
 );
 
 test(
+  "a refusal's reason belongs to the words it refused, not to the next card opened on another note",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const { port, token } = lab.serverInfo();
+    const key = new URL(session.url).pathname.split("/").pop();
+    const call = (method, path, body) =>
+      fetch(`http://127.0.0.1:${port}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    // Fill the drafts cap behind the tab's back, so its own add is the one the server refuses.
+    for (let i = 0; i < limits.promptsPerRequest; i += 1) {
+      const draft = { prompt: `Note ${i + 1}`, selector: "#p1", tag: "p", text: "Move the queue" };
+      assert.equal((await call("POST", `/api/${key}/drafts`, { draft })).status, 200);
+    }
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#title");
+    await page.type("Name the queue in the title");
+    await page.enter();
+    await page.waitFor(
+      "document.getElementById('cardReason').checkVisibility() && " +
+        "document.getElementById('cardReason').textContent.includes('waiting to be sent')",
+    );
+    const refused = JSON.parse(await page.eval(CARD_PAINT));
+    assert.equal(refused.open, true);
+    assert.match(refused.reason, /notes are waiting to be sent; send them first/);
+
+    // Cancel, and point at an unrelated note: the old refusal was about different words, so it
+    // must not follow onto a card that has not been refused anything yet.
+    await page.key("Escape", { keyCode: 27 });
+    await pointAt(page, artifact, "#p1");
+    const fresh = JSON.parse(await page.eval(CARD_PAINT));
+    assert.deepEqual(
+      { open: fresh.open, typed: fresh.typed, reason: fresh.reason },
+      { open: true, typed: "", reason: null },
+      "a fresh card carries no reason left over from the note it was not asked about",
+    );
+    await page.close();
+  },
+);
+
+test(
   "a tab whose port another server took says once that it cannot reconnect, and promises nothing",
   { skip: !executable && "no browser found" },
   async () => {

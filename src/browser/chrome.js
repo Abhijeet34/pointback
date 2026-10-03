@@ -917,6 +917,8 @@ let composing = null;
 
 function openCompose(note, label, outline, rects, from) {
   composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
+  // A refusal belongs only to the words it refused; a fresh card gets a clean reason line.
+  cardProblem = null;
   // A half-typed note is worth more than a live reload; the reload lands when the card closes.
   editing = true;
   cardTarget.textContent = label;
