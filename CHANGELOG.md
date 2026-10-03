@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.5](https://github.com/Abhijeet34/pointback/compare/v0.1.4...v0.1.5) (2026-10-03)
+
+
+### Features
+
+* **browser:** draw numbered pins, make queued notes editable, start Annotate on ([#43](https://github.com/Abhijeet34/pointback/issues/43)) ([7367015](https://github.com/Abhijeet34/pointback/commit/73670157df8b4e1c86e640ef13b25c3792d6c77e))
+* **browser:** point at controls and pictures, block-level Tab stops, review keys, leaner poll ([#44](https://github.com/Abhijeet34/pointback/issues/44)) ([9c71a2d](https://github.com/Abhijeet34/pointback/commit/9c71a2d87e3d0bca180a2f5447c05f6bd3164587))
+* **markdown:** render Markdown reviews with house styles and source-line notes ([#48](https://github.com/Abhijeet34/pointback/issues/48)) ([b35371a](https://github.com/Abhijeet34/pointback/commit/b35371ac6ddeaebaaa199a7fc866baf346932d8c))
+* **reply:** let the agent answer each note, closing the review loop ([#40](https://github.com/Abhijeet34/pointback/issues/40)) ([ce6caba](https://github.com/Abhijeet34/pointback/commit/ce6cabad07fa2b716d7ee644ce3df4e110bd032c))
+
+
+### Bug Fixes
+
+* **artifact:** send Access-Control-Allow-Origin on font assets only, so web fonts render in the sandboxed frame ([#39](https://github.com/Abhijeet34/pointback/issues/39)) ([a1bba2b](https://github.com/Abhijeet34/pointback/commit/a1bba2ba0ba3efc105bebcc37f8a223c299ebe0e))
+* **browser:** fix pin overlap, add text size control, fix code wrapping ([#52](https://github.com/Abhijeet34/pointback/issues/52)) ([52c43cd](https://github.com/Abhijeet34/pointback/commit/52c43cd820e8d8985702ee2f7b80f4c3be63eccd))
+* **browser:** fix reviewer-visible chrome defects in pins, working state, and stray frames ([#49](https://github.com/Abhijeet34/pointback/issues/49)) ([ee814dd](https://github.com/Abhijeet34/pointback/commit/ee814dd18cef4ae261fffdf67a535959fa0f2a9f))
+* **browser:** move review chrome onto house design system ([#46](https://github.com/Abhijeet34/pointback/issues/46)) ([35d15b8](https://github.com/Abhijeet34/pointback/commit/35d15b89226510430cb2fc624715fb7875c72f32))
+* **browser:** require the reviewer's own gesture inside the page for card and send actions ([#54](https://github.com/Abhijeet34/pointback/issues/54)) ([daf6bf2](https://github.com/Abhijeet34/pointback/commit/daf6bf20ad6c2bbaecef7456fab1f5a9d3c115c4))
+* **browser:** stop refetching the session on send/end so a reply can't be lost in the race ([#47](https://github.com/Abhijeet34/pointback/issues/47)) ([0fdf05d](https://github.com/Abhijeet34/pointback/commit/0fdf05d1c578c7d87d1aac3a403e0120d2512e1e))
+* **browser:** stream review events over a WebSocket and clarify offline and spent states ([#55](https://github.com/Abhijeet34/pointback/issues/55)) ([f22a1ee](https://github.com/Abhijeet34/pointback/commit/f22a1eee432fa79854c87be193538be183768bae))
+* **cli:** keep uids unique across eviction and fix reply/poll error handling ([#53](https://github.com/Abhijeet34/pointback/issues/53)) ([0677636](https://github.com/Abhijeet34/pointback/commit/0677636dfba427b1bb777de6de758d53bf5d068b))
+* **cli:** resolve assets within a named --root, not just the file's folder ([#38](https://github.com/Abhijeet34/pointback/issues/38)) ([0552069](https://github.com/Abhijeet34/pointback/commit/0552069d3a7d54bbb3ffca230282ec4c2c15014b))
+* **delivery:** key poll cursors by canonical path and session epoch, answer gone for a moved file ([#33](https://github.com/Abhijeet34/pointback/issues/33)) ([5fc0831](https://github.com/Abhijeet34/pointback/commit/5fc0831625886826fd5088ea2cd0694ed796ab23))
+* **durability:** keep unsent notes on the server and reconnect tabs across restarts ([#37](https://github.com/Abhijeet34/pointback/issues/37)) ([a4e6de6](https://github.com/Abhijeet34/pointback/commit/a4e6de6249334fb08d95f414005447777b113e7f))
+* **events:** resync a tab after a moved file returns or its root changes ([#45](https://github.com/Abhijeet34/pointback/issues/45)) ([0936d5a](https://github.com/Abhijeet34/pointback/commit/0936d5a00d97bbb9834df3ee88fd27c5eaddd5b0))
+* **state:** keep one state file per session, splitting the old state.json once ([#42](https://github.com/Abhijeet34/pointback/issues/42)) ([7e1e8f8](https://github.com/Abhijeet34/pointback/commit/7e1e8f845347a8e718ee4600e0b9e8ca8a885b63))
+
 ## [0.1.4](https://github.com/Abhijeet34/pointback/compare/v0.1.3...v0.1.4) (2026-10-02)
 
 
