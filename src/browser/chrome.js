@@ -389,16 +389,19 @@ function render() {
   // An event or the POST's own answer can land mid-send while the notes still list as unsent;
   // Send must not offer them again in that gap.
   sendButton.disabled = sending !== null || count === 0 || fileGone || offline;
-  // Offline, Send is shut but keeps its label: the bar and the notice already say why.
+  // Lost, Send is shut but keeps its label, since it opens again on reconnect. Spent, it never
+  // will, so it says where the notes go instead of offering an action this page cannot take.
   sendButton.textContent = sending
     ? "Sending…"
     : fileGone
       ? "File is gone"
-      : count === 0
-        ? ended
-          ? "Review ended"
-          : "Send to agent"
-        : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
+      : connection === "gone"
+        ? "Notes wait for a fresh page"
+        : count === 0
+          ? ended
+            ? "Review ended"
+            : "Send to agent"
+          : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
   annotateSwitch.disabled = ended !== null || fileGone;
   // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
   cardAdd.disabled = offline;

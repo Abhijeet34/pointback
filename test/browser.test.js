@@ -1667,6 +1667,15 @@ test(
         { disconnected: 1, reconnect: 0, kept: 1 },
         "it says once that it is disconnected and where the notes are kept, and never that it reconnects",
       );
+      assert.deepEqual(
+        JSON.parse(
+          await page.eval(
+            "JSON.stringify({ label: document.getElementById('send').textContent, off: document.getElementById('send').disabled })",
+          ),
+        ),
+        { label: "Notes wait for a fresh page", off: true },
+        "Send offers nothing this page can do, and says where the notes go",
+      );
       await pointAt(page, artifact, "#p1");
       await page.type("Say how long each step takes");
       await page.enter();
