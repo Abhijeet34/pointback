@@ -125,6 +125,8 @@ test("presence, unsent notes, the end and a reopen all reach every tab; feedback
   const one = tab(streams, key);
   const poll = store.waitForFeedback(key, 30);
   await poll;
+  // The agent is told gone only once the poll's grace has passed with no poll after it.
+  await until(() => store.presence(key).state === "waiting", { what: "the poll's grace to pass" });
   store.addDraft(key, { prompt: "x", selector: "p", tag: "p", text: "one" });
   store.send(key);
   store.end(key, "user");

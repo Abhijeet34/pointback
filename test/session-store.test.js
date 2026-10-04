@@ -400,7 +400,7 @@ test("a session holding unsent notes is never disposed, even when it is the olde
 
 // An evicted session opened again restarts its uids at 1. The agent's cursor from the old life
 // still says 3, and before epochs it acknowledged the new life's first batch unseen.
-test("a cursor from a session's earlier life acknowledges nothing in its next one", async () => {
+test("a cursor from a session's earlier life acknowledges nothing in its next one", async (t) => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);
   const { key } = store.open(artifact);
@@ -411,7 +411,13 @@ test("a cursor from a session's earlier life acknowledges nothing in its next on
   assert.equal(delivered.receipt, 3);
   assert.equal(delivered.epoch, firstLife);
   const stale = { uid: delivered.receipt, epoch: delivered.epoch };
-  assert.deepEqual(await store.waitForFeedback(key, 10, undefined, stale), { status: "waiting" });
+  // The session is evictable only once that poll's grace has passed.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const idle = store.waitForFeedback(key, 10, undefined, stale);
+  t.mock.timers.tick(10);
+  assert.deepEqual(await idle, { status: "waiting" });
+  t.mock.timers.tick(limits.pollGraceMs);
+  t.mock.timers.reset();
 
   for (let i = 0; i < limits.sessions; i += 1) {
     const extra = join(dir, `extra-${i}.html`);
@@ -573,18 +579,55 @@ test("presence follows the polls: waiting, listening, working, and back after th
   assert.match(store.presence(key).since, /^\d{4}-/);
   assert.equal(store.status(key).presence.state, "working");
   // A second poll while working is the agent coming back, acknowledging the batch it took: listening
-  // again, then waiting on timeout.
-  await store.waitForFeedback(key, 10, undefined, cursor(store, key, 1));
+  // again, then waiting once its grace passes after the timeout.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const idle = store.waitForFeedback(key, 10, undefined, cursor(store, key, 1));
+  t.mock.timers.tick(10);
+  await idle;
+  t.mock.timers.tick(limits.pollGraceMs);
   assert.deepEqual(store.presence(key), { state: "waiting" });
   // Feedback taken at once (no attach) still counts as working, and working ages out on its own.
   store.queue(key, [prompt()]);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
   await store.waitForFeedback(key, 10, undefined, cursor(store, key, 1));
   assert.equal(store.presence(key).state, "working");
   t.mock.timers.tick(limits.workingMaxMs);
   assert.deepEqual(store.presence(key), { state: "waiting" });
   t.mock.timers.reset();
   assert.deepEqual(seen, ["listening", "working", "listening", "waiting", "working", "waiting"]);
+});
+
+// A long poll is a run of requests (`poll` in src/cli.js); the tab must not see the agent leave and
+// come back between two of them, and must still see an agent that really stopped.
+test("presence stays listening across a re-poll inside the grace, and turns waiting once the agent stops", async (t) => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  const seen = [];
+  store.on(key, (event) => event.type === "presence" && seen.push(event.state));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const request = async (ack) => {
+    const answer = store.waitForFeedback(key, 100, undefined, ack);
+    t.mock.timers.tick(100);
+    return answer;
+  };
+  for (let i = 0; i < 3; i += 1) {
+    assert.deepEqual(await request(), { status: "waiting" });
+    t.mock.timers.tick(limits.pollGraceMs - 1);
+    assert.equal(store.presence(key).state, "listening", `after request ${i + 1}`);
+  }
+  assert.deepEqual(seen, ["listening"], "three boundaries inside the grace change nothing");
+  // A note sent inside a grace is answered by the next request at once: listening to working.
+  store.queue(key, [prompt()]);
+  assert.equal((await request()).status, "feedback");
+  assert.deepEqual(seen, ["listening", "working"]);
+  // The agent acknowledges, waits out one request, and stops: listening until the grace is over.
+  assert.deepEqual(await request(cursor(store, key, 1)), { status: "waiting" });
+  t.mock.timers.tick(limits.pollGraceMs - 1);
+  assert.equal(store.presence(key).state, "listening");
+  t.mock.timers.tick(1);
+  assert.deepEqual(store.presence(key), { state: "waiting" });
+  assert.deepEqual(seen, ["listening", "working", "listening", "waiting"]);
+  t.mock.timers.reset();
 });
 
 test("a file change bumps the revision, persists it and is announced", () => {

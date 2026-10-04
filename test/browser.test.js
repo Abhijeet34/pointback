@@ -4055,3 +4055,43 @@ test(
     rmSync(dirname(file), { recursive: true, force: true });
   },
 );
+
+// A long poll is a run of requests (`poll` in src/cli.js). Between two of them the tab must not
+// show the agent leaving and coming back, the pill and its status line flipping to "Agent away",
+// and once the agent stops polling the tab must still say so.
+test(
+  "presence stays listening across every request of a long poll, and shows the agent away once it stops",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const page = await browser.page(session.url);
+    await page.waitFor("document.body.dataset.revision === '0'");
+    // Every state the pill is set to, in order, a repeat of the one before it left out.
+    await page.eval(`(() => {
+      const pill = document.getElementById('presence');
+      window.presenceSeen = [pill.dataset.state];
+      new MutationObserver(() => {
+        if (window.presenceSeen.at(-1) !== pill.dataset.state) window.presenceSeen.push(pill.dataset.state);
+      }).observe(pill, { attributes: true, attributeFilter: ['data-state'] });
+    })()`);
+    const polled = await cli(["poll", file, "--timeout-ms", "3000"], {
+      ...lab.env,
+      POINTBACK_POLL_REQUEST_MS: "200",
+    });
+    assert.equal(polled.code, 0, polled.stderr);
+    assert.deepEqual(polled.json(), { status: "waiting" });
+    await page.waitFor("document.getElementById('presence').dataset.state === 'waiting'");
+    assert.deepEqual(
+      JSON.parse(await page.eval("JSON.stringify(window.presenceSeen)")),
+      ["waiting", "listening", "waiting"],
+      "fifteen requests, and the agent shown away only after the last",
+    );
+    assert.equal(
+      await page.eval("document.getElementById('presenceText').textContent"),
+      "Agent away",
+    );
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);

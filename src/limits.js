@@ -17,6 +17,9 @@ export const limits = Object.freeze({
   // The longest the CLI holds one poll request before asking again, under the 300 s after which
   // Node's fetch abandons a response whose headers have not arrived (docs/ENGINEERING-NOTES.md).
   pollRequestMs: 240_000,
+  // How long a poll that ended with nothing still counts as attached, so the next request of the
+  // same wait takes its place and the tab never sees the agent leave between two requests.
+  pollGraceMs: 2000,
   // An agent that took feedback and never came back must not show as working forever.
   workingMaxMs: 3 * 60_000,
   idleShutdownMs: 30 * 60_000,
