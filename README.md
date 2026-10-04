@@ -55,6 +55,7 @@ pointback components/sheets/actions.html --root .   # lets the page load assets 
 pointback stop                      # stops the background server
 ```
 
+`poll` waits 60000 ms unless `--timeout-ms` says otherwise, and at most 600000.
 Every command prints JSON on stdout.
 Opening a file prints where the review is and what to do next:
 
@@ -76,7 +77,7 @@ The root is resolved to its real path when the review opens, so a symlinked spel
 Every open sets the root again, so opening the file without `--root` goes back to its folder.
 The root is also everything the page under review can load, so name the narrowest folder that holds its assets.
 
-Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (default the port the last server used, recorded in `server.json`, or an ephemeral one when that is taken), `POINTBACK_NO_OPEN=1` to skip launching the browser, `POINTBACK_IDLE_MS` before an idle server exits (default 30 minutes).
+Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (default the port the last server used, recorded in `server.json`, or an ephemeral one when that is taken), `POINTBACK_NO_OPEN=1` to skip launching the browser, `POINTBACK_IDLE_MS` before an idle server exits (default 30 minutes), `POINTBACK_POLL_REQUEST_MS` for the longest one request of a poll is held before the CLI asks again (default 240000).
 
 ## What comes back
 

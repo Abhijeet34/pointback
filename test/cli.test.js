@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
@@ -743,4 +744,45 @@ test("a later batch repeats neither the explanation nor an outline the agent alr
   console.log(
     `poll bytes: first batch ${first.bytes}, same outline ${second.bytes}, changed outline ${third.bytes}`,
   );
+});
+
+// Node's fetch abandons a response whose headers take over 300 s, so a poll held as one request
+// failed every --timeout-ms above that with "fetch failed", exit 1. Scaled down here: every fetch
+// the CLI makes gives up after 1 s, and the poll's requests are held at most 300 ms each.
+test("a poll longer than one request may last waits its whole timeout, then delivers a later note", async () => {
+  const own = isolatedEnv();
+  try {
+    const { file } = scratch();
+    const key = keyOf(await cli([file], own.env));
+    const limited = {
+      ...own.env,
+      POINTBACK_POLL_REQUEST_MS: "300",
+      NODE_OPTIONS: `--import="${new URL("./helpers/fetch-limit.js", import.meta.url).href}"`,
+      TEST_FETCH_LIMIT_MS: "1000",
+    };
+    const started = Date.now();
+    const idle = await cli(["poll", file, "--timeout-ms", "3000"], limited);
+    const waited = Date.now() - started;
+    console.log(`cli: a 3000 ms poll held in 300 ms requests answered after ${waited} ms`);
+    assert.equal(idle.code, 0, idle.stderr);
+    assert.deepEqual(idle.json(), { status: "waiting" });
+    assert.ok(waited >= 3000, `waiting came after ${waited} ms, before the timeout passed`);
+
+    const polling = cli(["poll", file, "--timeout-ms", "10000"], limited);
+    await until(async () => (await presenceOf(own.serverInfo(), key)) === "listening", {
+      what: "the poll to attach",
+    });
+    // Longer than the 1 s any one fetch may live, so only a request the poll started after its
+    // first can carry the note back.
+    await sleep(1200);
+    await daemon(own).note(key, "sent late");
+    const polled = await polling;
+    assert.equal(polled.code, 0, polled.stderr);
+    assert.deepEqual(
+      polled.json().prompts.map((p) => p.prompt),
+      ["sent late"],
+    );
+  } finally {
+    await own.stop();
+  }
 });

@@ -25,7 +25,7 @@ Usage:
       open a review of an HTML (.html, .htm) or Markdown (.md, .markdown) file in the browser;
       its assets resolve within --root (default: the file's folder)
   ${name} poll <file> [--timeout-ms N]
-      wait for the reviewer's feedback
+      wait for the reviewer's feedback, up to N ms (default ${limits.pollTimeoutDefaultMs}, at most ${limits.pollTimeoutMaxMs})
   ${name} reply <file> <uid> --done|--declined|--question [--message TEXT]
       tell the reviewer what became of note <uid>
   ${name} end <file>
@@ -38,10 +38,11 @@ Usage:
 Output is JSON on stdout.
 
 Environment:
-  ${envPrefix}STATE_DIR  where state is kept (default: ~/${stateDirName})
-  ${envPrefix}PORT       the server's port (default: any free one)
-  ${envPrefix}NO_OPEN    set to open no browser tab
-  ${envPrefix}IDLE_MS    how long an idle server waits before it exits (default: ${limits.idleShutdownMs})`;
+  ${envPrefix}STATE_DIR        where state is kept (default: ~/${stateDirName})
+  ${envPrefix}PORT             the server's port (default: any free one)
+  ${envPrefix}NO_OPEN          set to open no browser tab
+  ${envPrefix}IDLE_MS          how long an idle server waits before it exits (default: ${limits.idleShutdownMs})
+  ${envPrefix}POLL_REQUEST_MS  the longest one request of a poll is held (default: ${limits.pollRequestMs})`;
 
 export async function run(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
   const { values, positionals } = parseArgs({
@@ -151,16 +152,31 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     return print(stdout, JSON.stringify(result));
   }
 
-  const timeout =
-    values["timeout-ms"] === undefined ? "" : `&timeoutMs=${Number(values["timeout-ms"])}`;
   // Acknowledge the last batch this client received so the server stops holding it for redelivery.
   // Delivery is at-least-once: a poll whose response is lost redelivers, so a note is never dropped.
   const cursor = readPollCursor(dir, canonical);
   const ack = cursor === undefined ? "" : `&ack=${cursor.uid}&epoch=${cursor.epoch}`;
-  const query = `file=${encodeURIComponent(canonical)}${timeout}${ack}`;
+  const query = `file=${encodeURIComponent(canonical)}${ack}`;
   // A path with no file answers at once, with its last notes, gone, or no such file.
   if (existsSync(canonical)) print(stderr, `waiting for feedback on ${file}...`);
-  const result = await api(server, "GET", `/api/poll?${query}`).catch(refused(canonical));
+  // One long wait is a run of shorter requests: Node's fetch fails any request whose answer takes
+  // over 300 s, so a single 400 s poll ended in "fetch failed". The first request carries the
+  // agent's value as typed, so one the server refuses is refused exactly as before.
+  const requestMs = Number(env("POLL_REQUEST_MS") ?? limits.pollRequestMs);
+  let remaining = Math.min(
+    values["timeout-ms"] === undefined ? limits.pollTimeoutDefaultMs : Number(values["timeout-ms"]),
+    limits.pollTimeoutMaxMs,
+  );
+  const deadline = Date.now() + remaining;
+  let result;
+  for (;;) {
+    const timeoutMs = Math.min(remaining, requestMs);
+    result = await api(server, "GET", `/api/poll?${query}&timeoutMs=${timeoutMs}`).catch(
+      refused(canonical),
+    );
+    remaining = deadline - Date.now();
+    if (result.status !== "waiting" || remaining <= 0) break;
+  }
   if (result.status === "gone") return printGone(stdout, file, result);
   const { receipt, epoch } = result;
   delete result.receipt;

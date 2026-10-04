@@ -14,6 +14,9 @@ export const limits = Object.freeze({
   eventStreams: 64,
   pollTimeoutDefaultMs: 60_000,
   pollTimeoutMaxMs: 600_000,
+  // The longest the CLI holds one poll request before asking again, under the 300 s after which
+  // Node's fetch abandons a response whose headers have not arrived (docs/ENGINEERING-NOTES.md).
+  pollRequestMs: 240_000,
   // An agent that took feedback and never came back must not show as working forever.
   workingMaxMs: 3 * 60_000,
   idleShutdownMs: 30 * 60_000,
