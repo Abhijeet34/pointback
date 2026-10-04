@@ -127,6 +127,19 @@ test("a process holding a stale copy of a session refuses to write it over a new
   );
 });
 
+test("a refused write raised while a missing file is announced leaves the watcher's change handler standing", () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  new SessionStore(dir).queue(key, [prompt("written by the other process")]);
+  tabs.on(key, (event) => {
+    if (event.type === "gone") tabs.addDraft(key, prompt("typed as the file goes"));
+  });
+  renameSync(artifact, `${artifact}.away`);
+  assert.doesNotThrow(() => tabs.fileChanged(key));
+  assert.equal(tabs.status(key).gone, true);
+});
+
 test("a session file deleted by hand is written again from memory, so an unsent note survives", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);

@@ -440,7 +440,11 @@ export class SessionStore {
     const session = this.#sessions.get(key);
     if (!session) return 0;
     if (!existsSync(session.file)) {
-      this.#gone(session);
+      try {
+        this.#gone(session);
+      } catch (error) {
+        if (!(error instanceof HttpError)) throw error;
+      }
       return session.revision;
     }
     session.revision += 1;
