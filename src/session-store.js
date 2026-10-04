@@ -56,6 +56,8 @@ export class SessionStore {
    * `stateDir` holds one file per session under `sessions/`, so a mutation rewrites only the session
    * it changed: a file save costs the same with one review held as with the cap. `live` says whether
    * a tab is showing a review right now (`EventStreams.live`), which keeps it from eviction.
+   * @param {string} stateDir
+   * @param {{ live?: (key: string) => boolean }} [options]
    */
   constructor(stateDir, { live = () => false } = {}) {
     this.#stateDir = stateDir;
