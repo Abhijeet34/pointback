@@ -432,12 +432,14 @@ function render() {
             ""
           : `${count} ${count === 1 ? "note stays" : "notes stay"} here, and Send opens again if the file comes back.`
         : ended
-          ? count === 0
-            ? composing
-              ? // A card the end left open says on itself what Add does now.
-                ""
-              : "Nothing more can be sent from this page."
-            : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
+          ? composing && deferredReload
+            ? "The file changed. This page updates as soon as you finish this note."
+            : count === 0
+              ? composing
+                ? // A card the end left open says on itself what Add does now.
+                  ""
+                : "Nothing more can be sent from this page."
+              : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
           : offline
             ? // The notice above says what happens next; a second line would only repeat it.
               ""

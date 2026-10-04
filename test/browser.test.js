@@ -1094,6 +1094,40 @@ test(
 );
 
 test(
+  "a file change held back by a half-typed note still shows once the agent ends the review, and Add loads it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#title");
+    await page.type("This title is long; I would cut it to");
+    writeFileSync(file, html.replace("<main>", "<main><p>Added by the agent.</p>"));
+    const FILE_CHANGED = "The file changed. This page updates as soon as you finish this note.";
+    await page.waitFor(
+      `document.getElementById('status').textContent === ${JSON.stringify(FILE_CHANGED)}`,
+    );
+    assert.equal((await cli(["end", file], lab.env)).json().ended_by, "agent");
+    await page.waitFor(noticeSays("Your agent ended this review."));
+    assert.equal(
+      await page.eval(
+        "JSON.stringify(document.getElementById('status').checkVisibility() ? document.getElementById('status').textContent : null)",
+      ),
+      JSON.stringify(FILE_CHANGED),
+      "the status line says the page is stale while the card holds the reviewer's words",
+    );
+    assert.equal(await page.eval("document.body.dataset.revision"), "0");
+    assert.equal(
+      JSON.parse(await page.eval(CARD_SEEN)).words,
+      "This title is long; I would cut it to",
+    );
+    await clickOn(page, "document.getElementById('cardAdd')");
+    await page.waitFor("document.body.dataset.revision === '1'");
+    await page.waitFor("document.getElementById('card').hidden");
+    await page.close();
+  },
+);
+
+test(
   "a note half-typed when the file goes stays in its card until the reviewer's own Cancel drops it",
   { skip: !executable && "no browser found" },
   async () => {
