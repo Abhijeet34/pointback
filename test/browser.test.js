@@ -856,6 +856,108 @@ test(
   },
 );
 
+/** A private copy of the page that takes the focus, as its own review. */
+async function stealingReview() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-steal-"));
+  const file = join(dir, "incident.html");
+  copyFileSync(join(dirname(fixture), "hostile-focus-steal.html"), file);
+  return { file, session: (await cli([file], lab.env)).json().session };
+}
+
+/**
+ * Real key presses, each followed by three more of the page's own attempts to take the focus, so a
+ * key that stayed in the chrome did so against a page that had every chance at it.
+ */
+async function typeAgainst(page, artifact, word) {
+  for (const ch of word) {
+    await page.key(ch, { code: `Key${ch.toUpperCase()}`, keyCode: ch.toUpperCase().charCodeAt(0), text: ch });
+    const from = Number(await artifact.eval("globalThis.steals"));
+    await artifact.waitFor(`globalThis.steals >= ${from + 3}`);
+  }
+}
+
+const STOLEN = `JSON.stringify({ heard: globalThis.heard, trap: document.getElementById("trap").value })`;
+
+test(
+  "a page cannot take the focus out of a note being typed, so no key typed in the chrome reaches it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const outcomes = {};
+    const outcome = async (name, page, artifact, field) => {
+      outcomes[name] = {
+        focus: await page.eval("document.activeElement.id || document.activeElement.className"),
+        typed: await page.eval(`${field}.value`),
+        page: JSON.parse(await artifact.eval(STOLEN)),
+        steals: await artifact.eval("globalThis.steals"),
+      };
+      console.log(`focus steal, ${name}: ${JSON.stringify(outcomes[name])}`);
+    };
+
+    // (a) No gesture in the page at all: an answer card opened from the margin.
+    {
+      const { file, session } = await stealingReview();
+      await api(session, "POST", "drafts", {
+        draft: { prompt: "Lower the threshold", selector: "#p2", tag: "p", text: "Alerts fired late" },
+      });
+      await api(session, "POST", "prompts", {});
+      const { uid } = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts[0];
+      await cli(["reply", file, String(uid), "--question", "--message", "To what?"], lab.env);
+      const { page, artifact } = await openReview(session.url);
+      await page.waitFor("document.querySelector('.mark-answer') !== null");
+      await clickOn(page, "document.querySelector('.mark-answer')");
+      await page.waitFor("document.activeElement.id === 'cardText'");
+      await artifact.eval("globalThis.armed = true");
+      await typeAgainst(page, artifact, "abc");
+      await outcome("no gesture", page, artifact, "document.getElementById('cardText')");
+      await page.close();
+    }
+
+    // (b) The reviewer's click in the page opened the card: inside its activation, and after it.
+    for (const lapsed of [false, true]) {
+      const { session } = await stealingReview();
+      const { page, artifact } = await openReview(session.url);
+      await pointAt(page, artifact, "#p1");
+      if (lapsed) await artifact.waitFor("!navigator.userActivation.isActive", { timeoutMs: 15_000 });
+      await artifact.eval("globalThis.armed = true");
+      await typeAgainst(page, artifact, "abc");
+      await outcome(lapsed ? "sticky" : "transient", page, artifact, "document.getElementById('cardText')");
+      await page.close();
+    }
+
+    // (c) The card closes, and the reviewer goes on to type in the margin.
+    {
+      const { session } = await stealingReview();
+      await api(session, "POST", "drafts", {
+        draft: { prompt: "Say when", selector: "#p1", tag: "p", text: "The cache was cold" },
+      });
+      const { page, artifact } = await openReview(session.url);
+      await page.waitFor("document.querySelector('.mark-edit') !== null");
+      await pointAt(page, artifact, "#p2");
+      await artifact.eval(
+        `addEventListener("message", (e) => { if (e.data?.type === "compose" && e.data.on === false) globalThis.armed = true; })`,
+      );
+      await clickOn(page, "document.getElementById('cardCancel')");
+      await artifact.waitFor("globalThis.armed");
+      await clickOn(page, "document.querySelector('.mark-edit')");
+      await page.waitFor("document.querySelector('.mark-edit-text') !== null");
+      await page.eval("document.querySelector('.mark-edit-text').value = ''");
+      await clickOn(page, "document.querySelector('.mark-edit-text')");
+      await typeAgainst(page, artifact, "abc");
+      await outcome("card closed", page, artifact, "document.querySelector('.mark-edit-text')");
+      await page.close();
+    }
+
+    console.log(`focus steal: ${JSON.stringify(outcomes)}`);
+    for (const [name, { focus, typed, page }] of Object.entries(outcomes)) {
+      assert.deepEqual(
+        { typed, heard: page.heard, trap: page.trap },
+        { typed: "abc", heard: [], trap: "" },
+        `${name}: every key stays in the chrome (focus ended on ${focus})`,
+      );
+    }
+  },
+);
+
 test(
   "eight review tabs all load, and a note added in the eighth reaches the agent",
   { skip: !executable && "no browser found" },
