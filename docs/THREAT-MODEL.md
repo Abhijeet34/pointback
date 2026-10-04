@@ -25,6 +25,12 @@ In scope:
   Firefox and Safari keep a click in the chrome out of the page but pass a key on to it; that is measured with Playwright's synthetic input only, and what a real keyboard does there is unmeasured.
   Their trust rests on a gate instead: in every engine `navigator.userAgentData` does not identify as Chromium, an unrecognised one included, the chrome hears nothing from the page for 5 seconds after a key in the chrome, and its help line says so; the weekly engine smoke (`test/engine-smoke.js`) exercises the gate in both.
   A page acting inside the activation window straight after the reviewer's own click or key in it is the known limit of these checks.
+  A page can also call `focus()` on its own elements at any moment, and Chromium then moves the reviewer's focus, and the keys after it, out of the chrome and into the page, with or without a gesture there.
+  While the focus is in a note being written, in the note card or in a note edited in the margin, the chrome lays a shield over the page, so a press there lands in the chrome and hands the page the focus on purpose; any other move of the focus from that note into the page is the page's own (`writing` and `shield` in `src/browser/chrome.js`).
+  The chrome then puts the focus back in the note and, for the rest of the review, hides the page whenever a note holds the focus, with a line saying why; `test/browser.test.js` holds that no key typed after that reaches the page, on that note and on later ones.
+  The residual is the first instant: a key typed in the first tens of milliseconds after a page first takes the focus in a review can reach it before it is hidden, about one key at normal typing speed.
+  Still open: a page's late refocus can undo a Tab the reviewer pressed in the page (issue 57), and a page can take the focus from a chrome control that is not a text field, such as the Annotate switch.
+  This focus handling is measured in Chromium only; in Firefox and WebKit it is unmeasured.
 - State written where another user on the machine can read it: outside the state directory, with a mode other than `0600` in a `0700` directory on POSIX, or on Windows with any ACL entry beyond the current user (`src/state-dir.js`).
 - Any outbound connection opened by the process.
 - Markup in an artifact that changes what the injected review script does (`src/inject.js`).
