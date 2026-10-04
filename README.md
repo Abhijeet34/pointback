@@ -247,7 +247,7 @@ Only the reviewer drops them: Cancel, Escape, Annotate off, or Discard and end.
 The frame can leave the page under review too: a link followed with Annotate off, or an address with nothing at it, which the server answers inside a review with a short page in the house reading styles rather than JSON.
 Only the page under review announces itself to the chrome, so a page that loads without doing so is covered, where the reviewer is looking, by a notice saying the frame went to a page that is missing or is not the file, with a button back to it.
 A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
-From then on the page is hidden whenever a note is open, with a line saying why; right after the take, the line asks the reviewer to check the note for anything typed just then.
+The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
 
 The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on sessions, prompts and open polls.
 
