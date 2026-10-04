@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -627,6 +628,62 @@ test("presence stays listening across a re-poll inside the grace, and turns wait
   t.mock.timers.tick(1);
   assert.deepEqual(store.presence(key), { state: "waiting" });
   assert.deepEqual(seen, ["listening", "working", "listening", "waiting"]);
+  t.mock.timers.reset();
+});
+
+test("a poll woken by the end of the review or a gone file leaves presence at once, with no grace", async () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  const ended = store.waitForFeedback(key, 5000);
+  store.end(key, "agent");
+  assert.equal((await ended).status, "ended");
+  assert.equal(store.presence(key).state, "waiting");
+  const moved = lab();
+  const other = new SessionStore(moved.dir);
+  const { key: movedKey } = other.open(moved.artifact);
+  const gone = other.waitForFeedback(movedKey, 5000);
+  rmSync(moved.artifact);
+  other.fileChanged(movedKey);
+  assert.equal((await gone).status, "gone");
+  assert.equal(other.presence(movedKey).state, "waiting");
+});
+
+test("a poll whose connection drops stays listening through the grace, then shows waiting", async (t) => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const controller = new AbortController();
+  const poll = store.waitForFeedback(key, 5000, controller.signal);
+  controller.abort();
+  assert.equal(await poll, null);
+  assert.equal(store.presence(key).state, "listening");
+  t.mock.timers.tick(limits.pollGraceMs - 1);
+  assert.equal(store.presence(key).state, "listening");
+  t.mock.timers.tick(1);
+  assert.deepEqual(store.presence(key), { state: "waiting" });
+  t.mock.timers.reset();
+});
+
+test("an attach inside a grace clears working, so the tab does not show working after the agent came back", async (t) => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const first = store.waitForFeedback(key, 5000);
+  const second = store.waitForFeedback(key, 5000);
+  store.queue(key, [prompt()]);
+  assert.equal((await first).status, "feedback");
+  assert.equal(store.presence(key).state, "listening");
+  t.mock.timers.tick(5000);
+  assert.deepEqual(await second, { status: "waiting" });
+  const third = store.waitForFeedback(key, 100, undefined, cursor(store, key, 1));
+  assert.deepEqual(store.presence(key), { state: "listening" });
+  t.mock.timers.tick(100);
+  assert.deepEqual(await third, { status: "waiting" });
+  t.mock.timers.tick(limits.pollGraceMs);
+  assert.deepEqual(store.presence(key), { state: "waiting" });
   t.mock.timers.reset();
 });
 

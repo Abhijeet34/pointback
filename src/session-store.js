@@ -585,7 +585,8 @@ export class SessionStore {
         clearTimeout(timer);
         this.#events.off(key, onEvent);
         signal?.removeEventListener("abort", onAbort);
-        this.#detach(key, value?.status === "feedback");
+        const lapsed = value === null || value.status === "waiting";
+        this.#detach(key, value?.status === "feedback", lapsed);
         resolve(value);
       };
       // Two pollers race for one batch; the one that finds nothing keeps waiting.
@@ -602,10 +603,9 @@ export class SessionStore {
   }
 
   #attach(key) {
-    // The poll that just ended with nothing is still counted, so this one takes its place unseen.
-    if (this.#takeLingering(key)) return;
     const before = this.presence(key).state;
-    this.#pollsByKey.set(key, (this.#pollsByKey.get(key) ?? 0) + 1);
+    // The poll that just ended with nothing is still counted, so this one takes its place unseen.
+    if (!this.#takeLingering(key)) this.#pollsByKey.set(key, (this.#pollsByKey.get(key) ?? 0) + 1);
     this.#clearWorking(key, false);
     this.#announce(key, before);
   }
@@ -618,10 +618,10 @@ export class SessionStore {
     return true;
   }
 
-  #detach(key, delivered) {
-    // A last poll that delivered nothing is held for a grace before it counts as gone: a long wait is
+  #detach(key, delivered, lapsed) {
+    // A last poll that lapsed with nothing is held for a grace before it counts as gone: a long wait is
     // a run of requests (`poll` in src/cli.js), and the agent has not left between two of them.
-    if (!delivered && this.#pollsByKey.get(key) === 1) {
+    if (lapsed && !delivered && this.#pollsByKey.get(key) === 1) {
       const timer = setTimeout(() => {
         this.#lingering.delete(key);
         this.#release(key, false);

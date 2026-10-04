@@ -776,8 +776,8 @@ test("a poll longer than one request may last waits its whole timeout, then deli
     await until(async () => (await presenceOf(own.serverInfo(), key)) === "listening", {
       what: "the poll to attach",
     });
-    // Longer than the 1 s any one fetch may live, so only a request the poll started after its
-    // first can carry the note back.
+    // The first request is held 300 ms and the note goes out at 1200 ms, after that request has
+    // ended, so only a request the poll opened afterwards can carry the note back.
     await sleep(1200);
     await daemon(own).note(key, "sent late");
     const polled = await polling;

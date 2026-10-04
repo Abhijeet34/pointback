@@ -42,7 +42,7 @@ Environment:
   ${envPrefix}PORT             the server's port (default: any free one)
   ${envPrefix}NO_OPEN          set to open no browser tab
   ${envPrefix}IDLE_MS          how long an idle server waits before it exits (default: ${limits.idleShutdownMs})
-  ${envPrefix}POLL_REQUEST_MS  how long one request of a poll is held before the CLI asks again (default: ${limits.pollRequestMs}, at most ${limits.pollRequestMs})`;
+  ${envPrefix}POLL_REQUEST_MS  how long one request of a poll is held before the CLI asks again (default and maximum: ${limits.pollRequestMs})`;
 
 export async function run(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
   const { values, positionals } = parseArgs({
