@@ -55,6 +55,7 @@ pointback components/sheets/actions.html --root .   # lets the page load assets 
 pointback stop                      # stops the background server
 ```
 
+`poll` waits 60000 ms unless `--timeout-ms` says otherwise, and at most 600000.
 Every command prints JSON on stdout.
 Opening a file prints where the review is and what to do next:
 
@@ -76,7 +77,7 @@ The root is resolved to its real path when the review opens, so a symlinked spel
 Every open sets the root again, so opening the file without `--root` goes back to its folder.
 The root is also everything the page under review can load, so name the narrowest folder that holds its assets.
 
-Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (default the port the last server used, recorded in `server.json`, or an ephemeral one when that is taken), `POINTBACK_NO_OPEN=1` to skip launching the browser, `POINTBACK_IDLE_MS` before an idle server exits (default 30 minutes).
+Environment: `POINTBACK_STATE_DIR` (default `~/.pointback`), `POINTBACK_PORT` (default the port the last server used, recorded in `server.json`, or an ephemeral one when that is taken), `POINTBACK_NO_OPEN=1` to skip launching the browser, `POINTBACK_IDLE_MS` before an idle server exits (default 30 minutes), `POINTBACK_POLL_REQUEST_MS` how long one request of a poll is held before the CLI asks again (default and maximum 240000).
 
 ## What comes back
 
@@ -228,7 +229,7 @@ Every call the tab makes over HTTP gives up after 10 seconds and says so, so no 
 It carries seven things.
 
 - **Live reload.** The server watches the artifact's directory, not its inode, so an editor's write-and-rename save still counts, and a burst of writes inside 100 ms is one change. Each change numbers a new revision; the tab reloads the artifact at that revision and puts the element the reviewer was reading back where it was on screen, so a section added above it does not push their line down the page. A reload that would interrupt a half-typed note waits until the note is added.
-- **Presence.** `waiting` when no poll is attached, `listening` while one is, `working` from the moment a poll takes a batch until the agent has replied to every note in it or the file goes. Working is bounded by `workingMaxMs` in `src/limits.js`, so an agent that took the feedback and never came back stops showing as working after three minutes. It never locks Send: a note sent while the agent works queues behind the batch it holds and arrives on its next poll.
+- **Presence.** `waiting` when no poll is attached, `listening` while one is and for `pollGraceMs` in `src/limits.js` after one that ended with nothing, so the requests a long poll is made of read as one wait, `working` from the moment a poll takes a batch until the agent has replied to every note in it or the file goes. Working is bounded by `workingMaxMs` in `src/limits.js`, so an agent that took the feedback and never came back stops showing as working after three minutes. It never locks Send: a note sent while the agent works queues behind the batch it holds and arrives on its next poll.
 - **Unsent notes.** A note is kept by the server the moment the reviewer adds it, so closing the tab, reloading it or restarting the daemon loses nothing, and every tab on the review shows the same list. Send hands every unsent note to the agent as one batch, which is why at most `promptsPerRequest` of them wait at once.
 - **Replies.** The agent's answer to a note lands on that note as it is given, and the status line says when the agent has asked a question or answered every note. Every connect carries the sent notes with their replies, so a tab that was away catches up.
 - **The handover.** Opening the file again while a tab shows the review opens nothing new, and the agent is told the review is already open; if that open names a different `--root`, the tab follows to the address the new root gives it rather than reloading into a 404. A second tab the reviewer opens themselves owns the artifact view; the older one is told the moment it happens and offers to take the review back, rather than finding out at the next save.
@@ -268,7 +269,7 @@ Windows has no such bits, so the state directory's ACL is reset to a single full
 A review is a bounded thing that ends, not state that piles up.
 The daemon idles out after `POINTBACK_IDLE_MS` of no activity, and a review tab keeps it alive only while the reviewer is on it: the tab heartbeats while its page is visible and stops when it is hidden, so a review left open and walked away from releases the process rather than pinning it open for good.
 Sessions are capped at `sessions` in `src/limits.js`; opening past the cap disposes the least-recently-active session, an ended review before a running one, so `sessions/` holds at most that many files no matter how many files have been reviewed.
-A session with a tab open on it, a poll attached, or notes not yet sent or received is never the one disposed; when every session held is one of those, the new open is refused and names those three causes, and `skills/pointback/SKILL.md` gives the way out for each.
+A session with a tab open on it, a poll attached or within its grace, or notes not yet sent or received is never the one disposed; when every session held is one of those, the new open is refused and names those three causes, and `skills/pointback/SKILL.md` gives the way out for each.
 After a hundred reviews on a long-lived machine, then, there is one small loopback daemon that exits on its own when idle, and a `sessions/` directory bounded to the most recent sessions, each holding that session's path and the notes sent in it.
 
 The process opens no outbound connection, ever; `test/egress.test.js` proves it across the whole slice.

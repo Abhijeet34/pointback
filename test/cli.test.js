@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
@@ -200,6 +201,10 @@ test("after an eviction a new note takes a uid the agent never saw, and an old c
       (await cli(["poll", file, "--timeout-ms", "50"], own.env)).json().status,
       "waiting",
     );
+    // A session is held from eviction for the grace after its last poll.
+    await until(async () => (await presenceOf(own.serverInfo(), key)) === "waiting", {
+      what: "the poll's grace to pass",
+    });
 
     for (let i = 0; i < limits.sessions; i += 1) {
       const other = join(dir, `other-${i}.html`);
@@ -743,4 +748,79 @@ test("a later batch repeats neither the explanation nor an outline the agent alr
   console.log(
     `poll bytes: first batch ${first.bytes}, same outline ${second.bytes}, changed outline ${third.bytes}`,
   );
+});
+
+// Node's fetch abandons a response whose headers take over 300 s, so a poll held as one request
+// failed every --timeout-ms above that with "fetch failed", exit 1. Scaled down here: every fetch
+// the CLI makes gives up after 1 s, and the poll's requests are held at most 300 ms each.
+test("a poll longer than one request may last waits its whole timeout, then delivers a later note", async () => {
+  const own = isolatedEnv();
+  try {
+    const { file } = scratch();
+    const key = keyOf(await cli([file], own.env));
+    const limited = {
+      ...own.env,
+      POINTBACK_POLL_REQUEST_MS: "300",
+      NODE_OPTIONS: `--import="${new URL("./helpers/fetch-limit.js", import.meta.url).href}"`,
+      TEST_FETCH_LIMIT_MS: "1000",
+    };
+    const started = Date.now();
+    const idle = await cli(["poll", file, "--timeout-ms", "3000"], limited);
+    const waited = Date.now() - started;
+    console.log(`cli: a 3000 ms poll held in 300 ms requests answered after ${waited} ms`);
+    assert.equal(idle.code, 0, idle.stderr);
+    assert.deepEqual(idle.json(), { status: "waiting" });
+    assert.ok(waited >= 3000, `waiting came after ${waited} ms, before the timeout passed`);
+
+    const polling = cli(["poll", file, "--timeout-ms", "10000"], limited);
+    await until(async () => (await presenceOf(own.serverInfo(), key)) === "listening", {
+      what: "the poll to attach",
+    });
+    // The first request is held 300 ms and the note goes out at 1200 ms, after that request has
+    // ended, so only a request the poll opened afterwards can carry the note back.
+    await sleep(1200);
+    await daemon(own).note(key, "sent late");
+    const polled = await polling;
+    assert.equal(polled.code, 0, polled.stderr);
+    assert.deepEqual(
+      polled.json().prompts.map((p) => p.prompt),
+      ["sent late"],
+    );
+  } finally {
+    await own.stop();
+  }
+});
+
+test("a --timeout-ms the server refuses is refused at once with its message, as before", async () => {
+  const { file } = scratch();
+  assert.equal((await cli([file], lab.env)).code, 0);
+  for (const value of ["Infinity", "300000.5"]) {
+    const refused = await cli(["poll", file, "--timeout-ms", value], lab.env, {
+      timeoutMs: 30_000,
+    });
+    assert.equal(refused.code, 1, value);
+    assert.equal(refused.stdout, "", value);
+    assert.ok(refused.stderr.endsWith("error: timeoutMs must be a non-negative integer\n"), value);
+  }
+});
+
+test("a POLL_REQUEST_MS outside 1 to 240000, or not an integer, is refused before any request", async () => {
+  const { file } = scratch();
+  for (const value of ["0", "400000", "soon"]) {
+    const refused = await cli(
+      ["poll", file, "--timeout-ms", "50"],
+      {
+        ...lab.env,
+        POINTBACK_POLL_REQUEST_MS: value,
+      },
+      { timeoutMs: 30_000 },
+    );
+    assert.equal(refused.code, 1, value);
+    assert.equal(refused.stdout, "", value);
+    assert.equal(
+      refused.stderr,
+      "error: POINTBACK_POLL_REQUEST_MS must be an integer from 1 to 240000\n",
+      value,
+    );
+  }
 });

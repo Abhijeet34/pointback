@@ -35,7 +35,8 @@ A review held for more than one of these needs each cause cleared before it is f
 pointback poll plan.html --timeout-ms 300000
 ```
 
-It blocks until the user sends notes, so give the shell call a timeout longer than `--timeout-ms`.
+It blocks until the user sends notes or `--timeout-ms` passes, so give the shell call a timeout longer than `--timeout-ms`.
+The default is 60000 and the maximum 600000; a longer value waits 600000.
 
 | `status`   | What to do                                                                     |
 | ---------- | ------------------------------------------------------------------------------ |

@@ -546,6 +546,10 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
   // The fixture's session carries the notes earlier tests sent; the hello carries them too.
   const { chat } = await get(`/api/${opened.key}/session`);
   assert.ok(chat.length > 0);
+  // An earlier test's poll on the fixture keeps it listening for the grace after that poll ended.
+  await until(async () => (await get(`/api/${opened.key}/session`)).presence.state === "waiting", {
+    what: "the last poll's grace to pass",
+  });
   const first = await eventStream(`/api/${opened.key}/events`);
   assert.equal(first.protocol, "events", "the token is offered, never echoed back");
   assert.deepEqual(await first.next(), {

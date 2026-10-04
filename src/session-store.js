@@ -33,8 +33,9 @@ import {
  * to the agent's queue at once.
  *
  * Agent presence is in memory only, because it describes live connections: `listening`
- * while a poll is attached, `working` after a poll took feedback until the next poll or the
- * bound in limits, and `waiting` otherwise. Every change to a session is emitted on its key.
+ * while a poll is attached or within `limits.pollGraceMs` of one that ended with nothing,
+ * `working` after a poll took feedback until the next poll or the bound in limits, and
+ * `waiting` otherwise. Every change to a session is emitted on its key.
  */
 export const EPOCH_PATTERN = /^[0-9a-f]{16}$/;
 export const DRAFT_ID_PATTERN = /^[0-9a-f]{16}$/;
@@ -49,6 +50,7 @@ export class SessionStore {
   #events = new EventEmitter();
   #activePolls = 0;
   #pollsByKey = new Map();
+  #lingering = new Map();
   #working = new Map();
   #live;
 
@@ -184,8 +186,9 @@ export class SessionStore {
    * Makes room at the cap by disposing the least useful session, so a review is a bounded thing that
    * ends rather than an entry that accumulates until the tool wedges. An ended review goes before a
    * running one, and the longest-untouched before a recent one; a session with a poll attached right
-   * now is never disposed, so an agent is never left polling a session that vanished, and nor is one
-   * a tab is showing, which would be left unable to add a note while the agent was told it was open.
+   * now, or within the grace of one, is never disposed, so an agent is never left polling a session
+   * that vanished, and nor is one a tab is showing, which would be left unable to add a note while
+   * the agent was told it was open.
    * A session still holding undelivered notes (queued or delivered-but-unacked) is never disposed
    * either, so the at-least-once delivery guarantee holds even under session-cap pressure, and nor is
    * one holding drafts the reviewer has not sent yet. If every session is carrying work, the cap is
@@ -566,7 +569,9 @@ export class SessionStore {
     // A fresh poll may redeliver the outstanding batch; a poll woken by an event may not.
     const immediate = this.#answer(key, cursor, true);
     if (immediate) {
-      if (immediate.status === "feedback") this.#setWorking(key);
+      // An answer inside a grace ends it, going straight from listening to what the answer means.
+      if (this.#takeLingering(key)) this.#release(key, immediate.status === "feedback");
+      else if (immediate.status === "feedback") this.#setWorking(key);
       if (immediate.status === "gone") this.#gone(this.get(key));
       return Promise.resolve(immediate);
     }
@@ -580,7 +585,8 @@ export class SessionStore {
         clearTimeout(timer);
         this.#events.off(key, onEvent);
         signal?.removeEventListener("abort", onAbort);
-        this.#detach(key, value?.status === "feedback");
+        const lapsed = value === null || value.status === "waiting";
+        this.#detach(key, value?.status === "feedback", lapsed);
         resolve(value);
       };
       // Two pollers race for one batch; the one that finds nothing keeps waiting.
@@ -598,12 +604,36 @@ export class SessionStore {
 
   #attach(key) {
     const before = this.presence(key).state;
-    this.#pollsByKey.set(key, (this.#pollsByKey.get(key) ?? 0) + 1);
+    // The poll that just ended with nothing is still counted, so this one takes its place unseen.
+    if (!this.#takeLingering(key)) this.#pollsByKey.set(key, (this.#pollsByKey.get(key) ?? 0) + 1);
     this.#clearWorking(key, false);
     this.#announce(key, before);
   }
 
-  #detach(key, delivered) {
+  #takeLingering(key) {
+    const lingering = this.#lingering.get(key);
+    if (!lingering) return false;
+    clearTimeout(lingering);
+    this.#lingering.delete(key);
+    return true;
+  }
+
+  #detach(key, delivered, lapsed) {
+    // A last poll that lapsed with nothing is held for a grace before it counts as gone: a long wait is
+    // a run of requests (`poll` in src/cli.js), and the agent has not left between two of them.
+    if (lapsed && !delivered && this.#pollsByKey.get(key) === 1) {
+      const timer = setTimeout(() => {
+        this.#lingering.delete(key);
+        this.#release(key, false);
+      }, limits.pollGraceMs);
+      timer.unref();
+      this.#lingering.set(key, timer);
+      return;
+    }
+    this.#release(key, delivered);
+  }
+
+  #release(key, delivered) {
     const before = this.presence(key).state;
     const left = this.#pollsByKey.get(key) - 1;
     if (left === 0) this.#pollsByKey.delete(key);
