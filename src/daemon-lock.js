@@ -9,7 +9,7 @@ import { pastSharingViolations, writeJsonAtomic } from "./state-dir.js";
  * that both find a dead holder cannot both replace it, which they could if replacing meant deleting
  * one file and creating it again. Generations below the holder's are litter the holder clears.
  *
- * A holder is alive while its pid is and its port answers as pointback with that same pid, or does
+ * A holder is alive while its pid is and its port answers as this app with that same pid, or does
  * not answer within CONNECT_MS because its event loop is busy. Both are checked because each alone
  * can be reused by something else after a crash; a pid whose port belongs to nothing, to another
  * app, or to another daemon, is a dead holder whose pid came back. Until it has a port, a holder is
@@ -55,7 +55,7 @@ async function isDaemon(port, pid) {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
       signal: AbortSignal.timeout(CONNECT_MS),
     });
-    const status = await res.json();
+    const status = /** @type {any} */ (await res.json());
     return status?.app === name && status.pid === pid;
   } catch (error) {
     return error.name === "TimeoutError" || error.name === "AbortError";
