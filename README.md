@@ -252,7 +252,7 @@ A restarted server takes the same port and token again while that port is free, 
 One daemon serves a state directory: a start claims it before loading any session, and a start that finds a live daemon there exits while its CLI goes on to that daemon, so commands an agent runs at once share one (`src/daemon-lock.js`).
 Because the token outlives the process, whatever holds a dead daemon's port must never receive it: the CLI and the tab present it only to a server that first answers a fresh challenge keyed with it (`tokenProof` in `src/http-guard.js`).
 There is one exception: a daemon from 0.1.4 or earlier cannot answer the challenge and still has to stop, so to a server on the recorded port that answers as `{"app":"pointback"}` without the proof, the CLI sends the token once on `POST /shutdown` and then retires it in `server.json` whether or not that server stopped (`stopServer` in `src/client.js`).
-A retired token is never shown again: while its port still answers as this app, every open refuses with `an older pointback daemon (pid P) on port N did not stop; end that process and retry`.
+A retired token is never shown again: while its recorded process is alive and its port still answers as this app, every open refuses with `an older pointback daemon (pid P) on port N did not stop; end that process and retry`.
 `pointback stop` answers `{"status":"refused","pid":P,"port":N}` for that server and signals no pid, because the CLI cannot prove P still belongs to this app.
 Once that port stops answering, the next daemon mints a fresh token.
 A process squatting the port with that answer receives a token that no running daemon accepts.

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import {
   copyFileSync,
@@ -620,7 +621,7 @@ const RECORDED_TOKEN = "ab".repeat(24);
 async function recordServer(dir, port) {
   const { writeJsonAtomic } = await import("../src/state-dir.js");
   writeJsonAtomic(join(dir, "server.json"), {
-    pid: 1,
+    pid: process.pid,
     port,
     token: RECORDED_TOKEN,
     version: "0.0.0-other",
@@ -697,7 +698,7 @@ test("an older daemon that refuses to stop blocks every open, sees the token onc
       assert.equal(opened.code, 1, `attempt ${attempt}: ${opened.stdout}`);
       assert.ok(
         opened.stderr.includes(
-          `error: an older ${name} daemon (pid 1) on port ${port} did not stop; end that process and retry`,
+          `error: an older ${name} daemon (pid ${process.pid}) on port ${port} did not stop; end that process and retry`,
         ),
         opened.stderr,
       );
@@ -709,7 +710,7 @@ test("an older daemon that refuses to stop blocks every open, sees the token onc
     }
     assert.deepEqual(
       (await cli(["stop"], other.env)).json(),
-      { status: "refused", pid: 1, port },
+      { status: "refused", pid: process.pid, port },
       "stop names the server it could not stop, by pid and port",
     );
     assert.deepEqual(shown, [`Bearer ${RECORDED_TOKEN}`], "the token reached it once, never again");
@@ -742,7 +743,7 @@ test("a recorded server that accepts the connection but never answers blocks the
     assert.equal(opened.code, 1, opened.stdout);
     assert.ok(
       opened.stderr.includes(
-        `error: an older ${name} daemon (pid 1) on port ${port} did not stop; end that process and retry`,
+        `error: an older ${name} daemon (pid ${process.pid}) on port ${port} did not stop; end that process and retry`,
       ),
       opened.stderr,
     );
@@ -751,6 +752,27 @@ test("a recorded server that accepts the connection but never answers blocks the
     stalled.closeAllConnections();
     stalled.close();
     await other.stop();
+  }
+});
+
+test("a record whose process has exited blocks nothing, and a live daemon on its port is neither named nor sent its token", async () => {
+  const stale = isolatedEnv();
+  const live = isolatedEnv();
+  const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+  try {
+    assert.equal((await cli([fixture], live.env)).code, 0);
+    const livePort = live.serverInfo().port;
+    writeFileSync(
+      join(stale.dir, "server.json"),
+      JSON.stringify({ pid: exited, port: livePort, token: RECORDED_TOKEN, version: "0.0.0-other" }),
+    );
+    assert.deepEqual((await cli(["stop"], stale.env)).json(), { status: "not-running" });
+    const opened = await cli([fixture], stale.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.notEqual(stale.serverInfo().port, livePort, "it starts its own daemon");
+  } finally {
+    await stale.stop();
+    await live.stop();
   }
 });
 

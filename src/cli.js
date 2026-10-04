@@ -9,6 +9,7 @@ import {
   health,
   openBrowser,
   readServerInfo,
+  recordHolds,
   refusingServer,
   shouldOpenBrowser,
   stopServer,
@@ -87,7 +88,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   if (command === "stop") {
     const info = readServerInfo(dir);
     const status = info && (await health(info));
-    if ((status?.proven || status?.app === name) && (await stopServer(dir, info, status)))
+    const held = status?.proven || (status?.app === name && recordHolds(info, status));
+    if (held && (await stopServer(dir, info, status)))
       return print(stdout, JSON.stringify({ status: "stopped" }));
     // Whatever holds the recorded port and does not even answer as this app is sent nothing.
     const holding = await refusingServer(dir);

@@ -35,7 +35,7 @@ function remove(stateDir, generation) {
   pastSharingViolations(() => rmSync(lockPath(stateDir, generation), { force: true }));
 }
 
-function pidAlive(pid) {
+export function pidAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;

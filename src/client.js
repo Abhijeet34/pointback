@@ -4,7 +4,7 @@ import { openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { daemonHolds } from "./daemon-lock.js";
+import { daemonHolds, pidAlive } from "./daemon-lock.js";
 import { tokenProof } from "./http-guard.js";
 import { env, name, version } from "./identity.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
@@ -68,7 +68,8 @@ export async function ensureServer(stateDir, environment = process.env) {
   if (existing) {
     const status = await health(existing);
     if (status?.proven && status.version === version) return existing;
-    if (status?.proven || status?.app === name) await stopServer(stateDir, existing, status);
+    if (status?.proven || (status?.app === name && recordHolds(existing, status)))
+      await stopServer(stateDir, existing, status);
   }
   // A second daemon beside one that did not stop would split the directory, so the start refuses.
   const holding = await refusingServer(stateDir);
@@ -124,21 +125,34 @@ export async function stopServer(stateDir, info, status) {
 }
 
 /**
- * The recorded server when its port still answers as this app, or accepts the connection and is too
- * busy to answer, with its token or with the token retired. A server that was asked to stop and did not is still there, so a start and `stop` both
- * need to name it; no signal is ever sent to its pid.
+ * Whether a record's server is the one still holding its port. Its process must be alive, and when the
+ * answer reports a pid it must be the record's, so a port that a later daemon took is not the record's.
+ * Only signal 0 is ever sent, to test liveness.
+ */
+export function recordHolds(record, status) {
+  if (Number.isInteger(record.pid) && !pidAlive(record.pid)) return false;
+  const reported = Number.isInteger(status?.pid) && Number.isInteger(record.pid);
+  return !reported || status.pid === record.pid;
+}
+
+/**
+ * The recorded server when it still holds its port: its port answers as this app, or accepts the
+ * connection and is too busy to answer, with its token or with the token retired. A server that was
+ * asked to stop and did not is still there, so a start and `stop` both need to name it.
  */
 export async function refusingServer(stateDir) {
   const record = readJson(join(stateDir, "server.json"));
-  if (!Number.isInteger(record?.port)) return null;
+  if (!Number.isInteger(record?.port) || !recordHolds(record, null)) return null;
   try {
     const challenge = randomBytes(16).toString("hex");
     const res = await fetch(`http://127.0.0.1:${record.port}/health?challenge=${challenge}`, {
       signal: AbortSignal.timeout(1500),
     });
-    return (await res.json())?.app === name ? record : null;
+    const status = await res.json();
+    return status?.app === name && recordHolds(record, status) ? record : null;
   } catch (error) {
-    return error.name === "TimeoutError" || error.name === "AbortError" ? record : null;
+    const busy = error.name === "TimeoutError" || error.name === "AbortError";
+    return busy ? record : null;
   }
 }
 
