@@ -36,7 +36,9 @@ In scope:
   For a frame moved out of view before it was hidden, the zero-box report arrived after the hide in local Chromium and the note took the focus; only if no such report comes does the note wait on the cover until the reviewer clicks into it.
   Still open: a page's late refocus can undo a Tab the reviewer pressed in the page (issue 57), and a page can take the focus from anywhere in the chrome other than a note field, such as the Annotate switch or the page body after a press on a non-focusable part of the card or margin, where the page's focus() is not seen as taken from a note, so the page is not hidden and keys typed afterwards can reach it.
   This focus handling is measured in Chromium only; in Firefox and WebKit it is unmeasured.
-  A press over the page while a note has the focus was not taken for the page's own move in WebKit 26.6 or Firefox 155 (0 of 5 each, local Playwright engines), and the weekly engine smoke now checks it; detecting the page's own move in those engines is still unmeasured.
+  A press over the page while a note has the focus was not taken for the page's own move: 0 of 5 runs each in local WebKit 26.6 and Firefox 155.0 on 2026-10-05.
+  The engine smoke's press-over-the-page step (`pressOverThePage` in `test/engine-smoke.js`) checks this on every scheduled run.
+  Detecting the page's own move in those engines is still unmeasured.
 - State written where another user on the machine can read it: outside the state directory, with a mode other than `0600` in a `0700` directory on POSIX, or on Windows with any ACL entry beyond the current user (`src/state-dir.js`).
 - Any outbound connection opened by the process.
 - Markup in an artifact that changes what the injected review script does (`src/inject.js`).
