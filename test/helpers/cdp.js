@@ -400,11 +400,11 @@ class Page {
 
   /**
    * The page under review. The chrome frames pointback's wrapper, served under the other loopback
-   * name, and the wrapper frames the page, which is sandboxed
-   * and so goes to a process of its own: an auto-attached target whose root frame is the page. A
-   * browser that keeps the page in its parent's process makes it a child frame instead, reached by its
-   * frame id and the execution context its document gets; that is found too. Input still goes to the
-   * chrome page, in its coordinates.
+   * name, and the wrapper frames the page, which is sandboxed and so goes to a process of its own:
+   * an auto-attached target whose root frame is the page. A browser that keeps the page in its
+   * parent's process makes it a child frame instead, reached by its frame id and the execution
+   * context its document gets; that is found too. Input still goes to the chrome page, in its
+   * coordinates.
    *
    * Resolves once the page's own document is there, never a frame's initial blank one, and after a
    * reload with the new document's frame, so a caller asks for it after the navigation it awaits.
