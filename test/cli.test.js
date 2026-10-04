@@ -802,9 +802,9 @@ test("a --timeout-ms the server refuses is refused at once with its message, as 
   }
 });
 
-test("a POLL_REQUEST_MS that is not a positive integer is refused before any request", async () => {
+test("a POLL_REQUEST_MS outside 1 to 240000, or not an integer, is refused before any request", async () => {
   const { file } = scratch();
-  for (const value of ["0", "soon"]) {
+  for (const value of ["0", "400000", "soon"]) {
     const refused = await cli(["poll", file, "--timeout-ms", "50"], {
       ...lab.env,
       POINTBACK_POLL_REQUEST_MS: value,
@@ -813,7 +813,7 @@ test("a POLL_REQUEST_MS that is not a positive integer is refused before any req
     assert.equal(refused.stdout, "", value);
     assert.equal(
       refused.stderr,
-      "error: POINTBACK_POLL_REQUEST_MS must be a positive integer\n",
+      "error: POINTBACK_POLL_REQUEST_MS must be an integer from 1 to 240000\n",
       value,
     );
   }

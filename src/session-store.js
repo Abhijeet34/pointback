@@ -569,13 +569,9 @@ export class SessionStore {
     // A fresh poll may redeliver the outstanding batch; a poll woken by an event may not.
     const immediate = this.#answer(key, cursor, true);
     if (immediate) {
-      const lingering = this.#lingering.get(key);
       // An answer inside a grace ends it, going straight from listening to what the answer means.
-      if (lingering) {
-        clearTimeout(lingering);
-        this.#lingering.delete(key);
-        this.#release(key, immediate.status === "feedback");
-      } else if (immediate.status === "feedback") this.#setWorking(key);
+      if (this.#takeLingering(key)) this.#release(key, immediate.status === "feedback");
+      else if (immediate.status === "feedback") this.#setWorking(key);
       if (immediate.status === "gone") this.#gone(this.get(key));
       return Promise.resolve(immediate);
     }
@@ -607,16 +603,19 @@ export class SessionStore {
 
   #attach(key) {
     // The poll that just ended with nothing is still counted, so this one takes its place unseen.
-    const lingering = this.#lingering.get(key);
-    if (lingering) {
-      clearTimeout(lingering);
-      this.#lingering.delete(key);
-      return;
-    }
+    if (this.#takeLingering(key)) return;
     const before = this.presence(key).state;
     this.#pollsByKey.set(key, (this.#pollsByKey.get(key) ?? 0) + 1);
     this.#clearWorking(key, false);
     this.#announce(key, before);
+  }
+
+  #takeLingering(key) {
+    const lingering = this.#lingering.get(key);
+    if (!lingering) return false;
+    clearTimeout(lingering);
+    this.#lingering.delete(key);
+    return true;
   }
 
   #detach(key, delivered) {

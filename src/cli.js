@@ -42,7 +42,7 @@ Environment:
   ${envPrefix}PORT             the server's port (default: any free one)
   ${envPrefix}NO_OPEN          set to open no browser tab
   ${envPrefix}IDLE_MS          how long an idle server waits before it exits (default: ${limits.idleShutdownMs})
-  ${envPrefix}POLL_REQUEST_MS  the longest one request of a poll is held (default: ${limits.pollRequestMs})`;
+  ${envPrefix}POLL_REQUEST_MS  how long one request of a poll is held before the CLI asks again (default: ${limits.pollRequestMs}, at most ${limits.pollRequestMs})`;
 
 export async function run(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
   const { values, positionals } = parseArgs({
@@ -158,8 +158,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   const ack = cursor === undefined ? "" : `&ack=${cursor.uid}&epoch=${cursor.epoch}`;
   const query = `file=${encodeURIComponent(canonical)}${ack}`;
   const requestMs = Number(env("POLL_REQUEST_MS") ?? limits.pollRequestMs);
-  if (!Number.isInteger(requestMs) || requestMs <= 0)
-    throw new Error(`${envPrefix}POLL_REQUEST_MS must be a positive integer`);
+  if (!Number.isInteger(requestMs) || requestMs < 1 || requestMs > limits.pollRequestMs)
+    throw new Error(`${envPrefix}POLL_REQUEST_MS must be an integer from 1 to ${limits.pollRequestMs}`);
   // A path with no file answers at once, with its last notes, gone, or no such file.
   if (existsSync(canonical)) print(stderr, `waiting for feedback on ${file}...`);
   // One long wait is a run of shorter requests: Node's fetch fails any request whose answer takes
