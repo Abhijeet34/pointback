@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/Abhijeet34/pointback/compare/v0.1.5...v0.1.6) (2026-10-04)
+
+
+### Bug Fixes
+
+* **browser:** keep a passage drag from being noted as its whole element ([#58](https://github.com/Abhijeet34/pointback/issues/58)) ([3010270](https://github.com/Abhijeet34/pointback/commit/3010270b84b36b3ea2077561686d42b6342469d9))
+
 ## [0.1.5](https://github.com/Abhijeet34/pointback/compare/v0.1.4...v0.1.5) (2026-10-04)
 
 
