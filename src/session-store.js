@@ -50,13 +50,16 @@ export class SessionStore {
   #activePolls = 0;
   #pollsByKey = new Map();
   #working = new Map();
+  #live;
 
   /**
    * `stateDir` holds one file per session under `sessions/`, so a mutation rewrites only the session
-   * it changed: a file save costs the same with one review held as with the cap.
+   * it changed: a file save costs the same with one review held as with the cap. `live` says whether
+   * a tab is showing a review right now (`EventStreams.live`), which keeps it from eviction.
    */
-  constructor(stateDir) {
+  constructor(stateDir, { live = () => false } = {}) {
     this.#stateDir = stateDir;
+    this.#live = live;
     this.#dir = privateDir(join(stateDir, "sessions"));
     this.#events.setMaxListeners(0);
     for (const name of readdirSync(this.#dir)) {
@@ -178,22 +181,28 @@ export class SessionStore {
   /**
    * Makes room at the cap by disposing the least useful session, so a review is a bounded thing that
    * ends rather than an entry that accumulates until the tool wedges. An ended review goes before a
-   * live one, and the longest-untouched before a recent one; a session with a poll attached right now
-   * is never disposed, so an agent is never left polling a session that vanished. A session still
-   * holding undelivered notes (queued or delivered-but-unacked) is never disposed either, so the
-   * at-least-once delivery guarantee holds even under session-cap pressure, and nor is one holding
-   * drafts the reviewer has not sent yet. If every session is carrying work, the cap is real work
-   * and the new open is refused.
+   * running one, and the longest-untouched before a recent one; a session with a poll attached right
+   * now is never disposed, so an agent is never left polling a session that vanished, and nor is one
+   * a tab is showing, which would be left unable to add a note while the agent was told it was open.
+   * A session still holding undelivered notes (queued or delivered-but-unacked) is never disposed
+   * either, so the at-least-once delivery guarantee holds even under session-cap pressure, and nor is
+   * one holding drafts the reviewer has not sent yet. If every session is carrying work, the cap is
+   * real work and the new open is refused.
    */
   #evict() {
     const evictable = [...this.#sessions.values()].filter(
       (s) =>
         (this.#pollsByKey.get(s.key) ?? 0) === 0 &&
+        !this.#live(s.key) &&
         s.pending.length === 0 &&
         !s.unacked &&
         !s.drafts?.length,
     );
-    if (evictable.length === 0) throw new HttpError(429, "too many active sessions");
+    if (evictable.length === 0)
+      throw new HttpError(
+        429,
+        `all ${limits.sessions} reviews held are open in a tab, being polled or holding notes, so none can make room: close a review tab you are done with and try again`,
+      );
     evictable.sort((a, b) => {
       if (Boolean(a.endedAt) !== Boolean(b.endedAt)) return a.endedAt ? -1 : 1;
       return (a.lastActive ?? a.createdAt).localeCompare(b.lastActive ?? b.createdAt);
