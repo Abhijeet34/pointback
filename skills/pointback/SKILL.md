@@ -27,6 +27,8 @@ If it exits 1 saying every review held is open in a tab, being polled or holding
 - a review you are still polling: poll it to the end, or run `pointback end` on it.
 - a review holding notes not yet sent or received: poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way.
 
+A review held for more than one of these needs each cause cleared before it is freed.
+
 ## 2. Poll
 
 ```sh
