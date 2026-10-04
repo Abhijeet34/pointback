@@ -399,8 +399,8 @@ class Page {
   }
 
   /**
-   * The page under review. The chrome frames pointback's wrapper, an opaque-origin data: document
-   * that Chromium keeps in the chrome's process, and the wrapper frames the page, which is sandboxed
+   * The page under review. The chrome frames pointback's wrapper, served under the other loopback
+   * name, and the wrapper frames the page, which is sandboxed
    * and so goes to a process of its own: an auto-attached target whose root frame is the page. A
    * browser that keeps the page in its parent's process makes it a child frame instead, reached by its
    * frame id and the execution context its document gets; that is found too. Input still goes to the
@@ -408,6 +408,11 @@ class Page {
    *
    * Resolves once the page's own document is there, never a frame's initial blank one, and after a
    * reload with the new document's frame, so a caller asks for it after the navigation it awaits.
+   *
+   * It also waits for the page to have a viewport. The frame the wrapper creates can finish loading
+   * before it is given its size, and until then nothing in it is laid out: every rect reads 0x0, so
+   * a point measured from one aims at the frame's rounded corner, which hit-tests to the chrome.
+   * Measured on windows-2025, run 37089815210: 8 of 20 attempts read innerWidth 0 at "complete".
    */
   async frame() {
     if (!this.children) {
@@ -419,10 +424,12 @@ class Page {
       await this.send("Runtime.enable");
       await this.send("Target.setAutoAttach", ATTACH);
     }
-    return until(() => this.#findArtifact(), {
+    const artifact = await until(() => this.#findArtifact(), {
       what: "the page under review to load in its frame",
       timeoutMs: ATTACH_MS,
     });
+    await artifact.waitFor("innerWidth > 0 && innerHeight > 0", { timeoutMs: ATTACH_MS });
+    return artifact;
   }
 
   /** Every iframe target under this page, and the default execution context of each frame in them. */
