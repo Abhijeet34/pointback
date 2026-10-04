@@ -858,6 +858,370 @@ test(
   },
 );
 
+/** A private copy of the page that moves the focus to its own field, as its own review. */
+async function focusCallsReview() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-focus-"));
+  const file = join(dir, "incident.html");
+  copyFileSync(join(dirname(fixture), "focus-calls.html"), file);
+  return { file, session: (await cli([file], lab.env)).json().session };
+}
+
+// The cover's line in the note the page took the focus from, and in every note after it.
+const TAKEN_LINE =
+  "This page took the keyboard from your note, so it is hidden until you finish. Check the note for anything typed just then.";
+const EARLIER_LINE =
+  "This page took the keyboard from a note earlier, so it stays hidden while you write notes.";
+// The focus is back in the note, the page is out of view, and the cover says why.
+const kept = (field, line) => `${field} === document.activeElement &&
+  getComputedStyle(document.getElementById("artifact")).display === "none" &&
+  !document.getElementById("cover").hidden &&
+  document.getElementById("coverText").textContent === ${JSON.stringify(line)}`;
+
+/**
+ * Makes the chrome's next frame after each hide of the page a slow one, as on a loaded runner, so the
+ * hide reaches the browser late (macos-15, run 37227328002: the page still took the focus after it).
+ */
+const slowFrameOnHide = (page) =>
+  page.eval(`(() => {
+    const frame = document.getElementById("artifact");
+    new MutationObserver(() => {
+      if (!frame.hidden) return;
+      requestAnimationFrame(() => {
+        const from = performance.now();
+        while (performance.now() - from < 150);
+      });
+    }).observe(frame, { attributes: true, attributeFilter: ["hidden"] });
+  })()`);
+
+/**
+ * Waits for the chrome to keep the note, types into it with real key presses, each after another
+ * call of the page's, and finishes the note; returns the note's text and whether a key reached the page.
+ */
+async function writeNote(page, artifact, field, done, line = TAKEN_LINE) {
+  await page.waitFor(kept(field, line));
+  for (const ch of "abc") {
+    const from = Number(await artifact.eval("globalThis.calls"));
+    await artifact.waitFor(`globalThis.calls > ${from}`);
+    await page.key(ch, {
+      code: `Key${ch.toUpperCase()}`,
+      keyCode: ch.toUpperCase().charCodeAt(0),
+      text: ch,
+    });
+  }
+  const last = Number(await artifact.eval("globalThis.calls"));
+  await artifact.waitFor(`globalThis.calls > ${last}`);
+  const result = {
+    kept: await page.eval(kept(field, line)),
+    text: await page.eval(`${field}.value`),
+    keyed: await artifact.eval("globalThis.keyed"),
+  };
+  await page.enter();
+  await page.waitFor(done);
+  // No note has the focus now, so the page is back.
+  await page.waitFor(
+    `getComputedStyle(document.getElementById("artifact")).display !== "none" && document.getElementById("cover").hidden`,
+  );
+  return result;
+}
+
+test(
+  "focus the page moves out of a note goes back to the note, and the page is hidden while a note is open",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const cardClosed = "document.getElementById('card').hidden";
+    const results = {};
+
+    // An answer card opened from the margin, with no click or key in the page.
+    {
+      const { file, session } = await focusCallsReview();
+      await api(session, "POST", "drafts", {
+        draft: { prompt: "Lower it", selector: "#p2", tag: "p", text: "Alerts fired late" },
+      });
+      await api(session, "POST", "prompts", {});
+      const { uid } = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts[0];
+      await cli(["reply", file, String(uid), "--question", "--message", "To what?"], lab.env);
+      const { page, artifact } = await openReview(session.url);
+      await slowFrameOnHide(page);
+      await page.waitFor("document.querySelector('.mark-answer') !== null");
+      await clickOn(page, "document.querySelector('.mark-answer')");
+      await page.waitFor(`document.activeElement === ${card}`);
+      await artifact.eval("globalThis.calling = true");
+      results.answer = await writeNote(page, artifact, card, cardClosed);
+      await page.close();
+    }
+
+    // A card opened by a click in the page, then a second note in the same review.
+    {
+      const { session } = await focusCallsReview();
+      const { page, artifact } = await openReview(session.url);
+      await slowFrameOnHide(page);
+      await pointAt(page, artifact, "#p1");
+      await artifact.eval("globalThis.calling = true");
+      results.card = await writeNote(page, artifact, card, cardClosed);
+      // Hidden before this note takes the focus, so the page never takes it from this one.
+      await pointAt(page, artifact, "#p2");
+      results["second note"] = await writeNote(page, artifact, card, cardClosed, EARLIER_LINE);
+      await page.close();
+    }
+
+    // A note edited in the margin.
+    {
+      const { session } = await focusCallsReview();
+      await api(session, "POST", "drafts", {
+        draft: { prompt: "Say when", selector: "#p1", tag: "p", text: "The cache was cold" },
+      });
+      const { page, artifact } = await openReview(session.url);
+      await slowFrameOnHide(page);
+      await page.waitFor("document.querySelector('.mark-edit') !== null");
+      await clickOn(page, "document.querySelector('.mark-edit')");
+      await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+      await page.eval("document.activeElement.value = ''");
+      await artifact.eval("globalThis.calling = true");
+      const edit = "document.querySelector('.mark-edit-text')";
+      results.edit = await writeNote(
+        page,
+        artifact,
+        edit,
+        `${edit} === null && document.querySelector('.mark:not(.sent) .mark-note').textContent === 'abc'`,
+      );
+      await page.close();
+    }
+
+    console.log(`focus handling: ${JSON.stringify(results)}`);
+    for (const [name, result] of Object.entries(results))
+      assert.deepEqual(result, { kept: true, text: "abc", keyed: false }, name);
+    assert.deepEqual(Object.keys(results), ["answer", "card", "second note", "edit"]);
+  },
+);
+
+test(
+  "focus handling keeps the note's keys from a page that is out of view when it takes the focus",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const cover = "document.getElementById('cover')";
+    const cardClosed = "document.getElementById('card').hidden";
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await slowFrameOnHide(page);
+    await pointAt(page, artifact, "#p1");
+    // Still shown and laid out, only moved out of the chrome's view, so the wrapper
+    // keeps reporting it drawn.
+    await page.eval("document.getElementById('artifact').style.transform = 'translateY(100vh)'");
+    await artifact.eval("globalThis.calling = true");
+    // The focus lands in the note or waits on the cover, whichever the browser does; either way the page is hidden.
+    await page.waitFor(
+      `getComputedStyle(document.getElementById("artifact")).display === "none" && (document.activeElement === document.getElementById("cardText") || document.activeElement === ${cover})`,
+    );
+    if (await page.eval(`document.activeElement === ${cover}`)) await clickOn(page, card);
+    const result = await writeNote(page, artifact, card, cardClosed);
+    await page.close();
+    assert.deepEqual(result, { kept: true, text: "abc", keyed: false });
+  },
+);
+
+test(
+  "focus handling leaves a move into the page alone after a press outside the note",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await clickOn(page, "document.getElementById('appName')");
+    await page.waitFor("document.activeElement === document.body");
+    await page.eval("document.getElementById('artifact').focus()");
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    // The blur's own put-back of a note runs a task later; this waits for that task.
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    const state = JSON.parse(
+      await page.eval(`JSON.stringify({
+        shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
+        cover: document.getElementById("cover").hidden,
+        focus: document.activeElement.id,
+      })`),
+    );
+    await page.close();
+    assert.deepEqual(state, { shown: true, cover: true, focus: "artifact" });
+  },
+);
+
+test(
+  "focus handling keeps the focus on Back while a held note defers the reload of a page that strayed",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await artifact.eval("globalThis.calling = true");
+    await page.waitFor(kept(card, TAKEN_LINE));
+    // The page navigates itself to a file that is not there, which the chrome sees as a stray.
+    await artifact.eval("location.href = 'plan-v2.html'");
+    await page.waitFor("document.getElementById('back').checkVisibility()");
+    await page.eval("document.getElementById('back').focus()");
+    await page.eval("document.getElementById('back').click()");
+    // A held note defers the reload, so Back stays put and keeps the focus until the note closes; a
+    // reload that were not deferred would announce its ready well within this bound.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const state = JSON.parse(
+      await page.eval(`JSON.stringify({
+        focus: document.activeElement.id,
+        back: document.getElementById("back").checkVisibility(),
+        card: !document.getElementById("card").hidden,
+      })`),
+    );
+    await page.close();
+    assert.deepEqual(state, { focus: "back", back: true, card: true });
+  },
+);
+
+test(
+  "focus handling gives the focus back to an open margin edit when a card closes while the page is held",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const edit = "document.querySelector('.mark-edit-text')";
+    const { session } = await focusCallsReview();
+    await api(session, "POST", "drafts", {
+      draft: { prompt: "Say when", selector: "#p1", tag: "p", text: "The cache was cold" },
+    });
+    const { page, artifact } = await openReview(session.url);
+    await page.waitFor("document.querySelector('.mark-edit') !== null");
+    await pointAt(page, artifact, "#p2");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor(`${edit} === document.activeElement`);
+    await artifact.eval("globalThis.calling = true");
+    await page.waitFor(kept(edit, TAKEN_LINE));
+    await clickOn(page, "document.getElementById('cardCancel')");
+    await page.waitFor(
+      `${edit} === document.activeElement && document.getElementById('card').hidden`,
+    );
+    await page.eval(`${edit}.value = ''`);
+    for (const ch of "abc") {
+      await page.key(ch, {
+        code: `Key${ch.toUpperCase()}`,
+        keyCode: ch.toUpperCase().charCodeAt(0),
+        text: ch,
+      });
+    }
+    const text = await page.eval(`${edit}.value`);
+    const keyed = await artifact.eval("globalThis.keyed");
+    await page.close();
+    assert.deepEqual({ text, keyed }, { text: "abc", keyed: false });
+  },
+);
+
+test(
+  "focus handling returns the focus to an open margin edit when Back leaves a page that strayed",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const edit = "document.querySelector('.mark-edit-text')";
+    const { session } = await focusCallsReview();
+    await api(session, "POST", "drafts", {
+      draft: { prompt: "Say when", selector: "#p1", tag: "p", text: "The cache was cold" },
+    });
+    const { page, artifact } = await openReview(session.url);
+    await page.waitFor("document.querySelector('.mark-edit') !== null");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor(`${edit} === document.activeElement`);
+    await artifact.eval("globalThis.calling = true");
+    await page.waitFor(kept(edit, TAKEN_LINE));
+    // The page navigates itself to a file that is not there, which the chrome sees as a stray.
+    await artifact.eval("location.href = 'plan-v2.html'");
+    await page.waitFor("document.getElementById('back').checkVisibility()");
+    await page.eval("delete document.body.dataset.revision");
+    await page.eval("document.getElementById('back').focus()");
+    await clickOn(page, "document.getElementById('back')");
+    await page.waitFor("document.body.dataset.revision === '0'");
+    await page.waitFor(kept(edit, TAKEN_LINE));
+    await page.eval(`${edit}.value = ''`);
+    for (const ch of "abc") {
+      await page.key(ch, {
+        code: `Key${ch.toUpperCase()}`,
+        keyCode: ch.toUpperCase().charCodeAt(0),
+        text: ch,
+      });
+    }
+    const text = await page.eval(`${edit}.value`);
+    const keyed = await artifact.eval("globalThis.keyed");
+    await page.close();
+    assert.deepEqual({ text, keyed }, { text: "abc", keyed: false });
+  },
+);
+
+test(
+  "a page that focuses its own field at load and on its own click is never hidden while notes are written",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-focus-own-"));
+    const file = join(dir, "search.html");
+    copyFileSync(join(dirname(fixture), "focus-own.html"), file);
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.eval(`globalThis.everHidden = false;
+      new MutationObserver(() => {
+        if (document.getElementById("artifact").hidden) globalThis.everHidden = true;
+      }).observe(document.getElementById("artifact"), { attributes: true })`);
+
+    await noteOn(page, artifact, "#p1", "Say what changed means");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+    await page.type(" here");
+    await page.enter();
+    await page.waitFor("document.querySelector('.mark-edit-text') === null");
+
+    // With Annotate off and a note open in the margin, the first press over the page hands it the
+    // focus and the next one is the page's own click, which focuses its field.
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+    const go = JSON.parse(
+      await artifact.eval("JSON.stringify(document.getElementById('go').getBoundingClientRect())"),
+    );
+    await page.click(frameBox.left + go.left + go.width / 2, frameBox.top + go.top + go.height / 2);
+    await page.waitFor("document.getElementById('shield').hidden");
+    await clickIn(page, artifact, "#go");
+    await artifact.waitFor("globalThis.clicked === true && document.activeElement.id === 'q'");
+
+    assert.deepEqual(
+      JSON.parse(
+        await page.eval(
+          `JSON.stringify({ everHidden: globalThis.everHidden, cover: document.getElementById("cover").hidden, note: document.querySelector(".mark-edit-text").value })`,
+        ),
+      ),
+      { everHidden: false, cover: true, note: "Say what changed means here" },
+    );
+    await page.close();
+  },
+);
+
+test(
+  "the wheel over the page scrolls it while a note has the focus",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#title");
+    await page.waitFor("!document.getElementById('shield').hidden");
+    // Below the card, over the page.
+    const box = JSON.parse(await page.eval(FRAME_BOX));
+    const below = await page.eval("document.getElementById('card').getBoundingClientRect().bottom");
+    const at = { x: box.left + 40, y: below + 40 };
+    assert.equal(await page.eval(`document.elementFromPoint(${at.x}, ${at.y}).id`), "shield");
+    await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at });
+    await page.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      ...at,
+      deltaX: 0,
+      deltaY: 120,
+    });
+    await artifact.waitFor("scrollY > 0");
+    assert.equal(await page.eval("document.activeElement.id"), "cardText");
+    await page.close();
+  },
+);
+
 test(
   "eight review tabs all load, and a note added in the eighth reaches the agent",
   { skip: !executable && "no browser found" },
@@ -1516,6 +1880,10 @@ test(
     );
     const y = frameBox.top + line.top + line.height / 2;
     const from = { x: frameBox.left + line.left + 1, y };
+    // A press over the page while the note holds the focus lands on the chrome's shield, which hands
+    // the page the focus; the reviewer's next press reaches the page.
+    await page.click(from.x, from.y);
+    await page.waitFor("document.getElementById('shield').hidden");
     await page.pointerInto(artifact, from);
     await page.drag(
       from,

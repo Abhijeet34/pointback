@@ -15,6 +15,7 @@ const takeOverButton = /** @type {HTMLButtonElement} */ (document.getElementById
 const cover = document.getElementById("cover");
 const coverText = document.getElementById("coverText");
 const backButton = /** @type {HTMLButtonElement} */ (document.getElementById("back"));
+const shield = document.getElementById("shield");
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const annotateSwitch = /** @type {HTMLInputElement} */ (document.getElementById("annotate"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
@@ -67,6 +68,14 @@ let fileGone = false;
 // link the reviewer followed or a missing page the server answered for, and the frame has strayed.
 let announced = false;
 let strayed = false;
+// The page took the focus out of a note being written; for the rest of the review it is hidden
+// whenever a note is open, and `lost` says the open one is the note it was taken from. `drawn` is the
+// wrapper's last word on whether the frame is drawn, and `parked` the note whose focus waits for it to
+// say no (`focusField`).
+let tookFocus = false;
+let lost = false;
+let drawn = true;
+let parked = /** @type {HTMLElement | null} */ (null);
 let current = true;
 let liveReload = true;
 let connection = "live";
@@ -377,7 +386,7 @@ function render() {
   if (marksDirty) renderMarks();
   renderPresence();
   renderNotice();
-  renderCover();
+  guard();
   const working = presence.state === "working" && !ended;
   const offline = connection !== "live";
   // Notes the agent's own end left behind stay sendable: they queue for its next check,
@@ -618,7 +627,30 @@ function renderReason() {
 
 /** A frame that strayed is covered where the reviewer is looking, with the way back on top. */
 function renderCover() {
-  cover.hidden = !strayed;
+  const kept = tookFocus && (composing !== null || editingNote !== null);
+  if (!kept) {
+    lost = false;
+    parked = null;
+  }
+  const reveal = frame.hidden && !kept;
+  frame.hidden = kept;
+  if (reveal) requestAnimationFrame(() => frame.hidden || (drawn = true));
+  cover.hidden = !strayed && !kept;
+  backButton.hidden = !strayed;
+  if (kept && !strayed) {
+    setText(
+      coverText,
+      lost
+        ? "This page took the keyboard from your note, so it is hidden until you finish. Check the note for anything typed just then."
+        : "This page took the keyboard from a note earlier, so it stays hidden while you write notes.",
+    );
+    // The line sits in the half of the page's view the open card is not in; a narrow view has no room
+    // beside it.
+    const view = frame.parentElement.getBoundingClientRect();
+    const box = card.getBoundingClientRect();
+    const low = box.top + box.height / 2 > view.top + view.height / 2;
+    cover.dataset.side = card.hidden ? "" : low ? "start" : "end";
+  } else cover.dataset.side = "";
   if (!strayed) return;
   setText(
     coverText,
@@ -678,7 +710,7 @@ function mark(entry, sent, n) {
       editingNote = { id: entry.id, value: entry.prompt };
       notesChanged();
       const box = /** @type {HTMLTextAreaElement} */ (marks.querySelector(".mark-edit-text"));
-      box.focus();
+      focusField(box);
       box.setSelectionRange(box.value.length, box.value.length);
     });
     const remove = document.createElement("button");
@@ -804,7 +836,7 @@ function replyLine(entry) {
     answer.className = "hw-btn hw-btn--sm mark-answer";
     answer.textContent = "Answer";
     answer.addEventListener("click", () => {
-      if (composing) return cardText.focus();
+      if (composing) return focusField(cardText);
       const box = line.getBoundingClientRect();
       const frameBox = frame.getBoundingClientRect();
       const { selector, lines, tag, text, target } = entry;
@@ -968,8 +1000,9 @@ function openCompose(note, label, outline, rects, from) {
   cardText.value = "";
   card.hidden = false;
   placeCard(rects);
-  cardText.focus();
+  // Rendered first, so a page held out of view is hidden before the note can take the focus.
   render();
+  focusField(cardText);
 }
 
 function closeCompose(refocus) {
@@ -985,8 +1018,10 @@ function closeCompose(refocus) {
   // An answer came from the margin, so focus goes back there, or on to Send once it is added.
   post({ type: "compose", on: false, refocus: refocus && !from });
   if (refocus && !from) handOff();
-  if (refocus) (from ? (from.isConnected ? from : sendButton) : frame).focus();
+  // Rendered first, so a frame hidden while the note held the focus is back before it takes it.
   render();
+  if (refocus && from) (from.isConnected ? from : sendButton).focus();
+  else if (refocus) focusFrame();
 }
 
 // Only the page can put the focus on one of its own elements, and it does so when it hears the card
@@ -1052,6 +1087,17 @@ window.addEventListener("message", (event) => {
     return;
   }
   if (event.data?.type === "loaded") return pageLoaded();
+  if (event.data?.type === "drawn") {
+    // A shown frame reports false only with no box, which is no sign that the hide has landed.
+    if (event.data.on !== true && !frame.hidden) return;
+    drawn = event.data.on === true;
+    if (drawn || !parked) return;
+    // A margin rebuild meanwhile makes the edited note's box anew; a note closed meanwhile is left.
+    const field = parked.isConnected ? parked : marks.querySelector(".mark-edit-text");
+    parked = null;
+    if (field && !field.closest("[hidden]")) /** @type {HTMLElement} */ (field).focus();
+    return;
+  }
   if (event.data?.type !== "page") return;
   const { active, message: data } = event.data;
   if (data?.type === "ready") {
@@ -1069,9 +1115,10 @@ window.addEventListener("message", (event) => {
     endWait();
     if (strayed) {
       // Back is about to be hidden under the reviewer, so the focus goes where Back led.
-      if (document.activeElement === backButton) frame.focus();
+      const onBack = document.activeElement === backButton;
       strayed = false;
       render();
+      if (onBack) focusFrame();
     }
     return;
   }
@@ -1300,6 +1347,76 @@ cardText.addEventListener("keydown", (event) => {
   }
 });
 cardCancel.addEventListener("click", () => closeCompose(true));
+
+// The page under review can call focus() at any moment, and Chromium then moves the focus out of
+// the chrome and into it, so the reviewer's next keys reach the page: the note's words, and a press
+// `gesture` would count as their own. While the focus is in a note being written, the shield lies
+// over the page, so a press there lands here and hands the page the focus on purpose; any other move
+// from that note into the frame is the page's own. Putting the focus back alone is a race a page
+// that takes it again at once wins for some keys, so from then on the page is hidden (display: none,
+// which it cannot take the focus from) whenever a note is open, for the rest of the review.
+// docs/THREAT-MODEL.md says what this covers and what it leaves.
+function writing(element) {
+  return (!card.hidden && card.contains(element)) || Boolean(element?.closest?.(".mark-editor"));
+}
+function guard() {
+  shield.hidden = !writing(document.activeElement);
+  renderCover();
+}
+document.addEventListener("focusin", guard);
+shield.addEventListener("mousedown", (event) => {
+  event.preventDefault();
+  frame.focus();
+  guard();
+});
+// The page cannot see the wheel over the shield, so its scroll is handed on.
+shield.addEventListener(
+  "wheel",
+  (event) => {
+    const unit = [1, 16, frame.clientHeight][event.deltaMode] ?? 1;
+    post({ type: "scroll-by", x: event.deltaX * unit, y: event.deltaY * unit });
+  },
+  { passive: true },
+);
+// A move the chrome or the reviewer's Tab makes names the frame as where the focus went; one the page
+// makes names nothing, and the window's blur that follows at once has the focus still in this tab.
+// The focus is put back a task later: put back inside the blur, the chrome reads it as here while
+// the keys still went to the page.
+let left = /** @type {HTMLElement | null} */ (null);
+document.addEventListener("focusout", (event) => {
+  const field = /** @type {HTMLElement} */ (event.target);
+  left = event.relatedTarget === null && writing(field) ? field : null;
+});
+document.addEventListener("pointerup", () => (left = null), true);
+document.addEventListener("focusin", () => (left = null));
+window.addEventListener("blur", () => {
+  const field = left;
+  left = null;
+  if (!field || !document.hasFocus()) return;
+  tookFocus = true;
+  lost = true;
+  renderCover();
+  setTimeout(() => focusField(field));
+});
+
+/**
+ * Gives a note the focus, but while the page is held out of view only once the wrapper reports the
+ * frame has no box, which a hidden frame reports once the browser drops it from layout: the hide lands
+ * there a frame or more after it is set here, and until it does the page can still take the focus.
+ * Without such a report the focus waits on the cover, out of the page, until the reviewer clicks in.
+ */
+function focusField(field) {
+  if (!frame.hidden || !drawn) return field.focus();
+  parked = field;
+  cover.focus();
+}
+
+/** Gives the frame the focus, or the open note it cannot take while the page is held. */
+function focusFrame() {
+  const field = composing ? cardText : marks.querySelector(".mark-edit-text");
+  if (field && frame.hidden) focusField(field);
+  else frame.focus();
+}
 
 // The wrapper is served under the loopback name this page is not, which makes it another origin, so
 // no click or key in this chrome activates it, and another site, so Chromium gives it a process of

@@ -5,7 +5,7 @@
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
-/* global document, location, parent, nonce */
+/* global document, location, parent, nonce, getComputedStyle */
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,6 +32,7 @@ async function smoke(engine) {
     await act(browser, (page) => enterIsNotThePages(page, lab));
     await act(browser, (page) => endKeepsTheCard(page, lab));
     await act(browser, (page) => readingPlace(page, lab, engine));
+    await act(browser, (page) => pressOverThePage(page, lab));
     return `${named} passed`;
   } catch (error) {
     throw Object.assign(error, { named });
@@ -226,6 +227,43 @@ async function readingPlace(page, lab, engine) {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * A press over the page while a note has the focus is the reviewer's own move into the page, so the
+ * engine must name the frame as where the focus went; if it does not, the chrome holds the page as
+ * a steal and the page is not shown.
+ */
+async function pressOverThePage(page, lab) {
+  const { session } = (await cli([fixture], lab.env)).json();
+  await open(page, session.url);
+  await page.waitForFunction(() => document.body.dataset.annotate === "1");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  const spot = await page.evaluate(() => {
+    const frame = document.getElementById("artifact").getBoundingClientRect();
+    const card = document.getElementById("card").getBoundingClientRect();
+    const points = [
+      [0.1, 0.9],
+      [0.9, 0.9],
+      [0.1, 0.1],
+      [0.9, 0.1],
+    ].map(([x, y]) => ({ x: frame.left + frame.width * x, y: frame.top + frame.height * y }));
+    return points.find(
+      ({ x, y }) => x < card.left || x > card.right || y < card.top || y > card.bottom,
+    );
+  });
+  assert.ok(spot, "a point over the page outside the note card");
+  await page.mouse.click(spot.x, spot.y);
+  await page.waitForFunction(() => document.activeElement?.id === "artifact");
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
+      cover: document.getElementById("cover").hidden,
+    })),
+    { shown: true, cover: true },
+    "a press over the page is the reviewer's own move into it, so the page is not held",
+  );
 }
 
 const requested = process.argv.slice(2);

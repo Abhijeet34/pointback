@@ -181,6 +181,18 @@ body {
   background: var(--paper);
 }
 
+/* Held out of view while the page has taken the focus from a note being written. */
+#artifact[hidden] {
+  display: none;
+}
+
+/* Laid over the page while the focus is in a note being written, so a press there lands in the chrome
+   and only the page's own script can move the focus into it (`shield` in chrome.js). */
+.shield {
+  position: absolute;
+  inset: var(--inset);
+}
+
 /* A frame that strayed from the page under review is covered where the reviewer is looking: the
    page it went to is not the review's to show, and Back is the one thing to do there. */
 .cover {
@@ -196,6 +208,14 @@ body {
   border-radius: var(--hw-radius-lg);
   background: var(--hw-surface);
   text-align: center;
+}
+
+.cover[data-side="start"] {
+  justify-content: flex-start;
+}
+
+.cover[data-side="end"] {
+  justify-content: flex-end;
 }
 
 .cover-text {

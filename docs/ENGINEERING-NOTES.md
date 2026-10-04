@@ -155,6 +155,8 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   `pinsOn` in `test/browser.test.js` reads pins from the frame's accessibility tree, and a spy page there asserts no note's words reach it.
 - In Annotate mode the SDK's listeners sit on the window in the capture phase, so a control is noted and the page never sees the press; cancelling that `mousedown` also keeps focus out of the frame, which `gesture` needs, so the SDK calls `window.focus()` itself.
   Drive it with the CDP harness, never chrome-devtools-axi: chrome-devtools-mcp 1.9.0 sends a click on an element inside the out-of-process frame straight to that frame's renderer, the browser never moves focus into the frame, and the card stays shut although a reviewer's real click opens it.
+- A page can call `focus()` on its own elements at any moment, and Chromium then moves the reviewer's focus and the keys after it into the page: on run 37227328002 (macOS) the page took the focus 134 ms after the chrome hid it, so two keys of "abc" reached it and the note read "a".
+  The hold and its residual are owned by `docs/THREAT-MODEL.md`; "focus the page moves out of a note" in `test/browser.test.js` is the regression test, with the chrome's next frame after each hide made 150 ms slow.
 - The page outline the SDK sends with every batch is capped in characters at both ends (`MAX_OUTLINE_CHARS` in `src/browser/sdk.js`, `structureChars` in `src/limits.js`) because it lands in an agent's context window; `pointback poll` repeats it only when it changed, by the digest the poll cursor keeps (`outline` in `src/state-dir.js`), and `README.md` carries the measured before and after.
 
 ## Delivery
