@@ -126,6 +126,9 @@
       reveal(data.n);
     } else if (data?.nonce === nonce && data.type === "text-size") {
       setTextSize(data.size);
+    } else if (data?.nonce === nonce && data.type === "scroll-by") {
+      // A wheel over the chrome's shield, which lies over this page while a note is being written.
+      window.scrollBy(data.x, data.y);
     }
   });
 

@@ -15,6 +15,7 @@ const takeOverButton = /** @type {HTMLButtonElement} */ (document.getElementById
 const cover = document.getElementById("cover");
 const coverText = document.getElementById("coverText");
 const backButton = /** @type {HTMLButtonElement} */ (document.getElementById("back"));
+const shield = document.getElementById("shield");
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const annotateSwitch = /** @type {HTMLInputElement} */ (document.getElementById("annotate"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
@@ -67,6 +68,11 @@ let fileGone = false;
 // link the reviewer followed or a missing page the server answered for, and the frame has strayed.
 let announced = false;
 let strayed = false;
+// The page took the focus out of a note being written; for the rest of the review it is hidden
+// whenever a note holds the focus (`writing` below). `reclaiming` is the note it was taken from, until
+// the focus is back in it.
+let tookFocus = false;
+let reclaiming = /** @type {HTMLElement | null} */ (null);
 let current = true;
 let liveReload = true;
 let connection = "live";
@@ -377,7 +383,7 @@ function render() {
   if (marksDirty) renderMarks();
   renderPresence();
   renderNotice();
-  renderCover();
+  guard();
   const working = presence.state === "working" && !ended;
   const offline = connection !== "live";
   // Notes the agent's own end left behind stay sendable: they queue for its next check,
@@ -597,7 +603,15 @@ function renderNotice() {
 
 /** A frame that strayed is covered where the reviewer is looking, with the way back on top. */
 function renderCover() {
-  cover.hidden = !strayed;
+  const kept = tookFocus && (reclaiming !== null || writing(document.activeElement));
+  frame.hidden = kept;
+  cover.hidden = !strayed && !kept;
+  backButton.hidden = !strayed;
+  if (kept && !strayed)
+    setText(
+      coverText,
+      "This page took the keyboard from a note earlier, so it stays hidden while you write notes.",
+    );
   if (!strayed) return;
   setText(
     coverText,
@@ -947,8 +961,9 @@ function closeCompose(refocus) {
   // the frame and, for the keyboard path, ask it to refocus the element the reviewer came from.
   // An answer came from the margin, so focus goes back there, or on to Send once it is added.
   post({ type: "compose", on: false, refocus: refocus && !from });
-  if (refocus) (from ? (from.isConnected ? from : sendButton) : frame).focus();
+  // Rendered first, so a frame hidden while the note held the focus is back before it takes it.
   render();
+  if (refocus) (from ? (from.isConnected ? from : sendButton) : frame).focus();
 }
 
 /** Places the card over the artifact at the spot the reviewer pointed at, clamped to the mount. */
@@ -1215,6 +1230,59 @@ cardText.addEventListener("keydown", (event) => {
   }
 });
 cardCancel.addEventListener("click", () => closeCompose(true));
+
+// The page under review can call focus() at any moment, and Chromium then moves the focus out of
+// the chrome and into it, so the reviewer's next keys reach the page: the note's words, and a press
+// `gesture` would count as their own. While the focus is in a note being written, the shield lies
+// over the page, so a press there lands here and hands the page the focus on purpose; any other move
+// from that note into the frame is the page's own. Putting the focus back alone is a race a page
+// that takes it again at once wins for some keys, so from then on the page is hidden (display: none,
+// which it cannot take the focus from) whenever a note holds the focus, for the rest of the review.
+// docs/THREAT-MODEL.md says what this covers and what it leaves.
+function writing(element) {
+  return (!card.hidden && card.contains(element)) || Boolean(element?.closest?.(".mark-editor"));
+}
+function guard() {
+  shield.hidden = !writing(document.activeElement);
+  renderCover();
+}
+document.addEventListener("focusin", guard);
+shield.addEventListener("mousedown", (event) => {
+  event.preventDefault();
+  frame.focus();
+  guard();
+});
+// The page cannot see the wheel over the shield, so its scroll is handed on.
+shield.addEventListener(
+  "wheel",
+  (event) => {
+    const unit = [1, 16, frame.clientHeight][event.deltaMode] ?? 1;
+    post({ type: "scroll-by", x: event.deltaX * unit, y: event.deltaY * unit });
+  },
+  { passive: true },
+);
+// A move the chrome or the reviewer's Tab makes names the frame as where the focus went; one the page
+// makes names nothing, and the window's blur that follows at once has the focus still in this tab.
+// The focus is put back a task later: put back inside the blur, the chrome reads it as here while
+// the keys still went to the page.
+let left = /** @type {HTMLElement | null} */ (null);
+document.addEventListener("focusout", (event) => {
+  const field = /** @type {HTMLElement} */ (event.target);
+  left = event.relatedTarget === null && writing(field) ? field : null;
+});
+window.addEventListener("blur", () => {
+  const field = left;
+  left = null;
+  if (!field || !document.hasFocus()) return;
+  tookFocus = true;
+  reclaiming = field;
+  renderCover();
+  setTimeout(() => {
+    reclaiming = null;
+    field.focus();
+    guard();
+  });
+});
 
 // The wrapper is served under the loopback name this page is not, which makes it another origin, so
 // no click or key in this chrome activates it, and another site, so Chromium gives it a process of

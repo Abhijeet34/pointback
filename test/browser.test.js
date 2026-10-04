@@ -864,9 +864,13 @@ async function stealingReview() {
   return { file, session: (await cli([file], lab.env)).json().session };
 }
 
+// The chrome holding the page out of view, with the cover saying why.
+const HELD = `document.getElementById("artifact").hidden && !document.getElementById("cover").hidden`;
+
 /**
- * Real key presses, each followed by three more of the page's own attempts to take the focus, so a
- * key that stayed in the chrome did so against a page that had every chance at it.
+ * Real key presses, each followed by three more of the page's own attempts to take the focus, or by
+ * the chrome holding the page out of view, so a key that stayed in the chrome did so against a page
+ * that had every chance at it.
  */
 async function typeAgainst(page, artifact, word) {
   for (const ch of word) {
@@ -876,25 +880,45 @@ async function typeAgainst(page, artifact, word) {
       text: ch,
     });
     const from = Number(await artifact.eval("globalThis.steals"));
-    await artifact.waitFor(`globalThis.steals >= ${from + 3}`);
+    await until(
+      async () =>
+        (await page.eval(HELD)) || Number(await artifact.eval("globalThis.steals")) >= from + 3,
+      { what: "the page to try three more times, or be held out of view" },
+    );
   }
 }
 
 const STOLEN = `JSON.stringify({ heard: globalThis.heard, trap: document.getElementById("trap").value })`;
 
 test(
-  "a page cannot take the focus out of a note being typed, so no key typed in the chrome reaches it",
+  "a page that takes the focus out of a note being written gets no key of it, and is hidden until the note is done",
   { skip: !executable && "no browser found" },
   async () => {
+    // The page calls focus() every few milliseconds, the moment it loses the focus, and on any event
+    // it can see. Chromium lets that move the focus out of the chrome at any time, with or without
+    // a gesture in the page, so the reviewer's next keys reached the page (issue 57 measured one).
     const outcomes = {};
-    const outcome = async (name, page, artifact, field) => {
+    /** Types into the note, reads what each side got, then finishes the note the way the reviewer does. */
+    const write = async (name, page, artifact, field, done) => {
+      await typeAgainst(page, artifact, "abc");
       outcomes[name] = {
         focus: await page.eval("document.activeElement.id || document.activeElement.className"),
         typed: await page.eval(`${field}.value`),
         page: JSON.parse(await artifact.eval(STOLEN)),
-        steals: await artifact.eval("globalThis.steals"),
+        held: await page.eval(HELD),
+        cover: await page.eval("document.getElementById('coverText').textContent"),
       };
       console.log(`focus steal, ${name}: ${JSON.stringify(outcomes[name])}`);
+      console.log((await page.eval("JSON.stringify(globalThis.flog)")).replaceAll('","', "\n"));
+      for (let i = 0; i < 4; i += 1) {
+        console.log("page sees", await artifact.eval("JSON.stringify([innerWidth, innerHeight, document.visibilityState, document.hasFocus(), globalThis.steals])"));
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await page.enter();
+      await page.waitFor(done);
+      // The note is done, so the page is back.
+      await page.waitFor(`!(${HELD}) && !document.getElementById("artifact").hidden`);
+      await page.close();
     };
 
     // (a) No gesture in the page at all: an answer card opened from the margin.
@@ -916,9 +940,13 @@ test(
       await clickOn(page, "document.querySelector('.mark-answer')");
       await page.waitFor("document.activeElement.id === 'cardText'");
       await artifact.eval("globalThis.armed = true");
-      await typeAgainst(page, artifact, "abc");
-      await outcome("no gesture", page, artifact, "document.getElementById('cardText')");
-      await page.close();
+      await write(
+        "no gesture",
+        page,
+        artifact,
+        "document.getElementById('cardText')",
+        "document.getElementById('card').hidden",
+      );
     }
 
     // (b) The reviewer's click in the page opened the card: inside its activation, and after it.
@@ -929,17 +957,16 @@ test(
       if (lapsed)
         await artifact.waitFor("!navigator.userActivation.isActive", { timeoutMs: 15_000 });
       await artifact.eval("globalThis.armed = true");
-      await typeAgainst(page, artifact, "abc");
-      await outcome(
+      await write(
         lapsed ? "sticky" : "transient",
         page,
         artifact,
         "document.getElementById('cardText')",
+        "document.getElementById('card').hidden",
       );
-      await page.close();
     }
 
-    // (c) The card closes, and the reviewer goes on to type in the margin.
+    // (c) The card closes, which the page hears, and the reviewer goes on to edit a note in the margin.
     {
       const { session } = await stealingReview();
       await api(session, "POST", "drafts", {
@@ -957,17 +984,27 @@ test(
       await page.waitFor("document.querySelector('.mark-edit-text') !== null");
       await page.eval("document.querySelector('.mark-edit-text').value = ''");
       await clickOn(page, "document.querySelector('.mark-edit-text')");
-      await typeAgainst(page, artifact, "abc");
-      await outcome("card closed", page, artifact, "document.querySelector('.mark-edit-text')");
-      await page.close();
+      await write(
+        "card closed",
+        page,
+        artifact,
+        "document.querySelector('.mark-edit-text')",
+        "document.querySelector('.mark-edit-text') === null && document.querySelector('.mark:not(.sent) .mark-note').textContent === 'abc'",
+      );
     }
 
-    console.log(`focus steal: ${JSON.stringify(outcomes)}`);
-    for (const [name, { focus, typed, page }] of Object.entries(outcomes)) {
+    for (const [name, { focus, typed, page, held, cover }] of Object.entries(outcomes)) {
       assert.deepEqual(
-        { typed, heard: page.heard, trap: page.trap },
-        { typed: "abc", heard: [], trap: "" },
-        `${name}: every key stays in the chrome (focus ended on ${focus})`,
+        { typed, heard: page.heard, trap: page.trap, held, cover },
+        {
+          typed: "abc",
+          heard: [],
+          trap: "",
+          held: true,
+          cover:
+            "This page took the keyboard from your note, so it stays hidden until the note is done.",
+        },
+        `${name}: every key stays in the chrome, and the page is held out of view (focus ended on ${focus})`,
       );
     }
   },
