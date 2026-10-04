@@ -53,6 +53,8 @@ export class SessionStore {
   #lingering = new Map();
   #working = new Map();
   #live;
+  /** Each session file as this process last read or wrote it; see `#persist`. */
+  #seen = new Map();
 
   /**
    * `stateDir` holds one file per session under `sessions/`, so a mutation rewrites only the session
@@ -71,7 +73,11 @@ export class SessionStore {
       // A temp file is a write that died before its rename; the session file it was replacing is
       // still whole, so the temp is only litter, and it can be as large as the session.
       if (name.endsWith(".tmp")) rmSync(path, { force: true });
-      else if (name.endsWith(".json")) this.#load(name.slice(0, -".json".length), readJson(path));
+      else if (name.endsWith(".json")) {
+        const key = name.slice(0, -".json".length);
+        this.#seen.set(key, this.#fingerprint(key));
+        this.#load(key, readJson(path));
+      }
     }
     this.#split(join(stateDir, LEGACY_FILE));
   }
@@ -124,8 +130,33 @@ export class SessionStore {
     return join(this.#dir, `${key}.json`);
   }
 
+  /**
+   * Writes the session through, unless another process wrote its file since this one last read or
+   * wrote it. Only a second daemon on the state directory can, which `claimDaemon` exists to
+   * prevent; should one ever slip past, its copy is the newer, so this process takes it and refuses
+   * the change rather than writing a stale session over notes the reviewer already sent.
+   */
   #persist(session) {
-    writeJsonAtomic(this.#path(session.key), session);
+    const { key } = session;
+    if (this.#fingerprint(key) !== this.#seen.get(key)) {
+      this.#seen.set(key, this.#fingerprint(key));
+      const disk = readJson(this.#path(key));
+      this.#sessions.delete(key);
+      if (disk) this.#load(key, disk);
+      throw new HttpError(409, "this review was changed by another process; try again");
+    }
+    writeJsonAtomic(this.#path(key), session);
+    this.#seen.set(key, this.#fingerprint(key));
+  }
+
+  /** A rename gives every write a new inode, so a write by anyone changes this. */
+  #fingerprint(key) {
+    try {
+      const { ino, mtimeMs, size } = statSync(this.#path(key));
+      return `${ino}:${mtimeMs}:${size}`;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -215,6 +246,7 @@ export class SessionStore {
     const victim = evictable[0];
     this.#sessions.delete(victim.key);
     rmSync(this.#path(victim.key), { force: true });
+    this.#seen.delete(victim.key);
     this.#clearWorking(victim.key);
   }
 
@@ -411,7 +443,13 @@ export class SessionStore {
       return session.revision;
     }
     session.revision += 1;
-    this.#persist(session);
+    try {
+      this.#persist(session);
+    } catch (error) {
+      // Refused because another process holds a newer copy; a throw here would end the daemon.
+      if (error instanceof HttpError) return session.revision;
+      throw error;
+    }
     this.#events.emit(key, { type: "reload", revision: session.revision });
     return session.revision;
   }

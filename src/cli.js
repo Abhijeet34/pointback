@@ -77,6 +77,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     const port = Number(env("PORT") ?? 0);
     const idleMs = Number(env("IDLE_MS") ?? limits.idleShutdownMs);
     const started = await serve({ stateDir: dir, port, idleMs, onIdle: () => process.exit(0) });
+    // Exit 0: the CLI that spawned this start waits for whichever daemon holds the directory.
+    if (!started) return print(stderr, `another ${name} server already serves ${dir}`);
     print(stderr, `${name} listening on http://127.0.0.1:${started.port}`);
     return;
   }

@@ -63,26 +63,41 @@ export async function ensureServer(stateDir, environment = process.env) {
     if (status?.proven || status?.app === name) await stopServer(stateDir, existing, status);
   }
   const log = openSync(join(stateDir, "server.log"), "a", 0o600);
-  const child = spawn(process.execPath, [bin, "server"], {
-    detached: true,
-    stdio: ["ignore", log, log],
-    env: environment,
-    // Without this a detached console application on Windows opens a console window of its
-    // own and leaves it on the reviewer's desktop for as long as the daemon lives.
-    windowsHide: true,
-  });
-  child.unref();
+  const start = () => {
+    const started = spawn(process.execPath, [bin, "server"], {
+      detached: true,
+      stdio: ["ignore", log, log],
+      env: environment,
+      // Without this a detached console application on Windows opens a console window of its
+      // own and leaves it on the reviewer's desktop for as long as the daemon lives.
+      windowsHide: true,
+    });
+    started.unref();
+    return started;
+  };
+  let child = start();
   // Bounded by attempts as well as by the clock. Every turn of this loop can cost a probe's
   // own `AbortSignal.timeout`, so a budget written only in milliseconds is really a budget in
   // however many looks the machine can afford - and a busy windows-2025 runner affords few.
-  // The child exiting is the one fact that means "not coming"; everything else means "not yet".
+  // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
+  // directory; the rest exit 0. One that joined a daemon on its way out is replaced, and only a
+  // failed exit means "not coming"; everything else means "not yet".
   const startedAt = Date.now();
   let probes = 0;
+  let joinedAt;
   for (;;) {
     probes += 1;
     const info = readServerInfo(stateDir);
-    if (info && info.pid === child.pid && (await health(info))?.proven) return info;
-    if (child.exitCode !== null) break;
+    const status = info && (await health(info));
+    if (status?.proven && status.version === version) return info;
+    if (child.exitCode !== null && child.exitCode !== 0) break;
+    if (child.exitCode === 0) {
+      joinedAt ??= Date.now();
+      if (Date.now() - joinedAt >= REJOIN_MS) {
+        child = start();
+        joinedAt = undefined;
+      }
+    }
     if (probes >= START_PROBES && Date.now() - startedAt >= START_TIMEOUT_MS) break;
     await sleep(50);
   }
@@ -106,6 +121,8 @@ export async function stopServer(stateDir, info, status) {
 /** How long, and how many looks, a spawned daemon gets to answer before it is called dead. */
 const START_TIMEOUT_MS = 10_000;
 const START_PROBES = 20;
+/** How long a start that found another daemon waits for it to answer before starting again. */
+const REJOIN_MS = 500;
 
 /**
  * Says why the daemon is not there, rather than naming a file to go and read. Pointing at
