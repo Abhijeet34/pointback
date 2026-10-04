@@ -1070,6 +1070,69 @@ test(
 );
 
 test(
+  "a drag pressed before the page hears the card close is still noted as a passage",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    // The card's close crosses the wrapper to reach the page, so it can land after the reviewer's
+    // next press: on a loaded runner, focus went back to the noted element mid-drag, ending it, and
+    // the passage was noted as its whole paragraph (run 37217865614). Pressing while the card is
+    // still open, and closing it while the button is held, makes that order certain.
+    const cell = "main > table > tbody > tr:nth-of-type(1) > td:nth-of-type(2)";
+    await pointAt(page, artifact, cell);
+    await page.type("Priya is on leave that week");
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+    // "Move the queue" is characters 0 to 14 of #p1, above the cell and clear of its card.
+    const line = JSON.parse(
+      await artifact.eval(`(() => {
+        const range = document.createRange();
+        range.setStart(document.getElementById("p1").firstChild, 0);
+        range.setEnd(document.getElementById("p1").firstChild, 14);
+        return JSON.stringify(range.getBoundingClientRect());
+      })()`),
+    );
+    const y = frameBox.top + line.top + line.height / 2;
+    const from = { x: frameBox.left + line.left + 1, y };
+    await page.pointerInto(artifact, from);
+    await page.drag(
+      from,
+      { x: frameBox.left + line.right - 1, y },
+      {
+        pressed: async () => {
+          await artifact.waitFor("document.activeElement?.id === 'p1'");
+          await page.eval("document.getElementById('card').requestSubmit()");
+          await page.waitFor("document.getElementById('card').hidden");
+          // The page drops the cell's highlight when the close reaches it.
+          await until(async () => (await highlights(artifact)) === 0, {
+            what: "the page to hear the card close",
+          });
+        },
+      },
+    );
+    await page.waitFor(
+      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+    );
+    await page.type("Name the queue in the first sentence");
+    await page.enter();
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 2",
+    );
+    assert.deepEqual(
+      JSON.parse(
+        await page.eval(`JSON.stringify([...document.querySelectorAll(".mark:not(.sent)")].map((mark) =>
+          [mark.querySelector(".mark-tag").textContent, mark.querySelector(".mark-text").textContent]))`),
+      ),
+      [
+        ["Cell", "Shadow traffic › Owner · Priya"],
+        ["Passage", "“Move the queue”"],
+      ],
+    );
+    await page.close();
+  },
+);
+
+test(
   "a frame that leaves the review for a missing page is covered by a notice in words, and Back brings the review back",
   { skip: !executable && "no browser found" },
   async () => {

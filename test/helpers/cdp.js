@@ -554,14 +554,19 @@ class Page {
     );
   }
 
-  /** A press, a path and a release: what makes the browser build a real text selection. */
-  async drag(from, to, steps = 8) {
+  /**
+   * A press, a path and a release: what makes the browser build a real text selection.
+   * `pressed` runs while the button is held, before the first move.
+   */
+  async drag(from, to, { pressed } = {}) {
+    const steps = 8;
     const move = (type, x, y, buttons) =>
       this.send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 });
     // A real pointer is somewhere before it presses, and Chromium hit-tests the press
     // against where it last saw the cursor; without this the press can land on nothing.
     await move("mouseMoved", from.x, from.y, 0);
     await move("mousePressed", from.x, from.y, 1);
+    await pressed?.();
     for (let step = 1; step <= steps; step += 1) {
       const at = (a, b) => a + ((b - a) * step) / steps;
       await move("mouseMoved", at(from.x, to.x), at(from.y, to.y), 1);
