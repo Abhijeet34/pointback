@@ -159,7 +159,9 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   const query = `file=${encodeURIComponent(canonical)}${ack}`;
   const requestMs = Number(env("POLL_REQUEST_MS") ?? limits.pollRequestMs);
   if (!Number.isInteger(requestMs) || requestMs < 1 || requestMs > limits.pollRequestMs)
-    throw new Error(`${envPrefix}POLL_REQUEST_MS must be an integer from 1 to ${limits.pollRequestMs}`);
+    throw new Error(
+      `${envPrefix}POLL_REQUEST_MS must be an integer from 1 to ${limits.pollRequestMs}`,
+    );
   // A path with no file answers at once, with its last notes, gone, or no such file.
   if (existsSync(canonical)) print(stderr, `waiting for feedback on ${file}...`);
   // One long wait is a run of shorter requests: Node's fetch fails any request whose answer takes

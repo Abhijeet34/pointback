@@ -795,7 +795,9 @@ test("a --timeout-ms the server refuses is refused at once with its message, as 
   const { file } = scratch();
   assert.equal((await cli([file], lab.env)).code, 0);
   for (const value of ["Infinity", "300000.5"]) {
-    const refused = await cli(["poll", file, "--timeout-ms", value], lab.env, { timeoutMs: 30_000 });
+    const refused = await cli(["poll", file, "--timeout-ms", value], lab.env, {
+      timeoutMs: 30_000,
+    });
     assert.equal(refused.code, 1, value);
     assert.equal(refused.stdout, "", value);
     assert.ok(refused.stderr.endsWith("error: timeoutMs must be a non-negative integer\n"), value);
@@ -805,10 +807,14 @@ test("a --timeout-ms the server refuses is refused at once with its message, as 
 test("a POLL_REQUEST_MS outside 1 to 240000, or not an integer, is refused before any request", async () => {
   const { file } = scratch();
   for (const value of ["0", "400000", "soon"]) {
-    const refused = await cli(["poll", file, "--timeout-ms", "50"], {
-      ...lab.env,
-      POINTBACK_POLL_REQUEST_MS: value,
-    }, { timeoutMs: 30_000 });
+    const refused = await cli(
+      ["poll", file, "--timeout-ms", "50"],
+      {
+        ...lab.env,
+        POINTBACK_POLL_REQUEST_MS: value,
+      },
+      { timeoutMs: 30_000 },
+    );
     assert.equal(refused.code, 1, value);
     assert.equal(refused.stdout, "", value);
     assert.equal(
