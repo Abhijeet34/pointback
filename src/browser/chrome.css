@@ -210,6 +210,14 @@ body {
   text-align: center;
 }
 
+.cover[data-side="start"] {
+  justify-content: flex-start;
+}
+
+.cover[data-side="end"] {
+  justify-content: flex-end;
+}
+
 .cover-text {
   max-width: 32rem;
   margin: 0;

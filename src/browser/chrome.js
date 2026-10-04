@@ -607,11 +607,18 @@ function renderCover() {
   frame.hidden = kept;
   cover.hidden = !strayed && !kept;
   backButton.hidden = !strayed;
-  if (kept && !strayed)
+  if (kept && !strayed) {
     setText(
       coverText,
       "This page took the keyboard from a note earlier, so it stays hidden while you write notes.",
     );
+    // The line sits in the half of the page's view the open card is not in; a narrow view has no room
+    // beside it.
+    const view = frame.parentElement.getBoundingClientRect();
+    const box = card.getBoundingClientRect();
+    const low = box.top + box.height / 2 > view.top + view.height / 2;
+    cover.dataset.side = card.hidden ? "" : low ? "start" : "end";
+  } else cover.dataset.side = "";
   if (!strayed) return;
   setText(
     coverText,
