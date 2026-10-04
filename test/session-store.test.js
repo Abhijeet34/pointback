@@ -399,6 +399,32 @@ test("a session holding unsent notes is never disposed, even when it is the olde
   );
 });
 
+test("a session within a poll's grace is not evictable, and is once the grace passes", async (t) => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  const extra = (i) => {
+    const file = join(dir, `extra-${i}.html`);
+    writeFileSync(file, "<p></p>");
+    return store.open(file).key;
+  };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const idle = store.waitForFeedback(key, 10);
+  t.mock.timers.tick(10);
+  assert.deepEqual(await idle, { status: "waiting" });
+  for (let i = 1; i < limits.sessions; i += 1) extra(i);
+  extra(limits.sessions);
+  assert.equal(store.get(key).key, key, "the session within its grace survived eviction");
+  t.mock.timers.tick(limits.pollGraceMs);
+  extra(limits.sessions + 1);
+  assert.throws(
+    () => store.get(key),
+    (e) => e.status === 404,
+    "the session was evictable once its grace passed",
+  );
+  t.mock.timers.reset();
+});
+
 // An evicted session opened again restarts its uids at 1. The agent's cursor from the old life
 // still says 3, and before epochs it acknowledged the new life's first batch unseen.
 test("a cursor from a session's earlier life acknowledges nothing in its next one", async (t) => {
