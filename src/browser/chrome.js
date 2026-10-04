@@ -213,7 +213,8 @@ function sync(state) {
 
 function show() {
   if (editing || unloaded) {
-    // A half-typed note is worth more than three seconds of freshness; it lands when the card closes.
+    // A half-typed note is worth more than three seconds of freshness, and a page unloaded for a note
+    // stays out until it is done; the reload lands then.
     deferredReload = true;
     return;
   }
