@@ -4,7 +4,7 @@
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
 // `npm run smoke -- webkit firefox`; weekly in .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
-/* global document, parent, nonce */
+/* global document, parent, nonce, getComputedStyle */
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
