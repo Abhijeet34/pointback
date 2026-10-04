@@ -870,7 +870,11 @@ async function stealingReview() {
  */
 async function typeAgainst(page, artifact, word) {
   for (const ch of word) {
-    await page.key(ch, { code: `Key${ch.toUpperCase()}`, keyCode: ch.toUpperCase().charCodeAt(0), text: ch });
+    await page.key(ch, {
+      code: `Key${ch.toUpperCase()}`,
+      keyCode: ch.toUpperCase().charCodeAt(0),
+      text: ch,
+    });
     const from = Number(await artifact.eval("globalThis.steals"));
     await artifact.waitFor(`globalThis.steals >= ${from + 3}`);
   }
@@ -897,7 +901,12 @@ test(
     {
       const { file, session } = await stealingReview();
       await api(session, "POST", "drafts", {
-        draft: { prompt: "Lower the threshold", selector: "#p2", tag: "p", text: "Alerts fired late" },
+        draft: {
+          prompt: "Lower the threshold",
+          selector: "#p2",
+          tag: "p",
+          text: "Alerts fired late",
+        },
       });
       await api(session, "POST", "prompts", {});
       const { uid } = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts[0];
@@ -917,10 +926,16 @@ test(
       const { session } = await stealingReview();
       const { page, artifact } = await openReview(session.url);
       await pointAt(page, artifact, "#p1");
-      if (lapsed) await artifact.waitFor("!navigator.userActivation.isActive", { timeoutMs: 15_000 });
+      if (lapsed)
+        await artifact.waitFor("!navigator.userActivation.isActive", { timeoutMs: 15_000 });
       await artifact.eval("globalThis.armed = true");
       await typeAgainst(page, artifact, "abc");
-      await outcome(lapsed ? "sticky" : "transient", page, artifact, "document.getElementById('cardText')");
+      await outcome(
+        lapsed ? "sticky" : "transient",
+        page,
+        artifact,
+        "document.getElementById('cardText')",
+      );
       await page.close();
     }
 
