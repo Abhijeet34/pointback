@@ -5,18 +5,17 @@
     <title>Incident review</title>
     <script>
       // While `calling` is set, the page moves the focus to its own field every 20 ms; `keyed` says
-      // whether any key reached it. A focus() on an element already focused does nothing, so it
-      // lets go first.
+      // whether any key reached it, kept in the frame's name so it outlives the page being unloaded and
+      // loaded again (a sandboxed page has no storage). A focus() on an element already focused does
+      // nothing, so it lets go first; it keeps the page where the reviewer scrolled it.
       globalThis.calling = false;
-      globalThis.calls = 0;
-      globalThis.keyed = false;
-      addEventListener("keydown", () => (globalThis.keyed = true), true);
+      Object.defineProperty(globalThis, "keyed", { get: () => name === "keyed" });
+      addEventListener("keydown", () => (name = "keyed"), true);
       setInterval(() => {
         if (!globalThis.calling) return;
         const field = document.getElementById("field");
         field.blur();
-        field.focus();
-        globalThis.calls += 1;
+        field.focus({ preventScroll: true });
       }, 20);
     </script>
   </head>
@@ -26,6 +25,7 @@
       <p id="p1">The cache was cold for an hour after the deploy.</p>
       <p id="p2">Alerts fired late because the threshold was too high.</p>
       <input id="field" aria-label="Search" />
+      <p id="p3" style="margin: 150vh 0">Follow-ups are tracked in the incident log.</p>
     </main>
   </body>
 </html>

@@ -47,12 +47,4 @@ window.addEventListener("focus", () => {
   if (page && document.activeElement !== page) page.focus();
 });
 
-// Whether this frame has a box, as the browser has it rather than as the chrome set it: only a hidden
-// frame has none, so one scrolled out of view still counts as drawn. The chrome hands a note the focus
-// while it holds the page hidden only once this says the frame has no box.
-new IntersectionObserver(([entry]) => {
-  const { width, height } = entry.boundingClientRect;
-  toChrome({ type: "drawn", on: width > 0 || height > 0 });
-}).observe(document.documentElement);
-
 toChrome({ type: "wrapper" });
