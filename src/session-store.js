@@ -601,14 +601,20 @@ export class SessionStore {
   /**
    * An event listener runs inside `emit`: a refused write thrown from it would end the event for every
    * listener after it, and the watcher or request that emitted it. A refusal has already adopted the
-   * newer copy, so the answer is asked once more against that copy.
+   * newer copy, so the answer is asked once more against that copy. If that is refused too, a gone
+   * file is still answered gone, and any other event leaves the poll waiting for the next one.
    */
-  #answerOnce(key, cursor) {
+  #answerOnce(key, cursor, type) {
     try {
       return this.#answer(key, cursor, false);
     } catch (error) {
       if (!(error instanceof HttpError)) throw error;
+    }
+    try {
       return this.#answer(key, cursor, false);
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      return type === "gone" ? { status: "gone", file: this.get(key).file } : null;
     }
   }
 
@@ -631,7 +637,13 @@ export class SessionStore {
       // An answer inside a grace ends it, going straight from listening to what the answer means.
       if (this.#takeLingering(key)) this.#release(key, immediate.status === "feedback");
       else if (immediate.status === "feedback") this.#setWorking(key);
-      if (immediate.status === "gone") this.#gone(this.get(key));
+      if (immediate.status === "gone") {
+        try {
+          this.#gone(this.get(key));
+        } catch (error) {
+          if (!(error instanceof HttpError)) throw error;
+        }
+      }
       return Promise.resolve(immediate);
     }
     if (this.#activePolls >= limits.concurrentPolls)
@@ -651,7 +663,7 @@ export class SessionStore {
       // Two pollers race for one batch; the one that finds nothing keeps waiting.
       const onEvent = (event) => {
         if (event.type !== "feedback" && event.type !== "ended" && event.type !== "gone") return;
-        const answer = this.#answerOnce(key, cursor);
+        const answer = this.#answerOnce(key, cursor, event.type);
         if (answer) finish(answer);
       };
       const onAbort = () => finish(null);

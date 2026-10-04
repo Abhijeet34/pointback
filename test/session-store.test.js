@@ -140,11 +140,15 @@ test("a refused write raised while a missing file is announced leaves the watche
   assert.equal(tabs.status(key).gone, true);
 });
 
-test("a poll waiting when the file goes is answered gone, and a listener after it still hears the gone", async () => {
+test("a poll still waiting behind an unacked batch is answered gone when the file goes, and a listener after it still hears the gone", async () => {
   const { dir, artifact } = lab();
   const tabs = new SessionStore(dir);
   const { key } = tabs.open(artifact);
+  const taker = tabs.waitForFeedback(key, 5000);
   const waiting = tabs.waitForFeedback(key, 5000);
+  tabs.queue(key, [prompt("batch one")]);
+  assert.equal((await taker).status, "feedback");
+  tabs.queue(key, [prompt("the note waiting behind it")]);
   new SessionStore(dir).queue(key, [prompt("written by the other process")]);
   const seen = [];
   tabs.on(key, (event) => seen.push(event.type));
