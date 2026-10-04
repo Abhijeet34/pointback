@@ -1036,9 +1036,14 @@ window.addEventListener("message", (event) => {
     announced = true;
     if (strayed) {
       // Back is about to be hidden under the reviewer, so the focus goes where Back led.
-      if (document.activeElement === backButton) frame.focus();
+      const onBack = document.activeElement === backButton;
       strayed = false;
       render();
+      if (onBack) {
+        const field = composing ? cardText : marks.querySelector(".mark-edit-text");
+        if (field && frame.hidden) focusField(field);
+        else frame.focus();
+      }
     }
     return;
   }

@@ -32,7 +32,8 @@ In scope:
   `test/browser.test.js` holds that no key typed into a note after that report reaches the page, on the note the page took the focus from and on a later one, with the chrome's next frame after each hide made 150 ms slow; the code before the report fails it.
   The residual is the gap between the chrome hiding the page and that report, after the page's first move of the focus and again as each later note opens: a page that takes the focus in it gets a key typed there, and a key typed while the focus waits on the cover is in neither, so after a move the line asks the reviewer to check the note.
   The report arrived 1 to 10 ms after the hide in local Chromium; on a loaded macOS runner the page still took the focus 134 ms after the chrome set the hide (run 37227328002).
-  The wait reads whether the wrapper's frame has a box rather than whether it is in view, so a frame out of the chrome's view counts as still drawn and its note waits for the reviewer's click rather than taking the focus early.
+  The wait reads whether the wrapper's frame has a box rather than whether it is in view, so a frame out of the chrome's view still counts as drawn.
+  For a frame moved out of view before it was hidden, the zero-box report arrived after the hide in local Chromium and the note took the focus; only if no such report comes does the note wait on the cover until the reviewer clicks into it.
   Still open: a page's late refocus can undo a Tab the reviewer pressed in the page (issue 57), and a page can take the focus from a chrome control that is not a text field, such as the Annotate switch.
   This focus handling is measured in Chromium only; in Firefox and WebKit it is unmeasured.
 - State written where another user on the machine can read it: outside the state directory, with a mode other than `0600` in a `0700` directory on POSIX, or on Windows with any ACL entry beyond the current user (`src/state-dir.js`).
