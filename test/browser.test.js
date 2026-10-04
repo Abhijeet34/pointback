@@ -1091,7 +1091,9 @@ test(
     await artifact.eval("globalThis.calling = true");
     await page.waitFor(kept(edit, TAKEN_LINE));
     await clickOn(page, "document.getElementById('cardCancel')");
-    await page.waitFor(`${edit} === document.activeElement && document.getElementById('card').hidden`);
+    await page.waitFor(
+      `${edit} === document.activeElement && document.getElementById('card').hidden`,
+    );
     await page.eval(`${edit}.value = ''`);
     for (const ch of "abc") {
       await page.key(ch, {

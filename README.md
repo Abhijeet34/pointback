@@ -241,6 +241,8 @@ If something else took that port in the meantime and answers there, the tab cann
 
 The frame can leave the page under review too: a link followed with Annotate off, or an address with nothing at it, which the server answers inside a review with a short page in the house reading styles rather than JSON.
 Only the page under review announces itself to the chrome, so a page that loads without doing so is covered, where the reviewer is looking, by a notice saying the frame went to a page that is missing or is not the file, with a button back to it.
+A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
+From then on the page is hidden whenever a note is open, with a line saying why; right after the take, the line asks the reviewer to check the note for anything typed just then.
 
 The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on sessions, prompts and open polls.
 
@@ -292,6 +294,7 @@ It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROW
 The CLI opens the reviewer's default browser, which is Safari on an unconfigured Mac, so Chromium alone is not the whole audience.
 `npm run smoke -- webkit firefox` runs the core act in both engines: open the fixture through the CLI, point at the title, write a note, send it, and poll it back.
 It then has a hostile page try to spend the note card's Enter, which exercises the gate those engines rely on (`docs/THREAT-MODEL.md`).
+It also presses over the page while a note has the focus and checks that the page is not hidden for it, since that press is the reviewer's own move.
 The `engines` job in `.github/workflows/cross-platform.yml` runs it every Monday, WebKit on `macos-15` and Firefox on `ubuntu-24.04`, and names the engine and its version in the job summary; it skips when `ci.yml` or `release.yml` calls that workflow, so a browser release cannot hold a tag.
 The DevTools harness above cannot reach either engine: WebKit speaks its own inspector protocol and Firefox removed its CDP support in Firefox 141 in favour of WebDriver BiDi.
 Playwright can, through `playwright-core`, one package with no dependencies and no install script; it fetches nothing until `npx playwright-core install webkit firefox` asks it to.
