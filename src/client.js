@@ -4,6 +4,7 @@ import { openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
+import { daemonHolds } from "./daemon-lock.js";
 import { tokenProof } from "./http-guard.js";
 import { env, name, version } from "./identity.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
@@ -80,24 +81,17 @@ export async function ensureServer(stateDir, environment = process.env) {
   // own `AbortSignal.timeout`, so a budget written only in milliseconds is really a budget in
   // however many looks the machine can afford - and a busy windows-2025 runner affords few.
   // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
-  // directory; the rest exit 0. One that joined a daemon on its way out is replaced, and only a
-  // failed exit means "not coming"; everything else means "not yet".
+  // directory; the rest exit 0. A start that stepped aside for a daemon that has since let go,
+  // one caught on its way out, is replaced; only a failed exit means "not coming".
   const startedAt = Date.now();
   let probes = 0;
-  let joinedAt;
   for (;;) {
     probes += 1;
     const info = readServerInfo(stateDir);
     const status = info && (await health(info));
     if (status?.proven && status.version === version) return info;
     if (child.exitCode !== null && child.exitCode !== 0) break;
-    if (child.exitCode === 0) {
-      joinedAt ??= Date.now();
-      if (Date.now() - joinedAt >= REJOIN_MS) {
-        child = start();
-        joinedAt = undefined;
-      }
-    }
+    if (child.exitCode === 0 && !(await daemonHolds(stateDir))) child = start();
     if (probes >= START_PROBES && Date.now() - startedAt >= START_TIMEOUT_MS) break;
     await sleep(50);
   }
@@ -121,8 +115,6 @@ export async function stopServer(stateDir, info, status) {
 /** How long, and how many looks, a spawned daemon gets to answer before it is called dead. */
 const START_TIMEOUT_MS = 10_000;
 const START_PROBES = 20;
-/** How long a start that found another daemon waits for it to answer before starting again. */
-const REJOIN_MS = 500;
 
 /**
  * Says why the daemon is not there, rather than naming a file to go and read. Pointing at

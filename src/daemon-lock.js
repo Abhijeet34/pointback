@@ -80,6 +80,12 @@ async function holder(stateDir, generation) {
   return (await accepts(parsed.port)) ? "live" : "dead";
 }
 
+/** Whether a live daemon, started or still starting, holds the state directory. */
+export async function daemonHolds(stateDir) {
+  const top = generations(stateDir)[0];
+  return top !== undefined && (await holder(stateDir, top)) === "live";
+}
+
 /**
  * Claims the state directory for this process, or returns null when a live daemon holds it. The
  * claim is published with the port once bound, which re-checks that a takeover did not happen
