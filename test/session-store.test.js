@@ -140,6 +140,23 @@ test("a refused write raised while a missing file is announced leaves the watche
   assert.equal(tabs.status(key).gone, true);
 });
 
+test("a poll waiting when the file goes is answered gone, and a listener after it still hears the gone", async () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  const waiting = tabs.waitForFeedback(key, 5000);
+  new SessionStore(dir).queue(key, [prompt("written by the other process")]);
+  const seen = [];
+  tabs.on(key, (event) => seen.push(event.type));
+  renameSync(artifact, `${artifact}.away`);
+  tabs.fileChanged(key);
+  assert.deepEqual(await waiting, { status: "gone", file: tabs.get(key).file });
+  assert.deepEqual(
+    seen.filter((type) => type === "gone"),
+    ["gone"],
+  );
+});
+
 test("a session file deleted by hand is written again from memory, so an unsent note survives", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);

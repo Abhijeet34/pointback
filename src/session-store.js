@@ -598,6 +598,20 @@ export class SessionStore {
     return final;
   }
 
+  /**
+   * An event listener runs inside `emit`: a refused write thrown from it would end the event for every
+   * listener after it, and the watcher or request that emitted it. A refusal has already adopted the
+   * newer copy, so the answer is asked once more against that copy.
+   */
+  #answerOnce(key, cursor) {
+    try {
+      return this.#answer(key, cursor, false);
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      return this.#answer(key, cursor, false);
+    }
+  }
+
   /** Tells every open tab the file is gone, and returns the answer the CLI prints for it. */
   #gone(session) {
     this.#events.emit(session.key, { type: "gone" });
@@ -637,7 +651,7 @@ export class SessionStore {
       // Two pollers race for one batch; the one that finds nothing keeps waiting.
       const onEvent = (event) => {
         if (event.type !== "feedback" && event.type !== "ended" && event.type !== "gone") return;
-        const answer = this.#answer(key, cursor, false);
+        const answer = this.#answerOnce(key, cursor);
         if (answer) finish(answer);
       };
       const onAbort = () => finish(null);

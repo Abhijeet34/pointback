@@ -60,24 +60,19 @@ export async function api(info, method, path, body, retried = false) {
  * is asked to stop first, so the CLI and the daemon never disagree about the protocol.
  */
 export async function ensureServer(stateDir, environment = process.env) {
-  const older = (port) =>
-    new Error(`an older ${name} daemon on port ${port} did not stop; stop it and retry`);
+  const older = ({ port, pid }) =>
+    new Error(
+      `an older ${name} daemon${Number.isInteger(pid) ? ` (pid ${pid})` : ""} on port ${port} did not stop; end that process and retry`,
+    );
   const existing = readServerInfo(stateDir);
   if (existing) {
     const status = await health(existing);
     if (status?.proven && status.version === version) return existing;
-    if (status?.proven || status?.app === name) {
-      const stopped = await stopServer(stateDir, existing, status);
-      if (!stopped && (await health(existing))?.app === name) throw older(existing.port);
-    }
-  } else {
-    // A retired token still names the port of the daemon it was shown to. While that daemon answers
-    // there, a second one would split the directory, so it is asked with no token at all.
-    const retired = readJson(join(stateDir, "server.json"));
-    if (Number.isInteger(retired?.port) && retired.token === null)
-      if ((await health({ port: retired.port, token: "" }))?.app === name)
-        throw older(retired.port);
+    if (status?.proven || status?.app === name) await stopServer(stateDir, existing, status);
   }
+  // A second daemon beside one that did not stop would split the directory, so the start refuses.
+  const holding = await refusingServer(stateDir);
+  if (holding) throw older(holding);
   const log = openSync(join(stateDir, "server.log"), "a", 0o600);
   const start = () => {
     const started = spawn(process.execPath, [bin, "server"], {
@@ -126,6 +121,18 @@ export async function stopServer(stateDir, info, status) {
   );
   if (!status.proven) writeJsonAtomic(join(stateDir, "server.json"), { ...info, token: null });
   return stopped;
+}
+
+/**
+ * The recorded server when its port still answers as this app, with its token or with the token
+ * retired. A server that was asked to stop and did not is still there, so a start and `stop` both
+ * need to name it; no signal is ever sent to its pid.
+ */
+export async function refusingServer(stateDir) {
+  const record = readJson(join(stateDir, "server.json"));
+  if (!Number.isInteger(record?.port)) return null;
+  const token = typeof record.token === "string" ? record.token : "";
+  return (await health({ port: record.port, token }))?.app === name ? record : null;
 }
 
 /** How long, and how many looks, a spawned daemon gets to answer before it is called dead. */

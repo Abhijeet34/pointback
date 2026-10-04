@@ -506,8 +506,17 @@ test("eight opens at once on a cold state directory all succeed, against one dae
     );
     const ports = new Set(opened.map((o) => new URL(o.json().session.url).port));
     assert.deepEqual([...ports], [String(cold.serverInfo().port)], "every review on one daemon");
-    const log = readFileSync(join(cold.dir, "server.log"), "utf8");
-    assert.equal(log.match(/listening on/g)?.length, 1, log);
+    const info = cold.serverInfo();
+    const lockFiles = readdirSync(cold.dir).filter((file) => /^daemon\.\d+\.lock$/.test(file));
+    assert.equal(lockFiles.length, 1, `one claim holds the directory: ${lockFiles.join(", ")}`);
+    assert.equal(
+      JSON.parse(readFileSync(join(cold.dir, lockFiles[0]), "utf8")).pid,
+      info.pid,
+      "the claim names the daemon the record names",
+    );
+    const health = await fetch(`http://127.0.0.1:${info.port}/health`).then((res) => res.json());
+    assert.equal(health.pid, info.pid, "the one port answers as the one daemon");
+    assert.doesNotThrow(() => process.kill(info.pid, 0), "that daemon is alive");
   } finally {
     await cold.stop();
   }
@@ -688,7 +697,7 @@ test("an older daemon that refuses to stop blocks every open, sees the token onc
       assert.equal(opened.code, 1, `attempt ${attempt}: ${opened.stdout}`);
       assert.ok(
         opened.stderr.includes(
-          `error: an older ${name} daemon on port ${port} did not stop; stop it and retry`,
+          `error: an older ${name} daemon (pid 1) on port ${port} did not stop; end that process and retry`,
         ),
         opened.stderr,
       );
@@ -698,6 +707,11 @@ test("an older daemon that refuses to stop blocks every open, sees the token onc
         `attempt ${attempt}: the token it saw is retired`,
       );
     }
+    assert.deepEqual(
+      (await cli(["stop"], other.env)).json(),
+      { status: "refused", pid: 1, port },
+      "stop names the server it could not stop, by pid and port",
+    );
     assert.deepEqual(shown, [`Bearer ${RECORDED_TOKEN}`], "the token reached it once, never again");
     assert.equal(
       existsSync(join(other.dir, "daemon.1.lock")),
