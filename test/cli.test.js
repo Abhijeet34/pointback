@@ -663,14 +663,16 @@ for (const [how, args] of [
 }
 
 // An older daemon that refuses to stop still holds the port and the sessions. Starting another beside it
-// would split the directory between two daemons, so each open refuses until that daemon is gone.
-test("an older daemon that refuses to stop blocks every open, and no second daemon starts", async () => {
+// would split the directory between two daemons, so each open refuses until that daemon is gone. It has
+// been shown the token without proving it holds it, so the token is retired at once, whether or not it
+// stopped, and is never shown again: when the port comes back, the next daemon takes a fresh token.
+test("an older daemon that refuses to stop blocks every open, sees the token once, and the token is retired", async () => {
   const other = isolatedEnv();
-  let shutdownAsked = 0;
+  const shown = [];
   const refuser = createServer((req, res) => {
     res.setHeader("content-type", "application/json");
     if (req.method === "POST" && req.url === "/shutdown") {
-      shutdownAsked += 1;
+      shown.push(req.headers.authorization);
       res.statusCode = 500;
       res.end(JSON.stringify({ error: "busy" }));
       return;
@@ -690,15 +692,25 @@ test("an older daemon that refuses to stop blocks every open, and no second daem
         ),
         opened.stderr,
       );
+      assert.equal(
+        other.serverInfo().token,
+        null,
+        `attempt ${attempt}: the token it saw is retired`,
+      );
     }
-    assert.equal(shutdownAsked, 2, "each open asked the older daemon to stop");
-    assert.equal(other.serverInfo().port, port, "the record still names the older daemon");
-    assert.equal(other.serverInfo().token, RECORDED_TOKEN, "and keeps the token that reaches it");
+    assert.deepEqual(shown, [`Bearer ${RECORDED_TOKEN}`], "the token reached it once, never again");
     assert.equal(
       existsSync(join(other.dir, "daemon.1.lock")),
       false,
       "no daemon claimed the directory",
     );
+
+    refuser.close();
+    refuser.closeAllConnections();
+    const opened = await cli([fixture], other.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(other.serverInfo().port, port, "the port it gave back is taken up again");
+    assert.notEqual(other.serverInfo().token, RECORDED_TOKEN, "with a token it never saw");
   } finally {
     refuser.close();
     await other.stop();
