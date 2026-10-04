@@ -104,6 +104,29 @@ test("opening the same file twice yields one session, and it survives a restart"
   assert.equal(readFileSync(sessionFile(dir, a.key), "utf8").includes("nextUid"), true);
 });
 
+// The second line behind the one-daemon lock: should two processes ever hold one state directory,
+// the one that did not see the reviewer's note must not write its stale copy over it.
+test("a process holding a stale copy of a session refuses to write it over a newer one", () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  const agents = new SessionStore(dir);
+  tabs.queue(key, [prompt("the note that must not be lost")]);
+
+  assert.throws(() => agents.open(artifact), { status: 409 });
+  const onDisk = JSON.parse(readFileSync(sessionFile(dir, key), "utf8"));
+  assert.deepEqual(
+    onDisk.pending.map((p) => p.prompt),
+    ["the note that must not be lost"],
+  );
+  // The refusal took the newer copy, so the agent's next try goes through and gets the note.
+  agents.open(artifact);
+  assert.deepEqual(
+    agents.take(key).map((p) => p.prompt),
+    ["the note that must not be lost"],
+  );
+});
+
 test("prompts are validated field by field", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);

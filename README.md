@@ -249,6 +249,7 @@ The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on se
 
 The first CLI call starts a detached server bound to `127.0.0.1` only and records its port and a random capability token in `~/.pointback/server.json`, readable by the owner alone.
 A restarted server takes the same port and token again while that port is free, which is what lets an open tab reconnect, and mints a fresh token whenever it has to take another port.
+One daemon serves a state directory: a start claims it before loading any session, and a start that finds a live daemon there exits while its CLI goes on to that daemon, so commands an agent runs at once share one (`src/daemon-lock.js`).
 Because the token outlives the process, whatever holds a dead daemon's port must never receive it: the CLI and the tab present it only to a server that first answers a fresh challenge keyed with it (`tokenProof` in `src/http-guard.js`).
 There is one exception: a daemon from 0.1.4 or earlier cannot answer the challenge and still has to stop, so to a server on the recorded port that answers as `{"app":"pointback"}` without the proof, the CLI sends the token once on `POST /shutdown` and then retires it in `server.json`, and the next daemon mints a fresh one (`stopServer` in `src/client.js`).
 A process squatting the port with that answer receives a token that no running daemon accepts.
@@ -260,6 +261,7 @@ The review script is inserted into the artifact as a DOM node through a real HTM
 Assets resolve within the review's root through a path check that survives encoded traversal, backslashes, unicode lookalikes, null bytes, absolute paths and symlink escape.
 A font (`.woff2`, `.woff`, `.ttf`, `.otf`) is the one asset served with `Access-Control-Allow-Origin`, because the opaque origin makes every `@font-face` load a CORS request; any other file under the root, and the API, stay unreadable to the page's own script, so a stray `.env` beside the artifact cannot be read and sent out.
 Each session is its own file under `sessions/` in the state directory, so a file save rewrites the one review it belongs to rather than every review the daemon holds.
+A daemon never writes a session file that another process has written since it last read it: it takes the newer copy and refuses that one change, so a stale process cannot overwrite a note the reviewer sent.
 `npm run bench` times exactly that save at 200 notes a session: when every session shared one `state.json` it wrote 0.22 MB in about 0.4 ms with 1 session held and 14.05 MB in about 17.5 ms with 64, and now it writes 0.21 MB in about 0.4 ms at every count from 1 to 64.
 A `state.json` from an earlier version is split on the first start, and renamed to `state.json.migrated` only once every session in it reads back from its own file.
 State is written to a temporary file and renamed, a temporary file a crash left behind is removed on the next start, and nothing but the owning user can read it.

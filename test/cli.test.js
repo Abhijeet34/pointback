@@ -478,6 +478,82 @@ test("stop shuts the server down and reports when none runs", async () => {
   assert.deepEqual((await cli(["stop"], lab.env)).json(), { status: "not-running" });
 });
 
+/** `count` copies of the fixture under a fresh folder, so concurrent opens each review their own file. */
+function copies(count) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-copies-"));
+  return Array.from({ length: count }, (_, i) => {
+    const file = join(dir, `f${i}.html`);
+    copyFileSync(fixture, file);
+    return file;
+  });
+}
+
+// An agent's parallel tool calls are the usual way two commands meet a state directory with no
+// daemon on it. Each start spawns one; on 0.1.6 every one of them bound a port and loaded the
+// sessions, and every CLI but the last to write server.json gave up after 10 s.
+test("eight opens at once on a cold state directory all succeed, against one daemon", async () => {
+  const cold = isolatedEnv();
+  try {
+    const files = copies(8);
+    const started = Date.now();
+    const opened = await Promise.all(files.map((file) => cli([file], cold.env)));
+    console.log(`eight concurrent opens returned in ${Date.now() - started} ms`);
+    assert.deepEqual(
+      opened.map((o) => o.code),
+      Array(8).fill(0),
+      opened.map((o) => o.stderr).join(""),
+    );
+    const ports = new Set(opened.map((o) => new URL(o.json().session.url).port));
+    assert.deepEqual([...ports], [String(cold.serverInfo().port)], "every review on one daemon");
+    const log = readFileSync(join(cold.dir, "server.log"), "utf8");
+    assert.equal(log.match(/listening on/g)?.length, 1, log);
+  } finally {
+    await cold.stop();
+  }
+});
+
+// The review's split-brain reproduction. After an idle-out, concurrent starts raced for the old
+// port: a tab reconnected to the daemon that won it while server.json, and so the agent, named
+// another, and the agent's next open wrote that other daemon's stale copy over the sent note.
+test("a note sent from a tab that outlived its daemon reaches the agent after concurrent restarts", async () => {
+  const split = isolatedEnv();
+  try {
+    const [reviewed, ...others] = copies(8);
+    const url = new URL((await cli([reviewed], split.env)).json().session.url);
+    const tab = { port: Number(url.port), token: url.hash.slice(1) };
+    const key = url.pathname.split("/").pop();
+    assert.deepEqual((await cli(["stop"], split.env)).json(), { status: "stopped" });
+    await until(
+      () =>
+        fetch(`http://127.0.0.1:${tab.port}/health`).then(
+          () => false,
+          () => true,
+        ),
+      { what: "the stopped daemon to stop answering" },
+    );
+    const reopened = await Promise.all(others.map((file) => cli([file], split.env)));
+    assert.deepEqual(
+      reopened.map((o) => o.code),
+      Array(others.length).fill(0),
+      reopened.map((o) => o.stderr).join(""),
+    );
+
+    // The tab reconnects on its own port with the token in its fragment, as it does on its own.
+    const note = { selector: "#title", tag: "h1", text: "Rollout" };
+    const sent = await sendNote(tab, key, { ...note, prompt: "the note that must not be lost" });
+    assert.equal(sent.status, 200);
+    assert.equal((await cli([reviewed], split.env)).code, 0, "the agent opens the file again");
+    const polled = (await cli(["poll", reviewed, "--timeout-ms", "0"], split.env)).json();
+    assert.equal(polled.status, "feedback", JSON.stringify(polled));
+    assert.deepEqual(
+      polled.prompts.map((p) => p.prompt),
+      ["the note that must not be lost"],
+    );
+  } finally {
+    await split.stop();
+  }
+});
+
 // "server did not start; see <path>" was the whole of what this said, and a path is no help
 // wherever the log cannot be reached afterwards - which is every CI runner. Run 33875622583,
 // attempt 19, failed exactly here on windows-2025 and left nothing behind but the path, so the
