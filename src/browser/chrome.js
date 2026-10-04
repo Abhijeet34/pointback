@@ -982,7 +982,8 @@ function closeCompose(refocus) {
   post({ type: "compose", on: false, refocus: refocus && !from });
   // Rendered first, so a frame hidden while the note held the focus is back before it takes it.
   render();
-  if (refocus) (from ? (from.isConnected ? from : sendButton) : frame).focus();
+  if (refocus && from) (from.isConnected ? from : sendButton).focus();
+  else if (refocus) focusFrame();
 }
 
 /** Places the card over the artifact at the spot the reviewer pointed at, clamped to the mount. */
@@ -1039,11 +1040,7 @@ window.addEventListener("message", (event) => {
       const onBack = document.activeElement === backButton;
       strayed = false;
       render();
-      if (onBack) {
-        const field = composing ? cardText : marks.querySelector(".mark-edit-text");
-        if (field && frame.hidden) focusField(field);
-        else frame.focus();
-      }
+      if (onBack) focusFrame();
     }
     return;
   }
@@ -1327,6 +1324,13 @@ function focusField(field) {
   if (!frame.hidden || !drawn) return field.focus();
   parked = field;
   cover.focus();
+}
+
+/** Gives the frame the focus, or the open note it cannot take while the page is held. */
+function focusFrame() {
+  const field = composing ? cardText : marks.querySelector(".mark-edit-text");
+  if (field && frame.hidden) focusField(field);
+  else frame.focus();
 }
 
 // The wrapper is served under the loopback name this page is not, which makes it another origin, so

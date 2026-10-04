@@ -1073,6 +1073,76 @@ test(
 );
 
 test(
+  "focus handling gives the focus back to an open margin edit when a card closes while the page is held",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const edit = "document.querySelector('.mark-edit-text')";
+    const { session } = await focusCallsReview();
+    await api(session, "POST", "drafts", {
+      draft: { prompt: "Say when", selector: "#p1", tag: "p", text: "The cache was cold" },
+    });
+    const { page, artifact } = await openReview(session.url);
+    await page.waitFor("document.querySelector('.mark-edit') !== null");
+    await pointAt(page, artifact, "#p2");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor(`${edit} === document.activeElement`);
+    await artifact.eval("globalThis.calling = true");
+    await page.waitFor(kept(edit, TAKEN_LINE));
+    await clickOn(page, "document.getElementById('cardCancel')");
+    await page.waitFor(`${edit} === document.activeElement && document.getElementById('card').hidden`);
+    await page.eval(`${edit}.value = ''`);
+    for (const ch of "abc") {
+      await page.key(ch, {
+        code: `Key${ch.toUpperCase()}`,
+        keyCode: ch.toUpperCase().charCodeAt(0),
+        text: ch,
+      });
+    }
+    const text = await page.eval(`${edit}.value`);
+    const keyed = await artifact.eval("globalThis.keyed");
+    await page.close();
+    assert.deepEqual({ text, keyed }, { text: "abc", keyed: false });
+  },
+);
+
+test(
+  "focus handling returns the focus to an open margin edit when Back leaves a page that strayed",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const edit = "document.querySelector('.mark-edit-text')";
+    const { session } = await focusCallsReview();
+    await api(session, "POST", "drafts", {
+      draft: { prompt: "Say when", selector: "#p1", tag: "p", text: "The cache was cold" },
+    });
+    const { page, artifact } = await openReview(session.url);
+    await page.waitFor("document.querySelector('.mark-edit') !== null");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor(`${edit} === document.activeElement`);
+    await artifact.eval("globalThis.calling = true");
+    await page.waitFor(kept(edit, TAKEN_LINE));
+    // The page navigates itself to a file that is not there, which the chrome sees as a stray.
+    await artifact.eval("location.href = 'plan-v2.html'");
+    await page.waitFor("document.getElementById('back').checkVisibility()");
+    await page.eval("delete document.body.dataset.revision");
+    await page.eval("document.getElementById('back').focus()");
+    await clickOn(page, "document.getElementById('back')");
+    await page.waitFor("document.body.dataset.revision === '0'");
+    await page.waitFor(kept(edit, TAKEN_LINE));
+    await page.eval(`${edit}.value = ''`);
+    for (const ch of "abc") {
+      await page.key(ch, {
+        code: `Key${ch.toUpperCase()}`,
+        keyCode: ch.toUpperCase().charCodeAt(0),
+        text: ch,
+      });
+    }
+    const text = await page.eval(`${edit}.value`);
+    await page.close();
+    assert.equal(text, "abc");
+  },
+);
+
+test(
   "a page that focuses its own field at load and on its own click is never hidden while notes are written",
   { skip: !executable && "no browser found" },
   async () => {
