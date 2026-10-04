@@ -157,25 +157,27 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   const cursor = readPollCursor(dir, canonical);
   const ack = cursor === undefined ? "" : `&ack=${cursor.uid}&epoch=${cursor.epoch}`;
   const query = `file=${encodeURIComponent(canonical)}${ack}`;
+  const requestMs = Number(env("POLL_REQUEST_MS") ?? limits.pollRequestMs);
+  if (!Number.isInteger(requestMs) || requestMs <= 0)
+    throw new Error(`${envPrefix}POLL_REQUEST_MS must be a positive integer`);
   // A path with no file answers at once, with its last notes, gone, or no such file.
   if (existsSync(canonical)) print(stderr, `waiting for feedback on ${file}...`);
   // One long wait is a run of shorter requests: Node's fetch fails any request whose answer takes
-  // over 300 s, so a single 400 s poll ended in "fetch failed". The first request carries the
-  // agent's value as typed, so one the server refuses is refused exactly as before.
-  const requestMs = Number(env("POLL_REQUEST_MS") ?? limits.pollRequestMs);
-  let remaining = Math.min(
-    values["timeout-ms"] === undefined ? limits.pollTimeoutDefaultMs : Number(values["timeout-ms"]),
-    limits.pollTimeoutMaxMs,
-  );
+  // over 300 s, so a single 400 s poll ended in "fetch failed". A value the server refuses (not a
+  // non-negative integer) goes once, as typed, so the server refuses it exactly as before.
+  const typed =
+    values["timeout-ms"] === undefined ? limits.pollTimeoutDefaultMs : Number(values["timeout-ms"]);
+  const split = Number.isInteger(typed) && typed >= 0;
+  let remaining = split ? Math.min(typed, limits.pollTimeoutMaxMs) : typed;
   const deadline = Date.now() + remaining;
   let result;
   for (;;) {
-    const timeoutMs = Math.min(remaining, requestMs);
+    const timeoutMs = split ? Math.min(remaining, requestMs) : remaining;
     result = await api(server, "GET", `/api/poll?${query}&timeoutMs=${timeoutMs}`).catch(
       refused(canonical),
     );
     remaining = deadline - Date.now();
-    if (result.status !== "waiting" || remaining <= 0) break;
+    if (!split || result.status !== "waiting" || remaining <= 0) break;
   }
   if (result.status === "gone") return printGone(stdout, file, result);
   const { receipt, epoch } = result;

@@ -790,3 +790,31 @@ test("a poll longer than one request may last waits its whole timeout, then deli
     await own.stop();
   }
 });
+
+test("a --timeout-ms the server refuses is refused at once with its message, as before", async () => {
+  const { file } = scratch();
+  assert.equal((await cli([file], lab.env)).code, 0);
+  for (const value of ["Infinity", "300000.5"]) {
+    const refused = await cli(["poll", file, "--timeout-ms", value], lab.env, { timeoutMs: 30_000 });
+    assert.equal(refused.code, 1, value);
+    assert.equal(refused.stdout, "", value);
+    assert.ok(refused.stderr.endsWith("error: timeoutMs must be a non-negative integer\n"), value);
+  }
+});
+
+test("a POLL_REQUEST_MS that is not a positive integer is refused before any request", async () => {
+  const { file } = scratch();
+  for (const value of ["0", "soon"]) {
+    const refused = await cli(["poll", file, "--timeout-ms", "50"], {
+      ...lab.env,
+      POINTBACK_POLL_REQUEST_MS: value,
+    }, { timeoutMs: 30_000 });
+    assert.equal(refused.code, 1, value);
+    assert.equal(refused.stdout, "", value);
+    assert.equal(
+      refused.stderr,
+      "error: POINTBACK_POLL_REQUEST_MS must be a positive integer\n",
+      value,
+    );
+  }
+});
