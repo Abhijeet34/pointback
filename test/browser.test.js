@@ -971,6 +971,53 @@ test(
 );
 
 test(
+  "a page that focuses its own field at load and on its own click is never hidden while notes are written",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-focus-own-"));
+    const file = join(dir, "search.html");
+    copyFileSync(join(dirname(fixture), "focus-own.html"), file);
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.eval(`globalThis.everHidden = false;
+      new MutationObserver(() => {
+        if (document.getElementById("artifact").hidden) globalThis.everHidden = true;
+      }).observe(document.getElementById("artifact"), { attributes: true })`);
+
+    await noteOn(page, artifact, "#p1", "Say what changed means");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+    await page.type(" here");
+    await page.enter();
+    await page.waitFor("document.querySelector('.mark-edit-text') === null");
+
+    // With Annotate off and a note open in the margin, the first press over the page hands it the
+    // focus and the next one is the page's own click, which focuses its field.
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+    const go = JSON.parse(
+      await artifact.eval("JSON.stringify(document.getElementById('go').getBoundingClientRect())"),
+    );
+    await page.click(frameBox.left + go.left + go.width / 2, frameBox.top + go.top + go.height / 2);
+    await page.waitFor("document.getElementById('shield').hidden");
+    await clickIn(page, artifact, "#go");
+    await artifact.waitFor("globalThis.clicked === true && document.activeElement.id === 'q'");
+
+    assert.deepEqual(
+      JSON.parse(
+        await page.eval(
+          `JSON.stringify({ everHidden: globalThis.everHidden, cover: document.getElementById("cover").hidden, note: document.querySelector(".mark-edit-text").value })`,
+        ),
+      ),
+      { everHidden: false, cover: true, note: "Say what changed means here" },
+    );
+    await page.close();
+  },
+);
+
+test(
   "eight review tabs all load, and a note added in the eighth reaches the agent",
   { skip: !executable && "no browser found" },
   async () => {
