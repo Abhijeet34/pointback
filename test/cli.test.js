@@ -201,6 +201,10 @@ test("after an eviction a new note takes a uid the agent never saw, and an old c
       (await cli(["poll", file, "--timeout-ms", "50"], own.env)).json().status,
       "waiting",
     );
+    // A session is held from eviction for the grace after its last poll.
+    await until(async () => (await presenceOf(own.serverInfo(), key)) === "waiting", {
+      what: "the poll's grace to pass",
+    });
 
     for (let i = 0; i < limits.sessions; i += 1) {
       const other = join(dir, `other-${i}.html`);

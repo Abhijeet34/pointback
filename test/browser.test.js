@@ -1662,6 +1662,8 @@ test(
       await page.waitFor("!document.getElementById('notice').checkVisibility()", {
         timeoutMs: 20_000,
       });
+      // The empty poll counts as attached for its grace, then the agent shows away.
+      await page.waitFor("document.getElementById('presence').dataset.state === 'waiting'");
       assert.deepEqual(JSON.parse(await page.eval(SEND_PAINT)), {
         presence: "Agent away",
         send: "Send 1 note to agent",
