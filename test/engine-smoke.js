@@ -47,6 +47,7 @@ async function smoke(engine) {
       [{ prompt: NOTE, selector: "#title", tag: "h1" }],
     );
     await enterIsNotThePages(browser, lab);
+    await pressOverThePage(browser, lab);
     return `${engine} ${browser.version()} passed`;
   } finally {
     await browser?.close();
@@ -90,6 +91,47 @@ async function enterIsNotThePages(browser, lab) {
   );
   const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
   assert.equal(polled.status, "waiting", "the agent receives nothing the reviewer did not send");
+}
+
+/**
+ * A press over the page while a note has the focus is the reviewer's own move into the page, so the
+ * engine must name the frame as where the focus went; if it does not, the chrome holds the page as
+ * a steal and the page is not shown.
+ */
+async function pressOverThePage(browser, lab) {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(STEP_MS);
+  const { session } = (await cli([fixture], lab.env)).json();
+  await page.goto(session.url);
+  await page.waitForFunction(() => document.body.dataset.ready === "1");
+  await page.waitForFunction(() => document.body.dataset.annotate === "1");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  const spot = await page.evaluate(() => {
+    const frame = document.getElementById("artifact").getBoundingClientRect();
+    const card = document.getElementById("card").getBoundingClientRect();
+    const points = [
+      [0.1, 0.9],
+      [0.9, 0.9],
+      [0.1, 0.1],
+      [0.9, 0.1],
+    ].map(([x, y]) => ({ x: frame.left + frame.width * x, y: frame.top + frame.height * y }));
+    return points.find(
+      ({ x, y }) => x < card.left || x > card.right || y < card.top || y > card.bottom,
+    );
+  });
+  assert.ok(spot, "a point over the page outside the note card");
+  await page.mouse.click(spot.x, spot.y);
+  await page.waitForFunction(() => document.activeElement?.id === "artifact");
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
+      cover: document.getElementById("cover").hidden,
+    })),
+    { shown: true, cover: true },
+    "a press over the page is the reviewer's own move into it, so the page is not held",
+  );
+  await page.close();
 }
 
 const requested = process.argv.slice(2);
