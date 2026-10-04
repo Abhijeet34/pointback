@@ -48,7 +48,7 @@ async function smoke(engine) {
       [{ prompt: NOTE, selector: "#title", tag: "h1" }],
     );
     await enterIsNotThePages(browser, lab);
-    await readingPlace(browser, engine);
+    await readingPlace(browser, lab, engine);
     return `${engine} ${browser.version()} passed`;
   } finally {
     await browser?.close();
@@ -99,7 +99,7 @@ async function enterIsNotThePages(browser, lab) {
  * reviewer is; the reload must restore against the in-flow page, so a banner added above section 30
  * leaves its heading where the reviewer had it.
  */
-async function readingPlace(browser, engine) {
+async function readingPlace(browser, lab, engine) {
   const dir = mkdtempSync(join(tmpdir(), "pb-reading-"));
   try {
     const file = join(dir, "docs.html");
