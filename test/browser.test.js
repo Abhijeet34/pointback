@@ -1018,6 +1018,32 @@ test(
 );
 
 test(
+  "the wheel over the page scrolls it while a note has the focus",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#title");
+    await page.waitFor("!document.getElementById('shield').hidden");
+    // Below the card, over the page.
+    const box = JSON.parse(await page.eval(FRAME_BOX));
+    const below = await page.eval("document.getElementById('card').getBoundingClientRect().bottom");
+    const at = { x: box.left + 40, y: below + 40 };
+    assert.equal(await page.eval(`document.elementFromPoint(${at.x}, ${at.y}).id`), "shield");
+    await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at });
+    await page.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      ...at,
+      deltaX: 0,
+      deltaY: 120,
+    });
+    await artifact.waitFor("scrollY > 0");
+    assert.equal(await page.eval("document.activeElement.id"), "cardText");
+    await page.close();
+  },
+);
+
+test(
   "eight review tabs all load, and a note added in the eighth reaches the agent",
   { skip: !executable && "no browser found" },
   async () => {
