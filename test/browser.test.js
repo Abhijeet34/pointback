@@ -1381,6 +1381,60 @@ test(
   },
 );
 
+test(
+  "a save keeps the reviewer's place on a page with a sticky header, a fixed header or a fixed footer",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    // A box that stays on screen crosses the top of the window wherever the reviewer is, so
+    // anchoring to it restored its own document top: the page came back at scroll 0.
+    const pages = {
+      "sticky header": '<header style="position:sticky;top:0;padding:12px">Docs</header>',
+      "fixed header":
+        '<header style="position:fixed;top:0;left:0;right:0;padding:12px">Docs</header>' +
+        '<div style="height:48px"></div>',
+      "fixed footer": '<footer style="position:fixed;bottom:0;padding:12px">Footer</footer>',
+      "no header": "",
+    };
+    const sections = Array.from(
+      { length: 60 },
+      (_, i) => `<section id="s${i}"><h2>Section ${i}</h2><p>Body of section ${i}.</p></section>`,
+    ).join("");
+    const write = (file, html) => {
+      writeFileSync(`${file}.tmp`, html);
+      renameSync(`${file}.tmp`, file);
+    };
+    for (const [name, chrome] of Object.entries(pages)) {
+      const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-sticky-"));
+      try {
+        const file = join(dir, "docs.html");
+        const html = (banner) =>
+          `<!doctype html><body style="margin:0">${chrome}${banner}<main>${sections}</main></body>`;
+        write(file, html(""));
+        const page = await browser.page((await cli([file], lab.env)).json().session.url);
+        await page.waitFor("document.body.dataset.revision === '0'");
+        const artifact = await page.frame();
+        const heading = "Math.round(document.querySelector('#s30 h2').getBoundingClientRect().top)";
+        const y = await artifact.eval(
+          `(() => { window.scrollTo(0, ${heading} + window.scrollY - 120); return window.scrollY; })()`,
+        );
+        // This scroll's own report, not an earlier one, is what the reload restores from.
+        await page.waitFor(`document.body.dataset.scroll === '${y}'`);
+        const wasAt = Number(await artifact.eval(heading));
+        write(file, html('<div style="height:300px">Banner the agent added</div>'));
+        await page.waitFor("document.body.dataset.revision === '1'");
+        const nowAt = Number(await artifact.eval(heading));
+        assert.ok(
+          Math.abs(nowAt - wasAt) <= 2,
+          `${name}: section 30 moved from ${wasAt} px to ${nowAt} px from the top of the window`,
+        );
+        await page.close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  },
+);
+
 /**
  * Opens a review in a fresh tab, with the artifact attached and Annotate on. It starts on, which
  * the slice test asserts; turning it on here when it is not keeps every other test about its own

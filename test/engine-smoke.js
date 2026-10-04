@@ -6,7 +6,8 @@
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
 /* global document, parent, nonce */
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { firefox, webkit } from "playwright-core";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
@@ -47,6 +48,7 @@ async function smoke(engine) {
       [{ prompt: NOTE, selector: "#title", tag: "h1" }],
     );
     await enterIsNotThePages(browser, lab);
+    await readingPlace(browser, lab, engine);
     return `${engine} ${browser.version()} passed`;
   } finally {
     await browser?.close();
@@ -90,6 +92,51 @@ async function enterIsNotThePages(browser, lab) {
   );
   const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
   assert.equal(polled.status, "waiting", "the agent receives nothing the reviewer did not send");
+}
+
+/**
+ * A box that stays on screen, here a sticky header, crosses the top of the window wherever the
+ * reviewer is; the reload must restore against the in-flow page, so a banner added above section 30
+ * leaves its heading where the reviewer had it.
+ */
+async function readingPlace(browser, lab, engine) {
+  const dir = mkdtempSync(join(tmpdir(), "pb-reading-"));
+  try {
+    const file = join(dir, "docs.html");
+    const sections = Array.from(
+      { length: 60 },
+      (_, i) => `<section id="s${i}"><h2>Section ${i}</h2><p>Body of section ${i}.</p></section>`,
+    ).join("");
+    const save = (banner) => {
+      const html = `<!doctype html><body style="margin:0"><header style="position:sticky;top:0;padding:12px">Docs</header>${banner}<main>${sections}</main></body>`;
+      writeFileSync(`${file}.tmp`, html);
+      renameSync(`${file}.tmp`, file);
+    };
+    save("");
+    const page = await browser.newPage();
+    page.setDefaultTimeout(STEP_MS);
+    const { session } = (await cli([file], lab.env)).json();
+    await page.goto(session.url);
+    await page.waitForFunction(() => document.body.dataset.revision === "0");
+    const heading = page.frameLocator("#artifact").frameLocator("#page").locator("#s30 h2");
+    const y = await heading.evaluate((h2) => {
+      const win = h2.ownerDocument.defaultView;
+      win.scrollTo(0, win.scrollY + h2.getBoundingClientRect().top - 120);
+      return win.scrollY;
+    });
+    // This scroll's own report, not an earlier one, is what the reload restores from.
+    await page.waitForFunction((expected) => document.body.dataset.scroll === expected, String(y));
+    const before = await heading.evaluate((h2) => h2.getBoundingClientRect().top);
+    save('<div style="height:300px">Banner the agent added</div>');
+    await page.waitForFunction(() => document.body.dataset.revision === "1");
+    const after = await heading.evaluate((h2) => h2.getBoundingClientRect().top);
+    assert.ok(
+      Math.abs(after - before) <= 2,
+      `${engine}: section 30 moved from ${before} px to ${after} px from the top of the window`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 const requested = process.argv.slice(2);
