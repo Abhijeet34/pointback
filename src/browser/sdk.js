@@ -174,14 +174,17 @@
   // pixel count: restoring the count alone moves them off their line the moment the agent adds
   // anything above it. The place is the deepest element crossing the top edge of the window -
   // deepest because `main` crosses that edge on every page and starts at the top of every
-  // document, so anchoring to it restores the same offset it was supposed to replace.
+  // document, so anchoring to it restores the same offset it was supposed to replace. A sticky
+  // or fixed box, and all it holds, is passed over: it crosses that edge wherever the reviewer
+  // is, so a header anchored the place to its own top and every reload came back at scroll 0.
   function readingPlace() {
     let element = /** @type {Element} */ (document.body);
     for (let depth = 0; depth < 32; depth += 1) {
       const child = [...element.children].find((node) => {
         if (node === host || SKIP.has(tagName(node)) || !node.checkVisibility()) return false;
         const rect = node.getBoundingClientRect();
-        return rect.height > 0 && rect.bottom > 0;
+        if (rect.height === 0 || rect.bottom <= 0) return false;
+        return !/^(sticky|fixed)$/.test(getComputedStyle(node).position);
       });
       if (!child) break;
       element = child;
