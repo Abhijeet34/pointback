@@ -1133,41 +1133,6 @@ test(
 );
 
 test(
-  "a Tab in the page while the card is open keeps its focus when the card closes",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const { file } = copyOfFixture();
-    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
-    await artifact.eval("document.getElementById('p1').focus()");
-    await artifact.waitFor("document.activeElement?.id === 'p1'");
-    await page.enter();
-    await page.waitFor(
-      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
-    );
-    await page.type("Say which queue");
-    // The close reaches the page only after the review has kept the note, so the Tab below lands
-    // while the page still holds the target open, as a close in flight would find it.
-    await artifact.eval("document.getElementById('p1').focus()");
-    await page.tab();
-    await artifact.waitFor("document.activeElement?.id !== 'p1'");
-    await page.eval("document.getElementById('card').requestSubmit()");
-    await page.waitFor("document.getElementById('card').hidden");
-    await until(
-      async () =>
-        (await artifact.eval("document.activeElement?.id === 'p1'")) ||
-        (await highlights(artifact)) === 0,
-      { what: "the page to hear the card close" },
-    );
-    assert.notEqual(
-      await artifact.eval("document.activeElement?.id"),
-      "p1",
-      "the close returned focus to the noted element, undoing the Tab",
-    );
-    await page.close();
-  },
-);
-
-test(
   "a frame that leaves the review for a missing page is covered by a notice in words, and Back brings the review back",
   { skip: !executable && "no browser found" },
   async () => {
