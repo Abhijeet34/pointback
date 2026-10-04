@@ -1248,21 +1248,11 @@ test(
     const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
     // The card's close crosses the wrapper to reach the page, so it can land after the reviewer's
     // next press: on a loaded runner, focus went back to the noted element mid-drag, ending it, and
-    // the passage was noted as its whole paragraph (run 37217865614). The page holds the close until
-    // the button is down, which makes that order certain; a press while the card is still open would
-    // land on the chrome's shield instead.
+    // the passage was noted as its whole paragraph (run 37217865614). Pressing while the card is
+    // still open, and closing it while the button is held, makes that order certain.
     const cell = "main > table > tbody > tr:nth-of-type(1) > td:nth-of-type(2)";
     await pointAt(page, artifact, cell);
     await page.type("Priya is on leave that week");
-    await artifact.eval(`globalThis.closes = [];
-      addEventListener("message", (e) => {
-        if (e.data?.type !== "compose" || globalThis.letClose) return;
-        e.stopImmediatePropagation();
-        globalThis.closes.push(e);
-      }, true)`);
-    await page.eval("document.getElementById('card').requestSubmit()");
-    await page.waitFor("document.getElementById('card').hidden");
-    await artifact.waitFor("globalThis.closes.length === 1");
     const frameBox = JSON.parse(await page.eval(FRAME_BOX));
     // "Move the queue" is characters 0 to 14 of #p1, above the cell and clear of its card.
     const line = JSON.parse(
@@ -1275,6 +1265,10 @@ test(
     );
     const y = frameBox.top + line.top + line.height / 2;
     const from = { x: frameBox.left + line.left + 1, y };
+    // A press over the page while the note holds the focus lands on the chrome's shield, which hands
+    // the page the focus; the reviewer's next press reaches the page.
+    await page.click(from.x, from.y);
+    await page.waitFor("document.getElementById('shield').hidden");
     await page.pointerInto(artifact, from);
     await page.drag(
       from,
@@ -1282,10 +1276,8 @@ test(
       {
         pressed: async () => {
           await artifact.waitFor("document.activeElement?.id === 'p1'");
-          await artifact.eval(`globalThis.letClose = true;
-            for (const e of globalThis.closes)
-              dispatchEvent(new MessageEvent("message", { data: e.data, origin: e.origin, source: e.source }))`);
-          console.log("DEBUG", await artifact.eval("JSON.stringify(globalThis.closes.map((e) => [e.origin, e.source === parent, e.data]))"));
+          await page.eval("document.getElementById('card').requestSubmit()");
+          await page.waitFor("document.getElementById('card').hidden");
           // The page drops the cell's highlight when the close reaches it.
           await until(async () => (await highlights(artifact)) === 0, {
             what: "the page to hear the card close",
