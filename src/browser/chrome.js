@@ -1398,7 +1398,7 @@ function unload() {
 /** Gives the frame the focus, or the open note it cannot take while the page is held. */
 function focusFrame() {
   const field = composing ? cardText : marks.querySelector(".mark-edit-text");
-  (field && frame.hidden ? field : frame).focus();
+  (field && frame.hidden ? /** @type {HTMLElement} */ (field) : frame).focus();
 }
 
 // The wrapper is served under the loopback name this page is not, which makes it another origin, so
