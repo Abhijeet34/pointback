@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -660,6 +661,49 @@ for (const [how, args] of [
     }
   });
 }
+
+// An older daemon that refuses to stop still holds the port and the sessions. Starting another beside it
+// would split the directory between two daemons, so each open refuses until that daemon is gone.
+test("an older daemon that refuses to stop blocks every open, and no second daemon starts", async () => {
+  const other = isolatedEnv();
+  let shutdownAsked = 0;
+  const refuser = createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "POST" && req.url === "/shutdown") {
+      shutdownAsked += 1;
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: "busy" }));
+      return;
+    }
+    res.end(JSON.stringify({ ok: true, app: name, version: "0.0.0-other" }));
+  });
+  await new Promise((r) => refuser.listen(0, "127.0.0.1", r));
+  const port = refuser.address().port;
+  await recordServer(other.dir, port);
+  try {
+    for (const attempt of [1, 2]) {
+      const opened = await cli([fixture], other.env);
+      assert.equal(opened.code, 1, `attempt ${attempt}: ${opened.stdout}`);
+      assert.ok(
+        opened.stderr.includes(
+          `error: an older ${name} daemon on port ${port} did not stop; stop it and retry`,
+        ),
+        opened.stderr,
+      );
+    }
+    assert.equal(shutdownAsked, 2, "each open asked the older daemon to stop");
+    assert.equal(other.serverInfo().port, port, "the record still names the older daemon");
+    assert.equal(other.serverInfo().token, RECORDED_TOKEN, "and keeps the token that reaches it");
+    assert.equal(
+      existsSync(join(other.dir, "daemon.1.lock")),
+      false,
+      "no daemon claimed the directory",
+    );
+  } finally {
+    refuser.close();
+    await other.stop();
+  }
+});
 
 // The port a daemon left behind can be taken by anything, and the token outlives the daemon, so
 // it is presented only to a server that answers a fresh challenge keyed by it.

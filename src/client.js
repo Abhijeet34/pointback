@@ -64,7 +64,13 @@ export async function ensureServer(stateDir, environment = process.env) {
   if (existing) {
     const status = await health(existing);
     if (status?.proven && status.version === version) return existing;
-    if (status?.proven || status?.app === name) await stopServer(stateDir, existing, status);
+    if (status?.proven || status?.app === name) {
+      const stopped = await stopServer(stateDir, existing, status);
+      if (!stopped && (await health(existing))?.app === name)
+        throw new Error(
+          `an older ${name} daemon on port ${existing.port} did not stop; stop it and retry`,
+        );
+    }
   }
   const log = openSync(join(stateDir, "server.log"), "a", 0o600);
   const start = () => {
@@ -104,14 +110,16 @@ export async function ensureServer(stateDir, environment = process.env) {
 /**
  * Asks the recorded server to stop. A daemon from before the proof existed answers as this app
  * but cannot prove it holds the token, and still has to stop, or two would share its sessions; it
- * has then been shown the token, so the token is retired and the next daemon mints a fresh one.
+ * has then been shown the token, so once it has stopped the token is retired and the next daemon
+ * mints a fresh one. A refused stop keeps the record, so the next start finds the same daemon.
  */
 export async function stopServer(stateDir, info, status) {
   const stopped = await api(info, "POST", "/shutdown").then(
     () => true,
     () => false,
   );
-  if (!status.proven) writeJsonAtomic(join(stateDir, "server.json"), { ...info, token: null });
+  if (stopped && !status.proven)
+    writeJsonAtomic(join(stateDir, "server.json"), { ...info, token: null });
   return stopped;
 }
 
