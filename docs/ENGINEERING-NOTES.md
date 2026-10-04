@@ -13,7 +13,7 @@ Each section below is the text `AGENTS.md` carried under the same heading before
 - The product name is a parameter: `package.json` `name`, derived through `src/identity.js`; never write it as a literal under `src/`.
 - A review has a bounded lifecycle.
   The daemon idles out on inactivity (`touch` in `src/server.js`), and a tab keeps it alive only by heartbeating while visible (`startHeartbeat` in `src/browser/chrome.js`, paced by the `idleMs` that `/health` reports), so an abandoned tab releases the process instead of pinning it open.
-  `SessionStore.#evict` disposes the least-recently-active session (an ended review first, never one with a poll attached) when `open` hits `limits.sessions`, so `sessions/` in the state directory stays bounded.
+  `SessionStore.#evict` disposes the least-recently-active session (an ended review first, never one with a poll attached or a tab open) when `open` hits `limits.sessions`, so `sessions/` in the state directory stays bounded.
   Nor is a session with a tab on it disposed (`live` from `EventStreams.live`): evicted under a tab on 0.1.6, the tab heard nothing and answered every note with "no such session", the agent's reopen said the tab was open and opened none while the tab's page answered 404, and closing the newer of two tabs read the gone session in a socket `close` handler and took the daemon down.
   When every held session is live in this sense the new open is refused with a 429 that says so, rather than breaking a review someone is in; a tab that was disconnected when its session went reconnects to a 4404 and says to run the CLI again, and that run opens a fresh tab.
   `test/cli.test.js` proves both against a real daemon.
