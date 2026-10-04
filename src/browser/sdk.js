@@ -514,13 +514,17 @@
 
   function closeTarget(refocus) {
     if (!open) return;
-    const { element, pointed } = open;
+    const { element, pointed, pressed } = open;
     open = null;
     outlineRects([]);
-    // Focus goes back either way, so the next Tab starts from the note; only a target reached by
-    // keyboard is outlined there, since after a click the box reads as a selection never made.
+    // Focus goes back however the target was reached, so the next Tab starts from the note; only a
+    // target reached by keyboard is outlined there, since after a click the box reads as a
+    // selection never made.
     focusShown = !pointed;
-    if (refocus && annotate && element.isConnected) element.focus({ preventScroll: true });
+    // Not once the reviewer has pressed in the page: this close can land mid-drag, and moving focus
+    // then ends the drag, so the passage is recorded cut short or as its whole element.
+    if (refocus && annotate && !pressed && element.isConnected)
+      element.focus({ preventScroll: true });
   }
 
   function describe(element) {
@@ -934,6 +938,8 @@
 
   // Every listener below is on the window in the capture phase, ahead of any the page adds to an
   // element or the document, so in Annotate mode a click notes a control and the page never sees it.
+  // This one comes first, so the press is counted on a control as well; see closeTarget.
+  window.addEventListener("pointerdown", () => open && (open.pressed = true), true);
   window.addEventListener(
     "click",
     (event) => {
