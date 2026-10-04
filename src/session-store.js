@@ -43,6 +43,8 @@ const newEpoch = () => randomBytes(8).toString("hex");
 /** The one file every session lived in before each got its own. */
 const LEGACY_FILE = "state.json";
 
+const writesOf = (session) => (Number.isSafeInteger(session?.writes) ? session.writes : 0);
+
 export class SessionStore {
   #stateDir;
   #dir;
@@ -131,11 +133,12 @@ export class SessionStore {
   }
 
   /**
-   * Writes the session through, unless another process wrote its file since this one last read or
-   * wrote it. Only a second daemon on the state directory can, which `claimDaemon` exists to
-   * prevent; should one ever slip past, its copy is the newer, so this process takes it and refuses
-   * the change rather than writing a stale session over notes the reviewer already sent. A file that
-   * is missing, unreadable or not a session is no newer copy, so the session is written from memory.
+   * Writes the session through. Each write counts itself in the session file, so when the file has
+   * been touched since this one last read or wrote it, a copy written more times than this one is a
+   * newer copy another process holds: this process takes it and refuses the change rather than
+   * writing over notes the reviewer already sent. A copy written no more often than this one, such as
+   * an older one put back, is overwritten. A file that is missing, unreadable or not a session is
+   * no newer copy, so the session is written from memory.
    */
   #persist(session) {
     const { key } = session;
@@ -143,9 +146,10 @@ export class SessionStore {
     if (current !== undefined && current !== this.#seen.get(key)) {
       this.#seen.set(key, this.#fingerprint(key));
       const disk = readJson(this.#path(key));
-      if (disk && this.#load(key, disk))
+      if (disk && writesOf(disk) > writesOf(session) && this.#load(key, disk))
         throw new HttpError(409, "this review was changed by another process; try again");
     }
+    session.writes = writesOf(session) + 1;
     writeJsonAtomic(this.#path(key), session);
     this.#seen.set(key, this.#fingerprint(key));
   }

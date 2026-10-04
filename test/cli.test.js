@@ -731,6 +731,29 @@ test("an older daemon that refuses to stop blocks every open, sees the token onc
   }
 });
 
+test("a recorded server that accepts the connection but never answers blocks the open instead of a second daemon starting", async () => {
+  const other = isolatedEnv();
+  const stalled = createServer(() => {});
+  await new Promise((r) => stalled.listen(0, "127.0.0.1", r));
+  const port = stalled.address().port;
+  await recordServer(other.dir, port);
+  try {
+    const opened = await cli([fixture], other.env);
+    assert.equal(opened.code, 1, opened.stdout);
+    assert.ok(
+      opened.stderr.includes(
+        `error: an older ${name} daemon (pid 1) on port ${port} did not stop; end that process and retry`,
+      ),
+      opened.stderr,
+    );
+    assert.equal(existsSync(join(other.dir, "daemon.1.lock")), false, "no daemon claimed it");
+  } finally {
+    stalled.closeAllConnections();
+    stalled.close();
+    await other.stop();
+  }
+});
+
 // The port a daemon left behind can be taken by anything, and the token outlives the daemon, so
 // it is presented only to a server that answers a fresh challenge keyed by it.
 test("a listener on the recorded port that cannot prove it holds the token is never sent it", async () => {

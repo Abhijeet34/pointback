@@ -124,15 +124,22 @@ export async function stopServer(stateDir, info, status) {
 }
 
 /**
- * The recorded server when its port still answers as this app, with its token or with the token
- * retired. A server that was asked to stop and did not is still there, so a start and `stop` both
+ * The recorded server when its port still answers as this app, or accepts the connection and is too
+ * busy to answer, with its token or with the token retired. A server that was asked to stop and did not is still there, so a start and `stop` both
  * need to name it; no signal is ever sent to its pid.
  */
 export async function refusingServer(stateDir) {
   const record = readJson(join(stateDir, "server.json"));
   if (!Number.isInteger(record?.port)) return null;
-  const token = typeof record.token === "string" ? record.token : "";
-  return (await health({ port: record.port, token }))?.app === name ? record : null;
+  try {
+    const challenge = randomBytes(16).toString("hex");
+    const res = await fetch(`http://127.0.0.1:${record.port}/health?challenge=${challenge}`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    return (await res.json())?.app === name ? record : null;
+  } catch (error) {
+    return error.name === "TimeoutError" || error.name === "AbortError" ? record : null;
+  }
 }
 
 /** How long, and how many looks, a spawned daemon gets to answer before it is called dead. */

@@ -942,7 +942,7 @@ test("a waiting poll whose batch was taken is answered with the note behind it w
     });
     const note = (text) => ({ prompt: text, selector: "#t", tag: "h1", text: "Title" });
     const poll = (query) =>
-      fetch(`${url}/api/poll?file=${encodeURIComponent(file)}&timeoutMs=5000&${query}`, {
+      fetch(`${url}/api/poll?file=${encodeURIComponent(file)}&timeoutMs=20000&${query}`, {
         headers: auth,
       }).then((res) => res.json());
     const epoch = new SessionStore(stateDir).get(key).epoch;

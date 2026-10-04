@@ -171,6 +171,58 @@ test("a poll that acknowledges a batch taken from a newer copy is answered with 
   );
 });
 
+test("an older copy put back over a session drops none of the notes written after it", () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  const older = readFileSync(sessionFile(dir, key), "utf8");
+  store.queue(key, [prompt("written after that copy")]);
+  writeFileSync(sessionFile(dir, key), older);
+  store.addDraft(key, prompt("the next write"));
+  assert.deepEqual(
+    store.get(key).pending.map((p) => p.prompt),
+    ["written after that copy"],
+  );
+  assert.deepEqual(
+    JSON.parse(readFileSync(sessionFile(dir, key), "utf8")).pending.map((p) => p.prompt),
+    ["written after that copy"],
+  );
+});
+
+test("a copy another writer has written more times is refused and adopted, and the write after it lands", () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  new SessionStore(dir).queue(key, [prompt("written by the other process")]);
+  assert.throws(() => tabs.addDraft(key, prompt("typed")), { status: 409 });
+  assert.deepEqual(
+    tabs.get(key).pending.map((p) => p.prompt),
+    ["written by the other process"],
+  );
+  tabs.addDraft(key, prompt("typed again"));
+  assert.deepEqual(
+    tabs.get(key).drafts.map((d) => d.prompt),
+    ["typed again"],
+  );
+});
+
+test("a session file with no write count loads, keeps its notes, and is counted from the next write", () => {
+  const { dir, artifact } = lab();
+  const { key } = new SessionStore(dir).open(artifact);
+  new SessionStore(dir).queue(key, [prompt("kept from before the count")]);
+  const stored = JSON.parse(readFileSync(sessionFile(dir, key), "utf8"));
+  delete stored.writes;
+  writeFileSync(sessionFile(dir, key), JSON.stringify(stored));
+  const store = new SessionStore(dir);
+  store.addDraft(key, prompt("typed after the upgrade"));
+  assert.deepEqual(
+    store.get(key).pending.map((p) => p.prompt),
+    ["kept from before the count"],
+  );
+  const counted = JSON.parse(readFileSync(sessionFile(dir, key), "utf8")).writes;
+  assert.ok(Number.isSafeInteger(counted) && counted >= 1, `counted: ${counted}`);
+});
+
 test("a session file deleted by hand is written again from memory, so an unsent note survives", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);
