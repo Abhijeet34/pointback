@@ -91,8 +91,9 @@ const contentTypes = {
  * before an idle-out, a stop or an upgrade reconnects on its own. `port` 0 asks for exactly that,
  * falling back to an ephemeral port when the old one is taken; any other port is used as given.
  *
- * Resolves to null, having loaded nothing and bound nothing, when another daemon already serves
- * the state directory: two would each hold their own copy of every session and overwrite the other's.
+ * Resolves to null when another daemon already serves the state directory: two would each hold their
+ * own copy of every session and overwrite the other's. A start that loses the race to publish its
+ * port may already have loaded sessions and bound one before it steps aside.
  */
 export async function serve({
   stateDir,

@@ -786,6 +786,19 @@ test("reply answers a note done, declined or with a question, and refuses a uid 
   assert.match(unopened.stderr, /no such session/);
 });
 
+test("a reply that meets a session another process rewrote is made once more and lands", async () => {
+  const { file } = scratch();
+  const key = keyOf(await cli([file], lab.env));
+  await daemon(lab).note(key, "the note the reply answers");
+  const [{ uid }] = (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json().prompts;
+  const path = join(lab.dir, "sessions", `${key}.json`);
+  writeFileSync(`${path}.tmp`, readFileSync(path));
+  renameSync(`${path}.tmp`, path);
+  const replied = await cli(["reply", file, String(uid), "--done"], lab.env);
+  assert.equal(replied.code, 0, replied.stderr);
+  assert.equal(replied.json().reply.status, "done");
+});
+
 test("a note that answers the agent's question names its uid, and only a uid the review issued", async () => {
   const { file } = scratch();
   const key = keyOf(await cli([file], lab.env));

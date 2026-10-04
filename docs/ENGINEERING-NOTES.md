@@ -110,10 +110,15 @@ Each section below is the text `AGENTS.md` carried under the same heading before
 - One daemon per state directory, by construction rather than by the CLI's timing.
   On 0.1.6, 8 cold `pointback f<i>.html` at once left 8 daemons on one state directory and 7 of the 8 calls failed after 10 s, and after an idle-out a tab reconnected to the daemon that won its old port while the agent reached another, whose next write deleted the tab's sent note from disk (deep review A1).
   A start claims the next `daemon.<n>.lock` with an exclusive create before it loads a session (`claimDaemon` in `src/daemon-lock.js`); replacing a dead holder by delete-then-create lets two starts that both saw it die each delete the other's fresh lock, which the racing test in `test/daemon-lock.test.js` would catch.
-  A holder is alive while its pid is and its port accepts a connection: a pid alone can come back after a crash and lock every start out, and a health probe can time out on a busy daemon and let a second one in, while the kernel accepts a connection whatever the event loop is doing.
+  A holder is alive while its pid is and its port answers `/health` as `pointback`, or does not answer within a second.
+  A pid alone can come back after a crash and lock every start out.
+  A port alone can be taken by another listener after a reboot, since the recorded port is sticky.
+  A busy daemon times out and counts as alive, so a second one does not get in while its event loop is blocked.
   Node has no portable `flock`, and a unix socket lock would leave a stale file on POSIX and be refused by sandboxes that deny `AF_UNIX` bind, which is where agents run this.
   `ensureServer` waits for any proven daemon, and starts again only once a child that stepped aside finds the holder gone, a daemon caught on its way out (`daemonHolds`): a fixed retry interval instead would spawn a node process per waiting CLI every interval while a slow runner is still starting the winner, and windows-2025 already takes 7.3 s for 8 cold opens (run 37230264516).
   Behind the lock, `#persist` in `src/session-store.js` refuses to write a session file whose inode, mtime or size moved since this process last read or wrote it, and takes the newer copy instead.
+  The CLI makes a refused call once more, so the agent sees a 409 only when the second try is refused too.
+  A session file that is gone was deleted by hand, not written by another process, so `#persist` writes it again from memory and no unsent note is dropped.
 - An atomic write is not atomic against a reader on Windows: a replace-rename is refused while any other process merely has the destination open, and this daemon's own CLI reads `server.json` every 50 ms while waiting for the daemon to come up.
   `pastSharingViolations` in `src/state-dir.js` waits that out and rethrows anything a reader cannot have caused; run 33877405478, attempt 6, is the measurement.
   What identified it in one run is that `ensureServer` now reports the daemon's own last lines rather than the path of a log nobody on a runner can reach afterwards.

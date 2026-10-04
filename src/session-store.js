@@ -138,7 +138,8 @@ export class SessionStore {
    */
   #persist(session) {
     const { key } = session;
-    if (this.#fingerprint(key) !== this.#seen.get(key)) {
+    const current = this.#fingerprint(key);
+    if (current !== undefined && current !== this.#seen.get(key)) {
       this.#seen.set(key, this.#fingerprint(key));
       const disk = readJson(this.#path(key));
       this.#sessions.delete(key);
@@ -447,8 +448,10 @@ export class SessionStore {
       this.#persist(session);
     } catch (error) {
       // Refused because another process holds a newer copy; a throw here would end the daemon.
-      if (error instanceof HttpError) return session.revision;
-      throw error;
+      if (!(error instanceof HttpError)) throw error;
+      const adopted = this.#sessions.get(key);
+      if (adopted) this.#events.emit(key, { type: "reload", revision: adopted.revision });
+      return adopted?.revision ?? 0;
     }
     this.#events.emit(key, { type: "reload", revision: session.revision });
     return session.revision;

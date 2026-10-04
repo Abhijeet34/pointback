@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { createServer as httpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { claimDaemon } from "../src/daemon-lock.js";
+import { name } from "../src/identity.js";
 
 const stateDir = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-lock-"));
 const locks = (dir) => readdirSync(dir).filter((name) => name.endsWith(".lock"));
@@ -27,12 +29,19 @@ async function closedPort() {
   return port;
 }
 
+/** A listener that answers `/health` the way a daemon of `app` does, and nothing else. */
+async function answering(app) {
+  const server = httpServer((req, res) => res.end(JSON.stringify({ ok: true, app })));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, port: /** @type {import("node:net").AddressInfo} */ (server.address()).port };
+}
+
 test("a live daemon keeps the state directory, and a second start is told so", async () => {
   const dir = stateDir();
   const first = await claimDaemon(dir);
   assert.ok(first);
   assert.equal(await claimDaemon(dir), null, "while it starts");
-  const { server, port } = await listening();
+  const { server, port } = await answering(name);
   try {
     assert.equal(first.publish(port), true);
     assert.equal(await claimDaemon(dir), null, "once it listens");
@@ -54,6 +63,31 @@ test("a lock whose pid came back but whose port is closed is taken over", async 
   const dir = stateDir();
   record(dir, 1, { pid: process.pid, port: await closedPort() });
   assert.ok(await claimDaemon(dir));
+});
+
+// A reboot can hand a crashed daemon's pid to a process and its sticky port to another listener; a
+// listener that is not pointback is not a daemon, or the directory would be locked for good.
+test("a lock whose pid came back and whose port answers as another app is taken over", async () => {
+  const dir = stateDir();
+  const { server, port } = await answering("something-else");
+  try {
+    record(dir, 1, { pid: process.pid, port });
+    assert.ok(await claimDaemon(dir));
+    assert.deepEqual(locks(dir), ["daemon.2.lock"]);
+  } finally {
+    server.close();
+  }
+});
+
+test("a daemon too busy to answer within a second still holds the state directory", async () => {
+  const dir = stateDir();
+  const { server, port } = await listening();
+  try {
+    record(dir, 1, { pid: process.pid, port });
+    assert.equal(await claimDaemon(dir), null);
+  } finally {
+    server.close();
+  }
 });
 
 test("a start that died before it wrote its lock is waited on only for a bounded time", async () => {

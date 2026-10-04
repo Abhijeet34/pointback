@@ -127,6 +127,34 @@ test("a process holding a stale copy of a session refuses to write it over a new
   );
 });
 
+test("a session file deleted by hand is written again from memory, so an unsent note survives", () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  rmSync(sessionFile(dir, key));
+  store.addDraft(key, prompt("the note written after the file went"));
+  assert.deepEqual(
+    new SessionStore(dir).get(key).drafts.map((d) => d.prompt),
+    ["the note written after the file went"],
+  );
+});
+
+test("a refused watcher write adopts the newer copy and tells every open tab to reload it", () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  const agents = new SessionStore(dir);
+  agents.queue(key, [prompt("written by the other process")]);
+  const events = [];
+  tabs.on(key, (event) => events.push(event));
+  tabs.fileChanged(key);
+  assert.deepEqual(events, [{ type: "reload", revision: tabs.get(key).revision }]);
+  assert.deepEqual(
+    tabs.get(key).pending.map((p) => p.prompt),
+    ["written by the other process"],
+  );
+});
+
 test("prompts are validated field by field", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);

@@ -1,6 +1,6 @@
-import { connect } from "node:net";
 import { readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { name } from "./identity.js";
 import { pastSharingViolations, writeJsonAtomic } from "./state-dir.js";
 
 /**
@@ -9,10 +9,10 @@ import { pastSharingViolations, writeJsonAtomic } from "./state-dir.js";
  * that both find a dead holder cannot both replace it, which they could if replacing meant deleting
  * one file and creating it again. Generations below the holder's are litter the holder clears.
  *
- * A holder is alive while its pid is and its port accepts a connection, a fact the kernel answers
- * even while the daemon's event loop is busy. Both are checked because each alone can be reused by
- * something else after a crash; a pid with nothing on its port is a dead daemon whose pid came back.
- * Until it has a port, a holder is given STARTING_MS. Node has no portable flock, and a socket
+ * A holder is alive while its pid is and its port answers as pointback, or does not answer within
+ * CONNECT_MS because its event loop is busy. Both are checked because each alone can be reused by
+ * something else after a crash; a pid whose port belongs to nothing, or to another app, is a dead
+ * daemon whose pid came back. Until it has a port, a holder is given STARTING_MS. Node has no portable flock, and a socket
  * file lock would leave a stale file behind on POSIX and be refused by sandboxes that deny AF_UNIX.
  */
 const LOCK_NAME = /^daemon\.(\d+)\.lock$/;
@@ -44,18 +44,19 @@ function pidAlive(pid) {
   }
 }
 
-/** Only a refusal means nothing listens; a timeout is a listener too busy to accept, so alive. */
-function accepts(port) {
-  return new Promise((resolve) => {
-    const socket = connect({ host: "127.0.0.1", port });
-    const done = (alive) => {
-      socket.destroy();
-      resolve(alive);
-    };
-    socket.setTimeout(CONNECT_MS, () => done(true));
-    socket.once("connect", () => done(true));
-    socket.once("error", (error) => done(/** @type {any} */ (error).code !== "ECONNREFUSED"));
-  });
+/**
+ * Whether the port holds a pointback daemon. Nothing listening, or a listener answering as another
+ * app, is not one; a daemon too busy to answer within CONNECT_MS is, so a timeout counts as alive.
+ */
+async function isDaemon(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(CONNECT_MS),
+    });
+    return (await res.json())?.app === name;
+  } catch (error) {
+    return error.name === "TimeoutError" || error.name === "AbortError";
+  }
 }
 
 /** "live", "dead", or "gone" when the file vanished under the read and the scan must be redone. */
@@ -77,7 +78,7 @@ async function holder(stateDir, generation) {
   }
   if (parsed.released || !Number.isInteger(parsed.pid) || !pidAlive(parsed.pid)) return "dead";
   if (!Number.isInteger(parsed.port)) return age < STARTING_MS ? "live" : "dead";
-  return (await accepts(parsed.port)) ? "live" : "dead";
+  return (await isDaemon(parsed.port)) ? "live" : "dead";
 }
 
 /** Whether a live daemon, started or still starting, holds the state directory. */
