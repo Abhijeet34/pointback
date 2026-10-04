@@ -1059,7 +1059,9 @@ test(
     await page.waitFor("document.getElementById('back').checkVisibility()");
     await page.eval("document.getElementById('back').focus()");
     await page.eval("document.getElementById('back').click()");
-    // A note held open defers the reload, so Back stays put and keeps the focus until the note closes.
+    // A held note defers the reload, so Back stays put and keeps the focus until the note closes; a
+    // reload that were not deferred would announce its ready well within this bound.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const state = JSON.parse(
       await page.eval(`JSON.stringify({
         focus: document.activeElement.id,
@@ -1137,8 +1139,9 @@ test(
       });
     }
     const text = await page.eval(`${edit}.value`);
+    const keyed = await artifact.eval("globalThis.keyed");
     await page.close();
-    assert.equal(text, "abc");
+    assert.deepEqual({ text, keyed }, { text: "abc", keyed: false });
   },
 );
 
