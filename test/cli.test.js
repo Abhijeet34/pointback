@@ -284,25 +284,27 @@ test("when every review held has a tab open, a new open is refused with the reas
   const tabs = [];
   try {
     const { dir, file } = scratch();
-    const first = keyOf(await cli([file], own.env));
-    tabs.push(await tab(own, first));
+    const keys = [keyOf(await cli([file], own.env))];
+    tabs.push(await tab(own, keys[0]));
     const api = daemon(own);
     for (let i = 1; i < limits.sessions; i += 1) {
       const other = join(dir, `other-${i}.html`);
       writeFileSync(other, "<p></p>");
-      tabs.push(
-        await tab(
-          own,
-          (await (await api.call("POST", "/api/sessions", { file: other })).json()).key,
-        ),
-      );
+      const { key } = await (await api.call("POST", "/api/sessions", { file: other })).json();
+      keys.push(key);
+      tabs.push(await tab(own, key));
     }
     const oneMore = join(dir, "one-more.html");
     writeFileSync(oneMore, "<p></p>");
     const refused = await cli([oneMore], own.env);
     assert.equal(refused.code, 1, refused.stdout);
-    assert.match(refused.stderr, /open in a tab.*close a review tab you are done with/);
-    assert.equal((await api.call("GET", `/api/${first}/session`)).status, 200, "no tab was broken");
+    assert.match(
+      refused.stderr,
+      /open in a tab, being polled or holding notes.*close the tab of a finished review, poll a polled review to the end or end it, or end a review holding notes/,
+    );
+    const statuses = [];
+    for (const key of keys) statuses.push((await api.call("GET", `/api/${key}/session`)).status);
+    assert.deepEqual(statuses, Array(limits.sessions).fill(200), "every held review still answers");
   } finally {
     for (const open of tabs) open.close();
     await own.stop();
