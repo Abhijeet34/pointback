@@ -1404,31 +1404,33 @@ test(
       renameSync(`${file}.tmp`, file);
     };
     for (const [name, chrome] of Object.entries(pages)) {
-      const file = join(
-        mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-sticky-")),
-        "docs.html",
-      );
-      const html = (banner) =>
-        `<!doctype html><body style="margin:0">${chrome}${banner}<main>${sections}</main></body>`;
-      write(file, html(""));
-      const page = await browser.page((await cli([file], lab.env)).json().session.url);
-      await page.waitFor("document.body.dataset.revision === '0'");
-      const artifact = await page.frame();
-      const heading = "Math.round(document.querySelector('#s30 h2').getBoundingClientRect().top)";
-      const y = await artifact.eval(
-        `(() => { window.scrollTo(0, ${heading} + window.scrollY - 120); return window.scrollY; })()`,
-      );
-      // This scroll's own report, not an earlier one, is what the reload restores from.
-      await page.waitFor(`document.body.dataset.scroll === '${y}'`);
-      const wasAt = Number(await artifact.eval(heading));
-      write(file, html('<div style="height:300px">Banner the agent added</div>'));
-      await page.waitFor("document.body.dataset.revision === '1'");
-      const nowAt = Number(await artifact.eval(heading));
-      assert.ok(
-        Math.abs(nowAt - wasAt) <= 2,
-        `${name}: section 30 moved from ${wasAt} px to ${nowAt} px from the top of the window`,
-      );
-      await page.close();
+      const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-sticky-"));
+      try {
+        const file = join(dir, "docs.html");
+        const html = (banner) =>
+          `<!doctype html><body style="margin:0">${chrome}${banner}<main>${sections}</main></body>`;
+        write(file, html(""));
+        const page = await browser.page((await cli([file], lab.env)).json().session.url);
+        await page.waitFor("document.body.dataset.revision === '0'");
+        const artifact = await page.frame();
+        const heading = "Math.round(document.querySelector('#s30 h2').getBoundingClientRect().top)";
+        const y = await artifact.eval(
+          `(() => { window.scrollTo(0, ${heading} + window.scrollY - 120); return window.scrollY; })()`,
+        );
+        // This scroll's own report, not an earlier one, is what the reload restores from.
+        await page.waitFor(`document.body.dataset.scroll === '${y}'`);
+        const wasAt = Number(await artifact.eval(heading));
+        write(file, html('<div style="height:300px">Banner the agent added</div>'));
+        await page.waitFor("document.body.dataset.revision === '1'");
+        const nowAt = Number(await artifact.eval(heading));
+        assert.ok(
+          Math.abs(nowAt - wasAt) <= 2,
+          `${name}: section 30 moved from ${wasAt} px to ${nowAt} px from the top of the window`,
+        );
+        await page.close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   },
 );
