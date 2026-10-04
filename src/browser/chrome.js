@@ -1305,6 +1305,8 @@ document.addEventListener("focusout", (event) => {
   const field = /** @type {HTMLElement} */ (event.target);
   left = event.relatedTarget === null && writing(field) ? field : null;
 });
+document.addEventListener("pointerup", () => (left = null), true);
+document.addEventListener("focusin", () => (left = null));
 window.addEventListener("blur", () => {
   const field = left;
   left = null;

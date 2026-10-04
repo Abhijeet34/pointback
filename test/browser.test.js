@@ -1020,6 +1020,59 @@ test(
 );
 
 test(
+  "focus handling leaves a move into the page alone after a press outside the note",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await clickOn(page, "document.getElementById('appName')");
+    await page.waitFor("document.activeElement === document.body");
+    await page.eval("document.getElementById('artifact').focus()");
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    // The blur's own put-back of a note runs a task later; this waits for that task.
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    const state = JSON.parse(
+      await page.eval(`JSON.stringify({
+        shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
+        cover: document.getElementById("cover").hidden,
+        focus: document.activeElement.id,
+      })`),
+    );
+    await page.close();
+    assert.deepEqual(state, { shown: true, cover: true, focus: "artifact" });
+  },
+);
+
+test(
+  "focus handling keeps the focus on Back while a held note defers the reload of a page that strayed",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await artifact.eval("globalThis.calling = true");
+    await page.waitFor(kept(card, TAKEN_LINE));
+    // The page navigates itself to a file that is not there, which the chrome sees as a stray.
+    await artifact.eval("location.href = 'plan-v2.html'");
+    await page.waitFor("document.getElementById('back').checkVisibility()");
+    await page.eval("document.getElementById('back').focus()");
+    await page.eval("document.getElementById('back').click()");
+    // A note held open defers the reload, so Back stays put and keeps the focus until the note closes.
+    const state = JSON.parse(
+      await page.eval(`JSON.stringify({
+        focus: document.activeElement.id,
+        back: document.getElementById("back").checkVisibility(),
+        card: !document.getElementById("card").hidden,
+      })`),
+    );
+    await page.close();
+    assert.deepEqual(state, { focus: "back", back: true, card: true });
+  },
+);
+
+test(
   "a page that focuses its own field at load and on its own click is never hidden while notes are written",
   { skip: !executable && "no browser found" },
   async () => {
