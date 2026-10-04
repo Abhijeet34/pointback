@@ -9,11 +9,12 @@ import { pastSharingViolations, writeJsonAtomic } from "./state-dir.js";
  * that both find a dead holder cannot both replace it, which they could if replacing meant deleting
  * one file and creating it again. Generations below the holder's are litter the holder clears.
  *
- * A holder is alive while its pid is and its port answers as pointback, or does not answer within
- * CONNECT_MS because its event loop is busy. Both are checked because each alone can be reused by
- * something else after a crash; a pid whose port belongs to nothing, or to another app, is a dead
- * daemon whose pid came back. Until it has a port, a holder is given STARTING_MS. Node has no portable flock, and a socket
- * file lock would leave a stale file behind on POSIX and be refused by sandboxes that deny AF_UNIX.
+ * A holder is alive while its pid is and its port answers as pointback with that same pid, or does
+ * not answer within CONNECT_MS because its event loop is busy. Both are checked because each alone
+ * can be reused by something else after a crash; a pid whose port belongs to nothing, to another
+ * app, or to another daemon, is a dead holder whose pid came back. Until it has a port, a holder is
+ * given STARTING_MS. Node has no portable flock, and a socket file lock would leave a stale file
+ * behind on POSIX and be refused by sandboxes that deny AF_UNIX.
  */
 const LOCK_NAME = /^daemon\.(\d+)\.lock$/;
 const STARTING_MS = 10_000;
@@ -45,15 +46,17 @@ function pidAlive(pid) {
 }
 
 /**
- * Whether the port holds a pointback daemon. Nothing listening, or a listener answering as another
- * app, is not one; a daemon too busy to answer within CONNECT_MS is, so a timeout counts as alive.
+ * Whether the port holds the daemon `pid`. Nothing listening, or a listener answering as another app
+ * or for another pid, is not it; a daemon too busy to answer within CONNECT_MS is, so a timeout
+ * counts as alive.
  */
-async function isDaemon(port) {
+async function isDaemon(port, pid) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
       signal: AbortSignal.timeout(CONNECT_MS),
     });
-    return (await res.json())?.app === name;
+    const status = await res.json();
+    return status?.app === name && status.pid === pid;
   } catch (error) {
     return error.name === "TimeoutError" || error.name === "AbortError";
   }
@@ -78,7 +81,7 @@ async function holder(stateDir, generation) {
   }
   if (parsed.released || !Number.isInteger(parsed.pid) || !pidAlive(parsed.pid)) return "dead";
   if (!Number.isInteger(parsed.port)) return age < STARTING_MS ? "live" : "dead";
-  return (await isDaemon(parsed.port)) ? "live" : "dead";
+  return (await isDaemon(parsed.port, parsed.pid)) ? "live" : "dead";
 }
 
 /** Whether a live daemon, started or still starting, holds the state directory. */

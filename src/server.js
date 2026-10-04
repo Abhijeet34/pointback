@@ -214,7 +214,14 @@ async function route(req, res, ctx) {
       challenge !== null && CHALLENGE_PATTERN.test(challenge)
         ? { proof: tokenProof(ctx.token, challenge) }
         : {};
-    return sendJson(res, 200, { ok: true, app: name, version, idleMs: ctx.idleMs, ...proof });
+    return sendJson(res, 200, {
+      ok: true,
+      app: name,
+      version,
+      pid: process.pid,
+      idleMs: ctx.idleMs,
+      ...proof,
+    });
   }
   if (req.method === "POST" && pathname === "/shutdown") {
     assertOrigin(req, ctx.port);

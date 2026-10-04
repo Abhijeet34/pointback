@@ -139,6 +139,18 @@ test("a session file deleted by hand is written again from memory, so an unsent 
   );
 });
 
+test("a session file that no longer parses is written again from memory, so an unsent note survives", () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  writeFileSync(sessionFile(dir, key), "{ a torn write");
+  store.addDraft(key, prompt("the note written over the torn file"));
+  assert.deepEqual(
+    new SessionStore(dir).get(key).drafts.map((d) => d.prompt),
+    ["the note written over the torn file"],
+  );
+});
+
 test("a refused watcher write adopts the newer copy and tells every open tab to reload it", () => {
   const { dir, artifact } = lab();
   const tabs = new SessionStore(dir);

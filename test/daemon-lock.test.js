@@ -29,9 +29,9 @@ async function closedPort() {
   return port;
 }
 
-/** A listener that answers `/health` the way a daemon of `app` does, and nothing else. */
-async function answering(app) {
-  const server = httpServer((req, res) => res.end(JSON.stringify({ ok: true, app })));
+/** A listener whose `/health` answers with `body`, and nothing else. */
+async function answering(body) {
+  const server = httpServer((req, res) => res.end(JSON.stringify(body)));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { server, port: /** @type {import("node:net").AddressInfo} */ (server.address()).port };
 }
@@ -41,7 +41,7 @@ test("a live daemon keeps the state directory, and a second start is told so", a
   const first = await claimDaemon(dir);
   assert.ok(first);
   assert.equal(await claimDaemon(dir), null, "while it starts");
-  const { server, port } = await answering(name);
+  const { server, port } = await answering({ ok: true, app: name, pid: process.pid });
   try {
     assert.equal(first.publish(port), true);
     assert.equal(await claimDaemon(dir), null, "once it listens");
@@ -69,7 +69,21 @@ test("a lock whose pid came back but whose port is closed is taken over", async 
 // listener that is not pointback is not a daemon, or the directory would be locked for good.
 test("a lock whose pid came back and whose port answers as another app is taken over", async () => {
   const dir = stateDir();
-  const { server, port } = await answering("something-else");
+  const { server, port } = await answering({ ok: true, app: "something-else" });
+  try {
+    record(dir, 1, { pid: process.pid, port });
+    assert.ok(await claimDaemon(dir));
+    assert.deepEqual(locks(dir), ["daemon.2.lock"]);
+  } finally {
+    server.close();
+  }
+});
+
+// A pointback daemon on the recorded port serving another state directory is not this holder: the
+// holder's own pid is the one its /health must report.
+test("a pointback daemon of another pid on the recorded port does not hold this directory", async () => {
+  const dir = stateDir();
+  const { server, port } = await answering({ ok: true, app: name, pid: process.ppid });
   try {
     record(dir, 1, { pid: process.pid, port });
     assert.ok(await claimDaemon(dir));
