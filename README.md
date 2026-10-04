@@ -267,7 +267,8 @@ Windows has no such bits, so the state directory's ACL is reset to a single full
 
 A review is a bounded thing that ends, not state that piles up.
 The daemon idles out after `POINTBACK_IDLE_MS` of no activity, and a review tab keeps it alive only while the reviewer is on it: the tab heartbeats while its page is visible and stops when it is hidden, so a review left open and walked away from releases the process rather than pinning it open for good.
-Sessions are capped at `sessions` in `src/limits.js`; opening past the cap disposes the least-recently-active session, an ended review before a live one, so `sessions/` holds at most that many files no matter how many files have been reviewed.
+Sessions are capped at `sessions` in `src/limits.js`; opening past the cap disposes the least-recently-active session, an ended review before a running one, so `sessions/` holds at most that many files no matter how many files have been reviewed.
+A session with a tab open on it, a poll attached, or notes not yet sent or received is never the one disposed; when every session held is one of those, the new open is refused and names those three causes, and `skills/pointback/SKILL.md` gives the way out for each.
 After a hundred reviews on a long-lived machine, then, there is one small loopback daemon that exits on its own when idle, and a `sessions/` directory bounded to the most recent sessions, each holding that session's path and the notes sent in it.
 
 The process opens no outbound connection, ever; `test/egress.test.js` proves it across the whole slice.

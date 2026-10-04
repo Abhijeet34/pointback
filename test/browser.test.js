@@ -1802,6 +1802,78 @@ test(
   },
 );
 
+// A tab that could not reach the daemon while its review was evicted (a laptop asleep, a dropped
+// network) comes back to a review that no longer exists: the server refuses its stream with 4404,
+// and the tab must say so and how to get a fresh page, and the agent's next open must give one.
+test(
+  "a tab that was offline while its review was evicted says so on its return, and the next open gives a working tab",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const pages = [];
+    try {
+      const { file } = copyOfFixture();
+      const session = (await cli([file], own.env)).json().session;
+      const away = await openReview(session.url);
+      pages.push(away.page);
+      const offline = (on) =>
+        away.page.send("Network.emulateNetworkConditions", {
+          offline: on,
+          latency: 0,
+          downloadThroughput: -1,
+          uploadThroughput: -1,
+        });
+      await away.page.send("Network.enable");
+      await offline(true);
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      await away.page.waitFor("document.getElementById('presence').dataset.state === 'lost'", {
+        timeoutMs: 20_000,
+      });
+
+      const dir = dirname(file);
+      const opened = (n) => {
+        const other = join(dir, `other-${n}.html`);
+        writeFileSync(other, "<p></p>");
+        return cli([other], own.env);
+      };
+      assert.equal((await opened(0)).code, 0);
+      const { port, token } = own.serverInfo();
+      const call = (method, path, body) =>
+        fetch(`http://127.0.0.1:${port}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${token}`, origin: `http://127.0.0.1:${port}` },
+          body: body && JSON.stringify(body),
+        });
+      for (let i = 1; i < limits.sessions; i += 1) {
+        const other = join(dir, `other-${i}.html`);
+        writeFileSync(other, "<p></p>");
+        assert.equal((await call("POST", "/api/sessions", { file: other })).status, 200);
+      }
+      const key = session.url.match(/session\/([0-9a-f]{16})/)[1];
+      assert.equal((await call("GET", `/api/${key}/session`)).status, 404, "evicted while away");
+
+      await offline(false);
+      await away.page.waitFor("document.getElementById('presence').dataset.state === 'gone'", {
+        timeoutMs: 20_000,
+      });
+      assert.match(
+        await away.page.eval("document.getElementById('noticeText').textContent"),
+        /can no longer reach its review\. Run .+ on this file again for a fresh page/,
+      );
+
+      const reopened = await cli([file], own.env);
+      assert.equal(reopened.code, 0, reopened.stderr);
+      assert.doesNotMatch(reopened.json().next_step, /already open/, "a fresh tab is opened");
+      const fresh = await openReview(reopened.json().session.url);
+      pages.push(fresh.page);
+      await noteOn(fresh.page, fresh.artifact, "#title", "Name the queue in the title");
+    } finally {
+      for (const page of pages) await page.close().catch(() => {});
+      await own.stop();
+    }
+  },
+);
+
 test(
   "a note sent while the agent works is delivered on its next poll",
   { skip: !executable && "no browser found" },

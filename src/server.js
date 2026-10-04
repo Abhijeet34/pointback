@@ -98,7 +98,7 @@ export async function serve({
 }) {
   const recorded = join(stateDir, "server.json");
   const previous = readJson(recorded);
-  const store = new SessionStore(stateDir);
+  const store = new SessionStore(stateDir, { live: (key) => streams.live(key) });
   const streams = new EventStreams(store);
   let idleTimer;
   // The daemon idles out on inactivity. An open tab keeps it alive by heartbeating while the reviewer

@@ -21,6 +21,13 @@ pointback plan.html
 A browser tab opens with the page in it, and `next_step` says what to run next.
 If the output has `refused_assets`, the page loads those files from above its folder and shows without them; open it again with `--root` set to a folder that holds the page and them.
 If `session.status` is `user-ended`, the user closed this review; run `pointback plan.html --reopen` only if they asked for another round.
+If it exits 1 saying every review held is open in a tab, being polled or holding notes, none can make room; free one by its cause, then open the file again:
+
+- a review with its tab open: ask the reviewer to close that tab once they are done with it.
+- a review you are still polling: poll it to the end, or run `pointback end` on it.
+- a review holding notes not yet sent or received: poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way.
+
+A review held for more than one of these needs each cause cleared before it is freed.
 
 ## 2. Poll
 

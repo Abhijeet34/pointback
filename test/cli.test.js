@@ -233,6 +233,110 @@ test("after an eviction a new note takes a uid the agent never saw, and an old c
   }
 });
 
+// Evicted under two open tabs on 0.1.6, the tabs heard nothing, the agent's reopen said a tab was
+// open while that tab's page answered 404, and closing the newer tab read the gone session in the
+// socket's close handler and took the daemon down with every other review.
+test("a review with tabs open is never evicted, closing one leaves the daemon up, and after a real eviction a reopen opens a tab", async () => {
+  const own = isolatedEnv();
+  try {
+    const { dir, file } = scratch();
+    const key = keyOf(await cli([file], own.env));
+    const api = daemon(own);
+    const older = await tab(own, key);
+    const newer = await tab(own, key);
+    assert.equal((await older.until("superseded"))?.type, "superseded");
+    for (let i = 0; i < limits.sessions; i += 1) {
+      const other = join(dir, `other-${i}.html`);
+      writeFileSync(other, "<p></p>");
+      assert.equal((await api.call("POST", "/api/sessions", { file: other })).status, 200);
+    }
+    newer.close();
+    const promoted = await older.until("current");
+    assert.equal((await api.call("GET", "/health")).status, 200, "the daemon outlived the tab");
+    assert.equal(promoted?.type, "current", "the older tab took the review back");
+    assert.equal((await api.call("GET", `/api/${key}/session`)).status, 200, "the review was kept");
+
+    // With no tab on it the review is fair game again; it goes at the first open once the server
+    // has let its last tab go, since it is the longest untouched.
+    older.close();
+    let more = 0;
+    await until(
+      async () => {
+        const other = join(dir, `more-${(more += 1)}.html`);
+        writeFileSync(other, "<p></p>");
+        assert.equal((await api.call("POST", "/api/sessions", { file: other })).status, 200);
+        return (await api.call("GET", `/api/${key}/session`)).status === 404;
+      },
+      { what: "the review to be evicted once its tabs closed" },
+    );
+    const reopened = await cli([file], own.env);
+    assert.equal(reopened.code, 0, reopened.stderr);
+    assert.doesNotMatch(reopened.json().next_step, /already open/, "a fresh tab is opened");
+    const page = await fetch(reopened.json().session.url.split("#")[0]);
+    assert.equal(page.status, 200, "and its page loads");
+  } finally {
+    await own.stop();
+  }
+});
+
+test("when every review held has a tab open, a new open is refused with the reason and the way out", async () => {
+  const own = isolatedEnv();
+  const tabs = [];
+  try {
+    const { dir, file } = scratch();
+    const keys = [keyOf(await cli([file], own.env))];
+    tabs.push(await tab(own, keys[0]));
+    const api = daemon(own);
+    for (let i = 1; i < limits.sessions; i += 1) {
+      const other = join(dir, `other-${i}.html`);
+      writeFileSync(other, "<p></p>");
+      const { key } = await (await api.call("POST", "/api/sessions", { file: other })).json();
+      keys.push(key);
+      tabs.push(await tab(own, key));
+    }
+    const oneMore = join(dir, "one-more.html");
+    writeFileSync(oneMore, "<p></p>");
+    const refused = await cli([oneMore], own.env);
+    assert.equal(refused.code, 1, refused.stdout);
+    assert.match(
+      refused.stderr,
+      /open in a tab, being polled or holding notes.*ask the reviewer to close the tab of a finished review, let a poll on a review run to the end or end that review, or for a review holding notes, poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way \(a review held for more than one of these needs each cleared\)/,
+    );
+    const statuses = [];
+    for (const key of keys) statuses.push((await api.call("GET", `/api/${key}/session`)).status);
+    assert.deepEqual(statuses, Array(limits.sessions).fill(200), "every held review still answers");
+  } finally {
+    for (const open of tabs) open.close();
+    await own.stop();
+  }
+});
+
+/** A review tab's event stream, held the way the chrome holds it. */
+async function tab(env, key) {
+  const { port, token } = env.serverInfo();
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/api/${key}/events`, [
+    "events",
+    `bearer.${token}`,
+  ]);
+  const events = [];
+  socket.addEventListener("message", (message) => events.push(JSON.parse(message.data)));
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve);
+    socket.addEventListener("error", () => reject(new Error(`no stream for ${key}`)));
+  });
+  const find = (type) => events.find((event) => event.type === type);
+  return {
+    close: () => socket.close(),
+    /** The first event of `type`, or null if the stream closed without one. */
+    async until(type) {
+      await until(() => find(type) || socket.readyState === WebSocket.CLOSED, {
+        what: `a ${type} event on ${key}`,
+      });
+      return find(type) ?? null;
+    },
+  };
+}
+
 // Each spelling resolves to one file, so receiving a batch by one and polling by another must
 // acknowledge it. Before the cursor was keyed canonically, a symlinked directory - macOS's
 // /tmp is one - kept a cursor per spelling and delivered the acknowledged batch again.
