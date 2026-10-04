@@ -140,21 +140,31 @@ test("a refused write raised while a missing file is announced leaves the watche
   assert.equal(tabs.status(key).gone, true);
 });
 
-test("a poll still waiting behind an unacked batch is answered gone when the file goes, and a listener after it still hears the gone", async () => {
+test("a poll that acknowledges a batch taken from a newer copy is answered with the note behind it when the file goes, and a listener after it still hears the gone", async () => {
   const { dir, artifact } = lab();
   const tabs = new SessionStore(dir);
   const { key } = tabs.open(artifact);
-  const taker = tabs.waitForFeedback(key, 5000);
-  const waiting = tabs.waitForFeedback(key, 5000);
-  tabs.queue(key, [prompt("batch one")]);
-  assert.equal((await taker).status, "feedback");
-  tabs.queue(key, [prompt("the note waiting behind it")]);
-  new SessionStore(dir).queue(key, [prompt("written by the other process")]);
+  new SessionStore(dir).queue(key, [prompt("batch one")]);
+  const waiting = tabs.waitForFeedback(key, 5000, undefined, cursor(tabs, key, 1));
+  assert.throws(() => tabs.addDraft(key, prompt("typed while the other process wrote")), {
+    status: 409,
+  });
+  const taker = await tabs.waitForFeedback(key, 5000);
+  assert.deepEqual(
+    taker.prompts.map((p) => p.prompt),
+    ["batch one"],
+  );
+  new SessionStore(dir).queue(key, [prompt("the note behind the batch")]);
   const seen = [];
   tabs.on(key, (event) => seen.push(event.type));
   renameSync(artifact, `${artifact}.away`);
   tabs.fileChanged(key);
-  assert.deepEqual(await waiting, { status: "gone", file: tabs.get(key).file });
+  const answer = await waiting;
+  assert.equal(answer.status, "feedback", "answered before its timeout");
+  assert.deepEqual(
+    answer.prompts.map((p) => p.prompt),
+    ["the note behind the batch"],
+  );
   assert.deepEqual(
     seen.filter((type) => type === "gone"),
     ["gone"],

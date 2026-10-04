@@ -915,7 +915,7 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
   await held.close();
 });
 
-test("a watched file removed under a waiting poll is answered gone, and the daemon keeps serving", async (t) => {
+test("a waiting poll whose batch was taken is answered with the note behind it when its file goes, and the daemon keeps serving", async (t) => {
   if (!(await watchAvailable())) return t.skip("file watching is refused in this sandbox");
   const stateDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-server-gone-"));
   const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-server-folder-"));
@@ -940,17 +940,37 @@ test("a watched file removed under a waiting poll is answered gone, and the daem
       socket.addEventListener("open", resolve);
       socket.addEventListener("error", reject);
     });
-    const polling = fetch(`${url}/api/poll?file=${encodeURIComponent(file)}&timeoutMs=5000`, {
-      headers: auth,
-    }).then((res) => res.json());
+    const note = (text) => ({ prompt: text, selector: "#t", tag: "h1", text: "Title" });
+    const poll = (query) =>
+      fetch(`${url}/api/poll?file=${encodeURIComponent(file)}&timeoutMs=5000&${query}`, {
+        headers: auth,
+      }).then((res) => res.json());
+    const epoch = new SessionStore(stateDir).get(key).epoch;
+    const waiting = poll(`ack=1&epoch=${epoch}`);
     await until(async () => (await session(`/api/${key}/session`)).presence.state === "listening", {
       what: "the poll to attach",
     });
-    new SessionStore(stateDir).queue(key, [
-      { prompt: "written by the other process", selector: "#t", tag: "h1", text: "Title" },
-    ]);
+    new SessionStore(stateDir).queue(key, [note("batch one")]);
+    const refused = await fetch(`${url}/api/${key}/drafts`, {
+      method: "POST",
+      headers: { ...auth, origin: url },
+      body: JSON.stringify({ draft: note("typed while the other process wrote") }),
+    });
+    assert.equal(refused.status, 409, "a write over a newer copy is refused");
+    const taken = await poll("");
+    assert.deepEqual(
+      taken.prompts.map((p) => p.prompt),
+      ["batch one"],
+      "the daemon took the newer copy's batch",
+    );
+    new SessionStore(stateDir).queue(key, [note("the note behind the batch")]);
     renameSync(file, `${file}.away`);
-    assert.equal((await polling).status, "gone", "the poll is answered gone");
+    const answer = await waiting;
+    assert.equal(answer.status, "feedback", "the poll is answered before its timeout");
+    assert.deepEqual(
+      answer.prompts.map((p) => p.prompt),
+      ["the note behind the batch"],
+    );
     assert.equal((await fetch(`${url}/health`)).status, 200, "the daemon still serves");
   } finally {
     socket?.close();
