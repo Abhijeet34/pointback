@@ -300,7 +300,7 @@ test("when every review held has a tab open, a new open is refused with the reas
     assert.equal(refused.code, 1, refused.stdout);
     assert.match(
       refused.stderr,
-      /open in a tab, being polled or holding notes.*close the tab of a finished review, poll a polled review to the end or end it, or for a review holding notes, poll it until its notes are delivered or ask the reviewer to send or discard them/,
+      /open in a tab, being polled or holding notes.*close the tab of a finished review, poll a polled review to the end or end it, or for a review holding notes, poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way/,
     );
     const statuses = [];
     for (const key of keys) statuses.push((await api.call("GET", `/api/${key}/session`)).status);

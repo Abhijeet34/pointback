@@ -203,7 +203,7 @@ export class SessionStore {
     if (evictable.length === 0)
       throw new HttpError(
         429,
-        `all ${limits.sessions} reviews held are open in a tab, being polled or holding notes, so none can make room: close the tab of a finished review, poll a polled review to the end or end it, or for a review holding notes, poll it until its notes are delivered or ask the reviewer to send or discard them`,
+        `all ${limits.sessions} reviews held are open in a tab, being polled or holding notes, so none can make room: close the tab of a finished review, poll a polled review to the end or end it, or for a review holding notes, poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way`,
       );
     evictable.sort((a, b) => {
       if (Boolean(a.endedAt) !== Boolean(b.endedAt)) return a.endedAt ? -1 : 1;

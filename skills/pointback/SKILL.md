@@ -25,7 +25,7 @@ If it exits 1 saying every review held is open in a tab, being polled or holding
 
 - a review with its tab open: ask the reviewer to close that tab once they are done with it.
 - a review you are still polling: poll it to the end, or run `pointback end` on it.
-- a review holding notes not yet sent or received: poll it until its notes are delivered, or ask the reviewer to send or discard them.
+- a review holding notes not yet sent or received: poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way.
 
 ## 2. Poll
 
