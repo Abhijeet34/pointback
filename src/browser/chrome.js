@@ -964,7 +964,7 @@ function closeCompose(refocus) {
   const from = composing?.from;
   composing = null;
   editing = false;
-  if (deferredReload) show();
+  if (deferredReload && !fileGone) show();
   // Tell the artifact the target is done so it drops the highlight; hand keyboard focus back to
   // the frame and, for the keyboard path, ask it to refocus the element the reviewer came from.
   // An answer came from the margin, so focus goes back there, or on to Send once it is added.

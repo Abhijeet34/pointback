@@ -235,11 +235,14 @@ It carries seven things.
 - **The handover.** Opening the file again while a tab shows the review opens nothing new, and the agent is told the review is already open; if that open names a different `--root`, the tab follows to the address the new root gives it rather than reloading into a 404. A second tab the reviewer opens themselves owns the artifact view; the older one is told the moment it happens and offers to take the review back, rather than finding out at the next save.
 - **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back turns Annotate on again, if the reviewer had wanted it on, and reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
-- **A note being written.** The agent's end, a gone file or another tab taking over never closes a card with words in it: the card stays open with the reason on it, and Add note still keeps the note with the others. Only the reviewer drops them: Cancel, Escape, Annotate off, or Discard and end.
 
 When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send turns off until it is back, and a note being written stays in its card with Add note held until then.
 It keeps trying, because a daemon that idled out or was stopped comes back at the agent's next command on the same port with the same token, and the tab picks the review up from there.
 If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection; running the command on the file again opens a fresh tab with the notes in it.
+
+The agent's end, a gone file or another tab taking over never closes a card with words in it.
+The card stays open with the reason on it, and Add note still keeps the note with the others.
+Only the reviewer drops them: Cancel, Escape, Annotate off, or Discard and end.
 
 The frame can leave the page under review too: a link followed with Annotate off, or an address with nothing at it, which the server answers inside a review with a short page in the house reading styles rather than JSON.
 Only the page under review announces itself to the chrome, so a page that loads without doing so is covered, where the reviewer is looking, by a notice saying the frame went to a page that is missing or is not the file, with a button back to it.

@@ -1128,6 +1128,84 @@ test(
 );
 
 test(
+  "a reload held back while the file is gone is not requested by Add or Cancel, and lands when the file returns",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const away = `${file}.away`;
+    const FILE_CHANGED = "The file changed. This page updates as soon as you finish this note.";
+    const goneWhileTyping = async (selector, words, change) => {
+      await pointAt(page, artifact, selector);
+      await page.type(words);
+      const shown = await page.eval("document.body.dataset.revision");
+      writeFileSync(file, change);
+      await page.waitFor(
+        `document.getElementById('status').textContent === ${JSON.stringify(FILE_CHANGED)}`,
+      );
+      renameSync(file, away);
+      assert.equal((await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status, "gone");
+      await page.waitFor(noticeSays("The file was moved or deleted, so this review cannot go on."));
+      return shown;
+    };
+    // The file's return is a change of its own, so the revision moves on from the one shown.
+    const returnedAfter = async (shown) => {
+      renameSync(away, file);
+      await page.waitFor("!document.getElementById('notice').checkVisibility()");
+      await page.waitFor(`document.body.dataset.revision !== ${JSON.stringify(shown)}`);
+    };
+    // The frame's own window is replaced when it navigates to the missing revision, so a marker
+    // on it proves the frame stayed on the page under review.
+    const staysOnPage = async (revision) => {
+      // Add and Cancel reach the reload synchronously, and the frame would begin its load within
+      // one task of the message. 1000 ms bounds that load on a loaded runner, so an absence here
+      // means the frame was not sent anywhere.
+      await new Promise((r) => setTimeout(r, 1000));
+      assert.equal(
+        await artifact.eval("window.stillOnPage === true"),
+        true,
+        "the frame never navigated",
+      );
+      assert.equal(await page.eval("document.getElementById('cover').hidden"), true);
+      assert.equal(await page.eval("document.body.dataset.revision"), revision);
+    };
+
+    const firstShown = await goneWhileTyping(
+      "#title",
+      "Shorter title, please",
+      html.replace("<main>", "<main><p>First change.</p>"),
+    );
+    await artifact.eval("window.stillOnPage = true");
+    await clickOn(page, "document.getElementById('cardAdd')");
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    assert.equal(
+      await page.eval("document.querySelector('.mark:not(.sent) .mark-note').textContent"),
+      "Shorter title, please",
+      "Add keeps the words as a queued note",
+    );
+    await staysOnPage(firstShown);
+    await returnedAfter(firstShown);
+
+    const secondShown = await goneWhileTyping(
+      "#p1",
+      "Say who owns the rollback",
+      html.replace("<main>", "<main><p>Second change.</p>"),
+    );
+    await artifact.eval("window.stillOnPage = true");
+    await clickOn(page, "document.getElementById('cardCancel')");
+    await page.waitFor("document.getElementById('card').hidden");
+    await staysOnPage(secondShown);
+    assert.equal(
+      await page.eval("document.querySelectorAll('.mark:not(.sent)').length"),
+      1,
+      "Cancel drops the words, so the margin still holds only the first note",
+    );
+    await returnedAfter(secondShown);
+    await page.close();
+  },
+);
+
+test(
   "a note half-typed when the file goes stays in its card until the reviewer's own Cancel drops it",
   { skip: !executable && "no browser found" },
   async () => {
