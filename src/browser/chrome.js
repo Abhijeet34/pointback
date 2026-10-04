@@ -1312,9 +1312,9 @@ window.addEventListener("blur", () => {
 
 /**
  * Gives a note the focus, but while the page is held out of view only once the wrapper reports the
- * frame no longer drawn, which a hidden frame always is: the hide lands there a frame or more after it
- * is set here, and until it does the page can still take the focus. Meanwhile the focus waits on the
- * cover, out of the page.
+ * frame has no box, which a hidden frame reports once the browser drops it from layout: the hide lands
+ * there a frame or more after it is set here, and until it does the page can still take the focus.
+ * Without such a report the focus waits on the cover, out of the page, until the reviewer clicks in.
  */
 function focusField(field) {
   if (!frame.hidden || !drawn) return field.focus();
