@@ -47,4 +47,10 @@ window.addEventListener("focus", () => {
   if (page && document.activeElement !== page) page.focus();
 });
 
+// Whether this frame is drawn, as the browser has it rather than as the chrome set it: the chrome
+// hands a note the focus while it holds the page hidden only once this says the hide has landed.
+new IntersectionObserver(([entry]) =>
+  toChrome({ type: "drawn", on: entry.isIntersecting }),
+).observe(document.documentElement);
+
 toChrome({ type: "wrapper" });

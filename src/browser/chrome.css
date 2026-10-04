@@ -210,6 +210,12 @@ body {
   text-align: center;
 }
 
+/* It holds the focus only for the moment a note waits on a hidden page (`focusField` in chrome.js),
+   and is no control to point at. */
+.cover:focus-visible {
+  outline: none;
+}
+
 .cover[data-side="start"] {
   justify-content: flex-start;
 }

@@ -864,20 +864,39 @@ async function focusCallsReview() {
   return { file, session: (await cli([file], lab.env)).json().session };
 }
 
-const KEPT_LINE =
+// The cover's line in the note the page took the focus from, and in every note after it.
+const TAKEN_LINE =
+  "This page took the keyboard from your note, so it is hidden until you finish. Check the note for anything typed just then.";
+const EARLIER_LINE =
   "This page took the keyboard from a note earlier, so it stays hidden while you write notes.";
 // The focus is back in the note, the page is out of view, and the cover says why.
-const kept = (field) => `${field} === document.activeElement &&
+const kept = (field, line) => `${field} === document.activeElement &&
   getComputedStyle(document.getElementById("artifact")).display === "none" &&
   !document.getElementById("cover").hidden &&
-  document.getElementById("coverText").textContent === ${JSON.stringify(KEPT_LINE)}`;
+  document.getElementById("coverText").textContent === ${JSON.stringify(line)}`;
+
+/**
+ * Makes the chrome's next frame after each hide of the page a slow one, as on a loaded runner, so the
+ * hide reaches the browser late (macos-15, run 37227328002: the page still took the focus after it).
+ */
+const slowFrameOnHide = (page) =>
+  page.eval(`(() => {
+    const frame = document.getElementById("artifact");
+    new MutationObserver(() => {
+      if (!frame.hidden) return;
+      requestAnimationFrame(() => {
+        const from = performance.now();
+        while (performance.now() - from < 150);
+      });
+    }).observe(frame, { attributes: true, attributeFilter: ["hidden"] });
+  })()`);
 
 /**
  * Waits for the chrome to keep the note, types into it with real key presses, each after another
  * call of the page's, and finishes the note; returns the note's text and whether a key reached the page.
  */
-async function writeNote(page, artifact, field, done) {
-  await page.waitFor(kept(field));
+async function writeNote(page, artifact, field, done, line = TAKEN_LINE) {
+  await page.waitFor(kept(field, line));
   for (const ch of "abc") {
     const from = Number(await artifact.eval("globalThis.calls"));
     await artifact.waitFor(`globalThis.calls > ${from}`);
@@ -890,7 +909,7 @@ async function writeNote(page, artifact, field, done) {
   const last = Number(await artifact.eval("globalThis.calls"));
   await artifact.waitFor(`globalThis.calls > ${last}`);
   const result = {
-    kept: await page.eval(kept(field)),
+    kept: await page.eval(kept(field, line)),
     text: await page.eval(`${field}.value`),
     keyed: await artifact.eval("globalThis.keyed"),
   };
@@ -904,7 +923,7 @@ async function writeNote(page, artifact, field, done) {
 }
 
 test(
-  "focus the page moves out of a note goes back to the note, and the page is hidden while a note has the focus",
+  "focus the page moves out of a note goes back to the note, and the page is hidden while a note is open",
   { skip: !executable && "no browser found" },
   async () => {
     const card = "document.getElementById('cardText')";
@@ -921,6 +940,7 @@ test(
       const { uid } = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts[0];
       await cli(["reply", file, String(uid), "--question", "--message", "To what?"], lab.env);
       const { page, artifact } = await openReview(session.url);
+      await slowFrameOnHide(page);
       await page.waitFor("document.querySelector('.mark-answer') !== null");
       await clickOn(page, "document.querySelector('.mark-answer')");
       await page.waitFor(`document.activeElement === ${card}`);
@@ -933,11 +953,13 @@ test(
     {
       const { session } = await focusCallsReview();
       const { page, artifact } = await openReview(session.url);
+      await slowFrameOnHide(page);
       await pointAt(page, artifact, "#p1");
       await artifact.eval("globalThis.calling = true");
       results.card = await writeNote(page, artifact, card, cardClosed);
+      // Hidden before this note takes the focus, so the page never takes it from this one.
       await pointAt(page, artifact, "#p2");
-      results["second note"] = await writeNote(page, artifact, card, cardClosed);
+      results["second note"] = await writeNote(page, artifact, card, cardClosed, EARLIER_LINE);
       await page.close();
     }
 
@@ -948,6 +970,7 @@ test(
         draft: { prompt: "Say when", selector: "#p1", tag: "p", text: "The cache was cold" },
       });
       const { page, artifact } = await openReview(session.url);
+      await slowFrameOnHide(page);
       await page.waitFor("document.querySelector('.mark-edit') !== null");
       await clickOn(page, "document.querySelector('.mark-edit')");
       await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
