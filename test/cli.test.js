@@ -554,6 +554,36 @@ test("a note sent from a tab that outlived its daemon reaches the agent after co
   }
 });
 
+// A start that finds a daemon still holding the directory exits 0 and leaves it to that daemon;
+// when that daemon was on its way out and never answers, the CLI has to start another itself.
+test("an open that meets a daemon on its way out starts the next one", async () => {
+  const leaving = isolatedEnv();
+  const holder = createServer(() => {});
+  await new Promise((r) => holder.listen(0, "127.0.0.1", r));
+  const port = /** @type {import("node:net").AddressInfo} */ (holder.address()).port;
+  writeFileSync(join(leaving.dir, "daemon.1.lock"), JSON.stringify({ pid: process.pid, port }));
+  try {
+    const opening = cli([copies(1)[0]], leaving.env);
+    await until(
+      () => {
+        try {
+          return readFileSync(join(leaving.dir, "server.log"), "utf8").includes("already serves");
+        } catch {
+          return false;
+        }
+      },
+      { what: "a start to find the holder and step aside" },
+    );
+    holder.close();
+    const opened = await opening;
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(new URL(opened.json().session.url).port, String(leaving.serverInfo().port));
+  } finally {
+    holder.close();
+    await leaving.stop();
+  }
+});
+
 // "server did not start; see <path>" was the whole of what this said, and a path is no help
 // wherever the log cannot be reached afterwards - which is every CI runner. Run 33875622583,
 // attempt 19, failed exactly here on windows-2025 and left nothing behind but the path, so the
