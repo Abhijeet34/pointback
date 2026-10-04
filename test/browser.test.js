@@ -1187,6 +1187,25 @@ test(
 );
 
 test(
+  "Discard and end drops the note in the card along with the queued ones",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Shorter title");
+    await pointAt(page, artifact, "#p1");
+    await page.type("Say how long");
+    await clickOn(page, "document.getElementById('end')");
+    await clickOn(page, "document.getElementById('endDiscard')");
+    await page.waitFor(noticeSays("You ended this review."));
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: null, reason: null });
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.equal(polled.status, "ended", "the agent receives neither note");
+    await page.close();
+  },
+);
+
+test(
   "Escape closes the note card each time it opens, and the page goes on answering",
   { skip: !executable && "no browser found" },
   async () => {
