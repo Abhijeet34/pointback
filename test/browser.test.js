@@ -994,6 +994,30 @@ test(
 );
 
 test(
+  "focus handling holds a note on the cover while its page is out of view, until the reviewer clicks it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const cardClosed = "document.getElementById('card').hidden";
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await slowFrameOnHide(page);
+    await pointAt(page, artifact, "#p1");
+    // Still shown and laid out, only moved out of the chrome's view, so the wrapper
+    // keeps reporting it drawn.
+    await page.eval("document.getElementById('artifact').style.transform = 'translateY(100vh)'");
+    await artifact.eval("globalThis.calling = true");
+    await page.waitFor(
+      `getComputedStyle(document.getElementById("artifact")).display === "none" && document.activeElement === document.getElementById("cover")`,
+    );
+    await clickOn(page, card);
+    const result = await writeNote(page, artifact, card, cardClosed);
+    await page.close();
+    assert.deepEqual(result, { kept: true, text: "abc", keyed: false });
+  },
+);
+
+test(
   "a page that focuses its own field at load and on its own click is never hidden while notes are written",
   { skip: !executable && "no browser found" },
   async () => {

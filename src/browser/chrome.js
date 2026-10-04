@@ -70,8 +70,8 @@ let announced = false;
 let strayed = false;
 // The page took the focus out of a note being written; for the rest of the review it is hidden
 // whenever a note is open, and `lost` says the open one is the note it was taken from. `drawn` is the
-// wrapper's last word on whether the browser still draws the frame, and `parked` the note whose focus
-// waits for it to say no (`focusField`).
+// wrapper's last word on whether the frame is drawn, and `parked` the note whose focus waits for it to
+// say no (`focusField`).
 let tookFocus = false;
 let lost = false;
 let drawn = true;
@@ -611,7 +611,9 @@ function renderCover() {
     lost = false;
     parked = null;
   }
+  const reveal = frame.hidden && !kept;
   frame.hidden = kept;
+  if (reveal) requestAnimationFrame(() => frame.hidden || (drawn = true));
   cover.hidden = !strayed && !kept;
   backButton.hidden = !strayed;
   if (kept && !strayed) {
@@ -1009,6 +1011,8 @@ window.addEventListener("message", (event) => {
   }
   if (event.data?.type === "loaded") return pageLoaded();
   if (event.data?.type === "drawn") {
+    // A shown frame reports false only with no box, which is no sign that the hide has landed.
+    if (event.data.on !== true && !frame.hidden) return;
     drawn = event.data.on === true;
     if (drawn || !parked) return;
     // A margin rebuild meanwhile makes the edited note's box anew; a note closed meanwhile is left.
@@ -1307,9 +1311,10 @@ window.addEventListener("blur", () => {
 });
 
 /**
- * Gives a note the focus, but while the page is held out of view only once the wrapper says the
- * browser has stopped drawing it: the hide lands there a frame or more after it is set here, and until
- * it does the page can still take the focus. Meanwhile the focus waits on the cover, out of the page.
+ * Gives a note the focus, but while the page is held out of view only once the wrapper reports the
+ * frame no longer drawn, which a hidden frame always is: the hide lands there a frame or more after it
+ * is set here, and until it does the page can still take the focus. Meanwhile the focus waits on the
+ * cover, out of the page.
  */
 function focusField(field) {
   if (!frame.hidden || !drawn) return field.focus();
