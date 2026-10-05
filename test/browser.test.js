@@ -3215,9 +3215,9 @@ async function handled(page, artifact, attempts) {
 /**
  * Adds a note the way a reviewer does: point at the element, type, press Enter. The page ignores
  * what it is pointed at until it hears the card close, which crosses the wrapper and can land after
- * the chrome hid the card, so the next gesture waits for the chrome to say the page heard. On this
- * path only the page's acknowledgement settles the hand-off: a new card opened from the page or focus
- * taken back also settle it, which `noteOn` never reaches, since it moves no focus in the chrome.
+ * the chrome hid the card, so the next gesture waits for the chrome to say the page heard. The chrome
+ * also settles the hand-off when a page-proposed card opens or a page focus pull is handed back; `noteOn`
+ * leaves both to the page's acknowledgement, so it waits for whichever comes first.
  */
 async function noteOn(page, artifact, selector, text) {
   await addNote(page, artifact, selector, text);
