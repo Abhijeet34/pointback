@@ -22,7 +22,7 @@ import { delimiter, dirname, join } from "node:path";
 import { after, afterEach, before, test } from "node:test";
 import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
-import { devToolsUrl, findBrowser, launchBrowser } from "./helpers/cdp.js";
+import { LAUNCH_BOUND_MS, devToolsUrl, findBrowser, launchBrowser } from "./helpers/cdp.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
 import { contrast, decodePng } from "./helpers/png.js";
 import { until } from "./helpers/wait.js";
@@ -82,11 +82,18 @@ test("a DevTools port file that cannot be read yet is waited for, not thrown out
   rmSync(profile, { recursive: true, force: true });
 });
 
-before(async () => {
-  if (!executable) return;
-  opened = (await cli([fixture], lab.env)).json();
-  browser = await launchBrowser(executable, { width: 800, height: 600 });
-});
+// The browser first: a cold windows-2025 runner can take minutes to launch one, and a review opened
+// before that idles its daemon out (POINTBACK_IDLE_MS) before any tab has reached it. The hook's own
+// timeout outlasts both bounded waits, so a failed launch reports itself and kills its browser.
+const OPEN_MS = 30_000;
+before(
+  async () => {
+    if (!executable) return;
+    browser = await launchBrowser(executable, { width: 800, height: 600 });
+    opened = (await cli([fixture], lab.env, { timeoutMs: OPEN_MS })).json();
+  },
+  { timeout: LAUNCH_BOUND_MS + OPEN_MS },
+);
 after(async () => {
   await browser?.close();
   await lab.stop();
