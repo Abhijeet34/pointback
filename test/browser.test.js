@@ -1970,11 +1970,6 @@ test(
   },
 );
 
-/**
- * A stand-in for the platform's opener, first on PATH, writing down every URL it is asked to open.
- * Windows opens through cmd.exe's `start`, which PATH cannot shadow, so there the test reads only
- * what the command reports and keeps the real opener off.
- */
 // The review's split-brain reproduction, in a real tab: the tab outlives its daemon, seven opens race
 // to start the next one, and the note the reviewer sends from the same tab must reach the agent.
 // Before the single-daemon fix, the racing starts left two daemons and the tab's send was lost.
@@ -2055,6 +2050,11 @@ test(
   },
 );
 
+/**
+ * A stand-in for the platform's opener, first on PATH, writing down every URL it is asked to open.
+ * Windows opens through cmd.exe's `start`, which PATH cannot shadow, so there the test reads only
+ * what the command reports and keeps the real opener off.
+ */
 function fakeOpener() {
   if (process.platform === "win32") return null;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-opener-"));
