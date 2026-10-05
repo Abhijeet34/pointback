@@ -1379,12 +1379,13 @@ shield.addEventListener(
   },
   { passive: true },
 );
-// A move the chrome or the reviewer's Tab makes names the frame as where the focus went, and one the page
-// makes names nothing. Engines differ in what else they report for the page's move, so the one trigger is
-// where the focus is a task later: still in the frame, the note gets it back through the unload.
+// A move from the note to a control of the chrome names that control and is left alone. A move into the
+// frame names the frame, or nothing when the page makes it, and unloads unless the shield's press handed
+// it over (`handing`). Engines differ in what they name for the page's move, so the one trigger is where
+// the focus is a task later: still in the frame, the note gets it back through the unload.
 document.addEventListener("focusout", (event) => {
   const field = /** @type {HTMLElement} */ (event.target);
-  if (handing || event.relatedTarget !== null || !writing(field)) return;
+  if (handing || (event.relatedTarget !== null && event.relatedTarget !== frame) || !writing(field)) return;
   setTimeout(() => {
     if (document.activeElement !== frame || unloaded || !writing(field)) return;
     taken = field;

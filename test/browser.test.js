@@ -1144,6 +1144,58 @@ test(
 );
 
 test(
+  "a move from a note into the page unloads it when the move names the frame",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await page.eval(`(() => {
+      document.getElementById("cardText").dispatchEvent(
+        new FocusEvent("focusout", { relatedTarget: document.getElementById("artifact"), bubbles: true }),
+      );
+      document.getElementById("artifact").focus();
+    })()`);
+    await page.waitFor(kept("document.getElementById('cardText')", UNLOADED_LINE));
+    assert.equal(await pageAddress(page), "about:blank");
+    await page.close();
+  },
+);
+
+test(
+  "a press over the page hands it the focus without unloading it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    const at = JSON.parse(
+      await page.eval(`JSON.stringify((() => {
+        const box = document.getElementById("artifact").getBoundingClientRect();
+        for (const y of [box.top + 8, box.bottom - 8])
+          for (const x of [box.left + 8, box.right - 8])
+            if (document.elementFromPoint(x, y).id === "shield") return { x, y };
+        return null;
+      })())`),
+    );
+    assert.ok(at, "a corner of the page is under the shield");
+    await page.click(at.x, at.y);
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    // The chrome's check, where it would run, is a task after the move; this waits for that task.
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    const state = JSON.parse(
+      await page.eval(`JSON.stringify({
+        shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
+        cover: document.getElementById("cover").hidden,
+      })`),
+    );
+    assert.deepEqual(state, { shown: true, cover: true });
+    assert.notEqual(await pageAddress(page), "about:blank");
+    await page.close();
+  },
+);
+
+test(
   "keys the page takes with no note open reach the key channel",
   { skip: !executable && "no browser found" },
   async () => {

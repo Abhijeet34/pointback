@@ -290,6 +290,24 @@ function listenForKeys(page) {
   return keys;
 }
 
+/**
+ * Returns the key reports once none has arrived for eight polls in a row (about 200 ms), so a console
+ * message still in flight is counted before the count is read.
+ */
+async function keysSettle(keys, what) {
+  let last = -1;
+  let still = 0;
+  await until(
+    () => {
+      still = keys.length === last ? still + 1 : 0;
+      last = keys.length;
+      return still >= 8;
+    },
+    { what, timeoutMs: STEP_MS },
+  );
+  return keys.length;
+}
+
 /** Opens a private copy of the focus fixture as its own review, in the act's page. */
 async function openFocusFixture(page, lab, dirName) {
   const dir = join(lab.dir, dirName);
@@ -370,14 +388,14 @@ async function unloadRound(page, lab, engine, round) {
       `${engine} round ${round}: the page took the focus from the note and was not unloaded; the focus is on #${seen.focus}, the cover is ${seen.cover}, the frame display is ${seen.frame}, and ${keys.length} key event(s) reached the page: ${keys.join("; ")}`,
     );
   }
-  const probe = keys.length;
+  const probe = await keysSettle(keys, `${engine} round ${round}: the probe key reports to settle`);
   const ms = Math.round(await page.evaluate(() => moves.shown - moves.out));
   console.log(
     `${engine} round ${round}: probe key events reaching the page ${probe} of 4 (2 keys); move to unloaded ${ms} ms`,
   );
   await page.evaluate(() => (document.getElementById("cardText").value = ""));
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
-  const quiet = keys.length;
+  const quiet = await keysSettle(keys, `${engine} round ${round}: the probe key reports to settle`);
   await page.keyboard.type("once");
   const text = await page.evaluate(() => document.getElementById("cardText").value);
   await page.keyboard.press("Enter");
