@@ -41,7 +41,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - A page that takes the focus from an open note is unloaded (`unload` in `src/browser/chrome.js`, owner `docs/THREAT-MODEL.md`); a test counts its keys through the console channel of `test/fixtures/focus-calls.html`, never a window flag, since the frame's window goes with it.
 - Replies are set as text, never HTML (`replyLine`).
 - Only fonts under the root and the vendored house faces get `Access-Control-Allow-Origin` (`FONT_HEADERS` in `src/http-guard.js`); never widen it.
-- The token in `server.json` goes only to a server that answered `tokenProof` (`src/http-guard.js`); the chrome's `connection` goes live only on such an answer, and `api` sends the token only while live (`src/browser/chrome.js`).
+- The token in `server.json` goes only to a server that answered `tokenProof` (`src/http-guard.js`); the chrome's `connection` goes live only on such an answer, and `api` sends the token only while live (`src/browser/chrome.js`; `test/browser.test.js`, "a tab whose health check is answered without proof").
 - The state directory is owner-only on both platforms (`src/state-dir.js`); assert it through `test/helpers/private.js`.
 - `docs/THREAT-MODEL.md` owns the scope; no email address or personal contact detail belongs anywhere in this repository.
 
