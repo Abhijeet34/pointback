@@ -251,6 +251,7 @@ A first load that comes back unannounced is asked for once more before that, and
 While a note being written holds a reload back, a refused first load of the page gets the cover at once, without the second ask.
 A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
 The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
+A note opened before the page has heard the last card close unloads the page at once, with a line saying why, and the page comes back when that note is done; that unload is not counted against the page.
 
 The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on sessions, prompts and open polls.
 
