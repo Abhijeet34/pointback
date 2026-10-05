@@ -943,8 +943,9 @@ async function pageAddress(page) {
 
 /**
  * The key events the focus fixture reports to this process, in the order they arrive, and the ids of
- * the elements it holds after its focus calls. A page the wrapper removes takes its own window and its
- * own state with it, so the record lives here, and is reset for each review opened.
+ * the elements it holds after its focus calls, each with the time the page made the call. A page the
+ * wrapper removes takes its own window and its own state with it, so the record lives here, and is
+ * reset for each review opened.
  */
 let keyReports = [];
 let focusReports = [];
@@ -958,7 +959,8 @@ function hearKeys(page) {
     if (message.method !== "Runtime.consoleAPICalled") return;
     const [marker, type, key] = message.params.args.map((arg) => arg.value);
     if (marker === "focus-calls key") keyReports.push(`${type} ${key}`);
-    else if (marker === "focus-calls focus") focusReports.push(type);
+    else if (marker === "focus-calls focus")
+      focusReports.push({ id: type, at: message.params.timestamp });
   });
 }
 
@@ -966,7 +968,7 @@ function hearKeys(page) {
  * Waits for the page to report that its own field holds the focus. The chrome can unload the page for
  * that move before the window comes back, which removes the page's target, so the page is never asked.
  */
-const pageTookFocus = (what) => until(() => focusReports.at(-1) === "field", { what });
+const pageTookFocus = (what) => until(() => focusReports.at(-1)?.id === "field", { what });
 
 /** Real key presses, which go wherever the browser has the focus. */
 async function press(page, word) {
@@ -1419,9 +1421,37 @@ test(
 const lateWhileAway = (page) =>
   page.eval(`(() => {
     const real = window.setTimeout;
-    window.setTimeout = (run, ms, ...rest) =>
-      real(run, document.hasFocus() ? ms : Math.max(ms ?? 0, 200), ...rest);
+    // Each late task: the event that queued it and when, when it ran, where the focus was as it did,
+    // and whether the page was out after it, so a wait on that unload can say which side it waited on.
+    globalThis.lateTasks = [];
+    window.setTimeout = (run, ms, ...rest) => {
+      if (document.hasFocus()) return real(run, ms, ...rest);
+      const task = { from: window.event?.type ?? "a task", queued: Date.now() };
+      lateTasks.push(task);
+      return real(() => {
+        task.ran = Date.now();
+        task.focus = document.activeElement?.id || document.activeElement?.tagName;
+        run(...rest);
+        task.unloaded = document.getElementById("coverText").textContent === ${JSON.stringify(UNLOADED_LINE)};
+      }, Math.max(ms ?? 0, 200));
+    };
   })()`);
+
+/**
+ * Where the page put the focus and what each of the chrome's late tasks found, in ms from `left`: a
+ * check that ran before the page's move reached the chrome, one that found the page holding the focus
+ * and kept it, and one that never ran are three different failures.
+ */
+async function lateReport(page, left) {
+  const tasks = JSON.parse(await page.eval("JSON.stringify(lateTasks)"));
+  const moves = focusReports.map(({ id, at }) => `${id} at +${Math.round(at - left)} ms`);
+  const found = tasks.map(({ from, queued, ran, focus, unloaded }) => {
+    const task = `${from} at +${queued - left} ms`;
+    if (ran === undefined) return `${task}, never ran`;
+    return `${task}, ran at +${ran - left} ms with the focus on ${focus}, ${unloaded ? "unloaded" : "kept"} the page`;
+  });
+  return `the page took the focus to ${moves.join(", ") || "nothing"}; the chrome's late tasks, from ${found.join("; ") || "none queued"}`;
+}
 
 for (const late of [false, true]) {
   test(
@@ -1441,6 +1471,7 @@ for (const late of [false, true]) {
           console.log("focus-calls focus", document.activeElement.id);
         })`,
       );
+      const left = Date.now();
       const { targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" });
       await page.browser.send("Target.activateTarget", { targetId });
       await until(async () => !(await page.eval("document.hasFocus()")), {
@@ -1449,6 +1480,9 @@ for (const late of [false, true]) {
       if (late) {
         await until(async () => (await pageAddress(page)) === "about:blank", {
           what: "the page's frame to hold about:blank while the window is away",
+        }).catch(async (error) => {
+          error.message += `\n  ${await lateReport(page, left)}`;
+          throw error;
         });
       }
       await pageTookFocus("the page to take the focus in its own field as the window leaves");
