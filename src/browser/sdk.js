@@ -118,8 +118,10 @@
       send({ type: "annotate-ok", on: data.on });
     } else if (data?.nonce === nonce && data.type === "compose" && !data.on) {
       // The chrome closed its note card; drop the selection and, for the keyboard path, hand
-      // focus back to the element the reviewer came from so a Tab lands on the next one.
+      // focus back to the element the reviewer came from so a Tab lands on the next one. The
+      // chrome is told when that is done.
       closeTarget(data.refocus === true);
+      send({ type: "closed" });
     } else if (data?.nonce === nonce && data.type === "pins") {
       setPins(data.pins);
     } else if (data?.nonce === nonce && data.type === "reveal") {

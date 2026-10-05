@@ -1339,6 +1339,104 @@ test(
   },
 );
 
+// The page puts the focus back on what was noted when the chrome says the card closed. On macOS, hunt
+// 37251442770 attempt 20, a busy page heard that only after the reviewer had opened a margin note to
+// edit it, and took the focus out of the editor. The page is held at that message until they type.
+test(
+  "a page that hears the card close late leaves the focus in a note being edited in the margin",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const late = await holdCardClose(artifact);
+    try {
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await late.reached();
+      await clickOn(page, "document.querySelector('.mark-edit')");
+      await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+      await page.type(", four words at most");
+    } finally {
+      await late.release();
+    }
+    // Until the chrome says the page has had the focus it was handed, or has had it taken back. A
+    // focus gone from the editor with nothing bringing it back ends the wait too, and fails below.
+    await page.waitFor(`document.body.dataset.handoff === "settled" ||
+      (document.body.dataset.handoff !== "returning" &&
+        !document.activeElement.classList.contains("mark-edit-text"))`);
+    assert.deepEqual(
+      await page.eval("[document.activeElement.className, document.activeElement.value]"),
+      ["hw-textarea mark-edit-text", "Shorter title, four words at most"],
+      "the editor kept the focus and its words",
+    );
+    await page.type(" please");
+    await page.enter();
+    await page.waitFor(
+      "document.querySelector('.mark:not(.sent) .mark-note')?.textContent === 'Shorter title, four words at most please'",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a page that never acknowledges the card close stops holding the focus once the reviewer points at the next element",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const held = await holdCardClose(artifact);
+    try {
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await held.reached();
+      await held.evaluate(DROP_CLOSE_ACK);
+    } finally {
+      await held.release();
+    }
+    await pointAt(page, artifact, "#p1");
+    await page.waitFor("document.body.dataset.handoff === 'settled'");
+    await page.eval("document.getElementById('artifact').focus()");
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    // A timer queued by a take-back would run before this one, so one tick passes it.
+    await page.eval("new Promise((resolve) => setTimeout(resolve))");
+    assert.equal(
+      await page.eval("document.activeElement === document.getElementById('artifact')"),
+      true,
+      "the focus stays in the page, not taken back to the note card",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a late pull after an Answer card opens is taken back to the card text",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const held = await holdCardClose(artifact);
+    await countCloseAcks(page);
+    try {
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await held.reached();
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+      const { uid } = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts[0];
+      await cli(["reply", file, String(uid), "--question", "--message", "Which queue?"], lab.env);
+      await page.waitFor("document.querySelector('.mark-answer') !== null");
+      await clickOn(page, "document.querySelector('.mark-answer')");
+      await page.waitFor("document.activeElement.id === 'cardText'");
+      await page.type("billing");
+    } finally {
+      await held.release();
+    }
+    await page.waitFor("window.closeAcks === 1");
+    // A timer queued by a take-back would run before this one, so one tick passes it.
+    await page.eval("new Promise((resolve) => setTimeout(resolve))");
+    assert.equal(await page.eval("document.activeElement.id"), "cardText");
+    assert.equal(await page.eval("document.getElementById('cardText').value"), "billing");
+    await page.close();
+  },
+);
+
 test(
   "Discard and end drops the note in the card along with the queued ones",
   { skip: !executable && "no browser found" },
@@ -1823,6 +1921,79 @@ async function clickIn(page, artifact, selector, at) {
   await page.pointerInto(artifact, point);
   await page.click(point.x, point.y);
 }
+
+/**
+ * Holds the page at the moment it hears that the note card closed, as a busy page is held, with a
+ * breakpoint on the SDK's own line for that message: listeners on a window run in the order they were
+ * added, so one a test adds runs after the SDK's and cannot hold the message back from it.
+ */
+async function holdCardClose(artifact) {
+  const lineNumber = readFileSync(new URL("../src/browser/sdk.js", import.meta.url), "utf8")
+    .split("\n")
+    .findIndex((line) => line.includes("closeTarget(data.refocus === true)"));
+  let pausedAt = null;
+  const scriptUrls = new Map();
+  const onPause = (message) => {
+    if (message.sessionId !== artifact.sessionId) return;
+    if (message.method === "Debugger.scriptParsed")
+      scriptUrls.set(message.params.scriptId, message.params.url);
+    else if (message.method === "Debugger.paused") pausedAt = message.params.callFrames[0];
+  };
+  artifact.browser.listeners.push(onPause);
+  await artifact.send("Debugger.enable");
+  const { breakpointId } = await artifact.send("Debugger.setBreakpointByUrl", {
+    urlRegex: "/sdk\\.js$",
+    lineNumber,
+  });
+  return {
+    async reached() {
+      await until(() => pausedAt, { what: "the page to hear that the card closed" });
+      assert.match(
+        scriptUrls.get(pausedAt.location.scriptId),
+        /\/sdk\.js$/,
+        "the page is held in the SDK",
+      );
+      assert.equal(pausedAt.location.lineNumber, lineNumber, "held on the SDK's card-close line");
+    },
+    async evaluate(expression) {
+      const { exceptionDetails } = await artifact.send("Debugger.evaluateOnCallFrame", {
+        callFrameId: pausedAt.callFrameId,
+        expression,
+      });
+      assert.equal(exceptionDetails, undefined, "the expression ran in the held page");
+    },
+    async release() {
+      artifact.browser.listeners.splice(artifact.browser.listeners.indexOf(onPause), 1);
+      await artifact.send("Debugger.removeBreakpoint", { breakpointId });
+      // Disabling the debugger resumes a page paused in it.
+      await artifact.send("Debugger.disable");
+    },
+  };
+}
+
+/** Counts the page's close acknowledgements as the chrome hears them. */
+async function countCloseAcks(page) {
+  await page.eval(`(() => {
+    window.closeAcks = 0;
+    window.addEventListener("message", (event) => {
+      if (event.data?.type === "page" && event.data.message?.type === "closed") window.closeAcks += 1;
+    });
+  })()`);
+}
+
+/**
+ * Makes the page's close acknowledgement never reach the chrome. The SDK posts through `parent`, so a
+ * stand-in that forwards everything but `closed` takes its place. Run while the page is held at its
+ * card-close line, after the close has reached it, so the close itself still does.
+ */
+const DROP_CLOSE_ACK = `(() => {
+  const realParent = window.parent;
+  window.parent = {
+    postMessage(message, origin) {
+      if (message?.type !== "closed") realParent.postMessage(message, origin);
+    },
+  };
+})()`;
 
 /** A real click in the middle of a chrome element, scrolled into view first as a reviewer would. */
 async function clickOn(page, expression) {
