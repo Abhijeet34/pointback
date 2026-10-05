@@ -9,6 +9,12 @@
 const chromeOrigin = `http://${location.hostname === "localhost" ? "127.0.0.1" : "localhost"}:${location.port}`;
 let page = /** @type {HTMLIFrameElement | null} */ (null);
 const toChrome = (message) => parent.postMessage(message, chromeOrigin);
+// The page under review fills this frame edge to edge, so its coordinates are the chrome frame's.
+// Set here rather than in a sheet: one connect fewer for Windows to refuse, and a refused load of this
+// script is one the chrome already asks for again (docs/ENGINEERING-NOTES.md).
+const FILL = { display: "block", width: "100%", height: "100%", margin: "0", border: "0" };
+for (const element of [document.documentElement, document.body])
+  Object.assign(element.style, FILL, { overflow: "hidden" });
 
 window.addEventListener("message", (event) => {
   if (event.source === parent && event.origin === chromeOrigin) {
@@ -35,6 +41,7 @@ function show(url) {
   page.title = "The page under review";
   page.setAttribute("sandbox", "allow-scripts allow-forms allow-popups");
   page.referrerPolicy = "no-referrer";
+  Object.assign(page.style, FILL);
   page.src = url;
   // The chrome cannot see the page's loads through this frame, and a load the page did not
   // announce itself in is how it learns the page strayed.

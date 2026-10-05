@@ -117,7 +117,7 @@ export function chromeHeaders(host) {
 }
 
 /**
- * The wrapper frame runs only its own script and sheet, frames only the page under review, which is
+ * The wrapper frame runs only its own script, which sets its few styles itself, frames only the page under review, which is
  * served under the chrome's name, and only the chrome may frame it.
  */
 export function wrapperHeaders(host) {
@@ -125,7 +125,7 @@ export function wrapperHeaders(host) {
   return {
     ...COMMON_HEADERS,
     "content-security-policy":
-      `default-src 'none'; script-src 'self'; style-src 'self'; frame-src ${chrome}; ` +
+      `default-src 'none'; script-src 'self'; frame-src ${chrome}; ` +
       `base-uri 'none'; form-action 'none'; frame-ancestors ${chrome}`,
   };
 }
