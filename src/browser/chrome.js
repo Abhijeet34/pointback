@@ -74,11 +74,13 @@ let strayed = false;
 let firstLoad = false;
 let shownAgain = false;
 // The page took the focus out of a note being written; for the rest of the review it is hidden
-// whenever a note is open, and `unloaded` says it took the focus from the open one, so the frame
-// holds about:blank until that note is done (`unload`).
+// whenever a note is open. `unloaded` says the frame holds about:blank until the open note is done
+// (`unload`): the page took the focus from it, or, `behind`, had not yet heard the last card close
+// when the note took the focus, and would have taken it on hearing it (`handoff`).
 let tookFocus = false;
 let unloaded = false;
-// The note field the page took the focus from, which gets it back once the page is out.
+let behind = false;
+// The note field the page took the focus from, or was taken out for, which gets it once the page is out.
 let taken = /** @type {HTMLElement | null} */ (null);
 let current = true;
 let liveReload = true;
@@ -651,10 +653,11 @@ function renderReason() {
 
 /** A frame that strayed is covered where the reviewer is looking, with the way back on top. */
 function renderCover() {
-  const kept = tookFocus && (composing !== null || editingNote !== null);
+  const kept = (tookFocus || unloaded) && (composing !== null || editingNote !== null);
   // The note the page was unloaded for is done, so the page comes back the way a save brings it.
   if (!kept && !fileGone && (unloaded || deferredReload)) {
     unloaded = false;
+    behind = false;
     show();
   }
   frame.hidden = kept;
@@ -663,9 +666,11 @@ function renderCover() {
   if (kept && !strayed) {
     setText(
       coverText,
-      unloaded
-        ? "This page was unloaded because it took the keyboard from your note. It comes back when you finish the note."
-        : "This page took the keyboard from a note earlier, so it stays hidden while you write notes.",
+      behind
+        ? "This page was unloaded so it cannot take the keyboard from your note. It comes back when you finish the note."
+        : unloaded
+          ? "This page was unloaded because it took the keyboard from your note. It comes back when you finish the note."
+          : "This page took the keyboard from a note earlier, so it stays hidden while you write notes.",
     );
     // The line sits in the half of the page's view the open card is not in; a narrow view has no room
     // beside it.
@@ -1051,7 +1056,8 @@ function closeCompose(refocus) {
 // closed, which a busy page hears late, possibly after the reviewer had gone on to edit a note in the
 // margin (`docs/ENGINEERING-NOTES.md` has the run). Until the page says it heard, a pull into the frame
 // that follows the reviewer moving on in the chrome is that late one, and the focus goes back to where
-// they moved.
+// they moved. A key pressed before that reaches the page, so a move into a note field takes the page
+// out first, and it comes back when the note is done (`docs/THREAT-MODEL.md`).
 // This acts on the chrome's own focus events alone; the page's word only ends the wait.
 let handoff = null;
 
@@ -1070,7 +1076,14 @@ function endWait() {
 }
 
 document.addEventListener("focusin", (event) => {
-  if (handoff && event.target !== frame) handoff.movedOn = event.target;
+  if (!handoff || event.target === frame) return;
+  handoff.movedOn = event.target;
+  if (!writing(event.target) || unloaded) return;
+  // Out of the wrapper's document, the page has no refocus left to make.
+  taken = /** @type {HTMLElement} */ (event.target);
+  behind = true;
+  settleHandoff();
+  unload();
 });
 
 window.addEventListener("blur", () => {
@@ -1433,6 +1446,7 @@ function takenFrom(field) {
   setTimeout(() => {
     if (document.activeElement !== frame || unloaded || !writing(field)) return;
     taken = field;
+    tookFocus = true;
     unload();
   });
 }
@@ -1454,6 +1468,7 @@ function regained() {
   away = undefined;
   if (field && writing(field) && document.activeElement === frame && !unloaded) {
     taken = field;
+    tookFocus = true;
     unload();
   }
 }
@@ -1471,7 +1486,6 @@ document.addEventListener("visibilitychange", () => {
  * Back goes with it.
  */
 function unload() {
-  tookFocus = true;
   unloaded = true;
   strayed = false;
   announced = false;
