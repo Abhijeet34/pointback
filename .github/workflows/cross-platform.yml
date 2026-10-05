@@ -130,13 +130,15 @@ jobs:
   # Chromium only. test/engine-smoke.js is the act; README.md, "Develop", says why
   # Playwright drives it and why only here.
   #
-  # Only when this file runs on its own, weekly or on dispatch, never when ci.yml or
-  # release.yml calls it: a called workflow's `github` context is its caller's, so the
-  # name below is "CI" or "release" there. A WebKit or Firefox release that breaks the
-  # smoke then reports on Monday instead of holding a tag, dispatched release included.
+  # Weekly, on dispatch, and on the release pull request, which is the only pull request
+  # ci.yml calls this file for; never on release.yml's push to main, so the matrix alone
+  # gates the tag (maintainer decision). A called workflow's `github` context is its
+  # caller's, so there the name is "CI" or "release" and the event is the caller's. On the
+  # release pull request a red engine fails `checks`, so a release cannot merge until both
+  # engines pass; a WebKit or Firefox release that breaks the smoke holds the next release.
   engines:
     name: ${{ matrix.engine }} on ${{ matrix.os }}
-    if: github.workflow == 'cross-platform'
+    if: github.workflow == 'cross-platform' || github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:

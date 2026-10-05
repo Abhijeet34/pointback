@@ -388,13 +388,27 @@ test("a leaked handle cannot turn a finished suite into a hung job", () => {
   assert.match(pkg.scripts.test, /--test-timeout=\d+/);
 });
 
-// The WebKit and Firefox smoke reports a browser release, not a change on main, so it
-// runs only when cross-platform.yml is the top-level workflow. Called from ci.yml or
-// release.yml, `github.workflow` names the caller and the job skips, so no tag waits on it.
-test("the engine smoke never gates a release", () => {
+// WebKit and Firefox shipped A3 because they never gated anything. The smoke now gates the
+// release pull request (maintainer decision): it runs when cross-platform.yml is called from
+// ci.yml, which calls it for that pull request alone, and stays off release.yml's push to
+// main, where the platform matrix alone gates the tag. A called workflow sees its caller's
+// `github` context, so the job's own `if:` is evaluated here against each caller's.
+test("the engine smoke gates the release pull request, never the tag", () => {
   const jobs = jobsByName(workflows["cross-platform.yml"]);
-  assert.match(jobs.engines, /^ {4}if: github\.workflow == 'cross-platform'$/m);
+  const condition = jobs.engines.match(/^ {4}if: (.*)$/m)[1];
+  const runs = (workflow, event) =>
+    Function(
+      "github",
+      `return ${condition.replace(/ == /g, " === ").replace(/ != /g, " !== ")};`,
+    )({ workflow, event_name: event });
+  assert.equal(runs("CI", "pull_request"), true, "the release pull request skips the smoke");
+  assert.equal(runs("cross-platform", "schedule"), true, "the weekly run skips the smoke");
+  assert.equal(runs("cross-platform", "workflow_dispatch"), true);
+  assert.equal(runs("release", "push"), false, "the tag waits on a browser release");
+  assert.equal(runs("release", "workflow_dispatch"), false);
   assert.match(workflows["cross-platform.yml"], /^name: cross-platform$/m);
+  assert.match(workflows["ci.yml"], /^name: CI$/m);
+  assert.match(workflows["release.yml"], /^name: release$/m);
   assert.doesNotMatch(jobs.test, /^ {4}if:/m, "the platform matrix itself stays unconditional");
 });
 

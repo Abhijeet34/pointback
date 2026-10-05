@@ -155,7 +155,8 @@ jobs:
   # v0.1.0 and its release were created, `cross-platform` then went red, and the
   # release stands to this day with no tarball, no SBOM and no attestation
   # attached. A gate after the tag cannot un-cut the release; this one is before
-  # it. Every other pull request skips this job, and pays nothing.
+  # it. Every other pull request skips this job, and pays nothing. The called file's
+  # `engines` job runs the WebKit and Firefox smoke here too, so it gates the release.
   cross-platform:
     name: cross-platform
     # Same-repository clause: without it a fork could open a pull request from a
