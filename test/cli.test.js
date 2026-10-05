@@ -16,7 +16,6 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
@@ -990,8 +989,8 @@ test("a later batch repeats neither the explanation nor an outline the agent alr
 });
 
 // Node's fetch abandons a response whose headers take over 300 s, so a poll held as one request
-// failed every --timeout-ms above that with "fetch failed", exit 1. Scaled down here: every fetch
-// the CLI makes gives up after 1 s, and the poll's requests are held at most 300 ms each.
+// failed every --timeout-ms above that with "fetch failed", exit 1. Scaled down here: a request
+// the CLI asks the daemon to hold over 1 s fails, and the poll's requests are held 300 ms each.
 test("a poll longer than one request may last waits its whole timeout, then delivers a later note", async () => {
   const own = isolatedEnv();
   try {
@@ -1011,13 +1010,14 @@ test("a poll longer than one request may last waits its whole timeout, then deli
     assert.deepEqual(idle.json(), { status: "waiting" });
     assert.ok(waited >= 3000, `waiting came after ${waited} ms, before the timeout passed`);
 
-    const polling = cli(["poll", file, "--timeout-ms", "10000"], limited);
-    await until(async () => (await presenceOf(own.serverInfo(), key)) === "listening", {
-      what: "the poll to attach",
+    // The note goes out once the poll's first request has been answered, so only a request the
+    // poll opened afterwards can carry it back.
+    const answered = join(own.dir, "answered.log");
+    const polling = cli(["poll", file, "--timeout-ms", "10000"], {
+      ...limited,
+      TEST_FETCH_LOG: answered,
     });
-    // The first request is held 300 ms and the note goes out at 1200 ms, after that request has
-    // ended, so only a request the poll opened afterwards can carry the note back.
-    await sleep(1200);
+    await until(() => existsSync(answered), { what: "the poll's first request to be answered" });
     await daemon(own).note(key, "sent late");
     const polled = await polling;
     assert.equal(polled.code, 0, polled.stderr);
