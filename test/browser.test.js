@@ -5950,6 +5950,7 @@ async function noteOnInstall(page, artifact, text) {
   await page.type(text);
   await page.enter();
   await page.waitFor(`document.getElementById('card').hidden && ${unsent} === ${before + 1}`);
+  await page.waitFor("document.body.dataset.handoff === 'settled'"); // as in `noteOn`
   return selector;
 }
 
