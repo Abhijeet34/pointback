@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { openSync, readFileSync } from "node:fs";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -120,14 +121,52 @@ export async function ensureServer(stateDir, environment = process.env) {
  * but cannot prove it holds the token, and still has to stop, or two would share its sessions; it
  * has then been shown the token, so the token is retired whether or not it stopped, and the next
  * daemon mints a fresh one. The record keeps its port, so a start still finds a daemon that refused.
+ *
+ * "stopping" is only the daemon's promise: it has stopped once its process is gone or nothing listens
+ * on its port, either of which frees the port, so a start right after comes back on it and the tabs
+ * holding it reconnect. One still there after STOP_TIMEOUT_MS did not stop.
  */
 export async function stopServer(stateDir, info, status) {
-  const stopped = await api(info, "POST", "/shutdown").then(
+  const asked = await api(info, "POST", "/shutdown").then(
     () => true,
     () => false,
   );
   if (!status.proven) writeJsonAtomic(join(stateDir, "server.json"), { ...info, token: null });
-  return stopped;
+  if (!asked) return false;
+  const pid = Number.isInteger(info.pid) ? info.pid : status.pid;
+  // The pid goes first: once it is gone, the port may rightly belong to a concurrent start's daemon.
+  const gone = async (ms) =>
+    (Number.isInteger(pid) && !pidAlive(pid)) || !(await listening(info.port, ms));
+  const deadline = Date.now() + STOP_TIMEOUT_MS;
+  while (!(await gone(deadline - Date.now()))) {
+    if (Date.now() >= deadline) return false;
+    await sleep(50);
+  }
+  return true;
+}
+
+/** How long a daemon that answered "stopping" gets to exit before it is said not to have stopped. */
+const STOP_TIMEOUT_MS = 5_000;
+
+/**
+ * Whether anything accepts a connection on the loopback port; only a refusal says nothing does. A probe
+ * that gets no answer within `ms` is still listening, so the caller's deadline is never overrun.
+ */
+function listening(port, ms) {
+  return new Promise((resolve) => {
+    const socket = connect(port, "127.0.0.1");
+    socket.setTimeout(Math.max(1, ms), () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", (/** @type {NodeJS.ErrnoException} */ error) =>
+      resolve(error.code !== "ECONNREFUSED"),
+    );
+  });
 }
 
 /**
