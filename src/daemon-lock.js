@@ -46,6 +46,18 @@ export function pidAlive(pid) {
 }
 
 /**
+ * The signal for a probe whose timeout reads as a busy server. A timer that fires late, because this
+ * process was stalled, runs before the I/O it guards is read, so the abort waits one turn of the
+ * event loop: a refusal or an answer that arrived during the stall is read first, and wins.
+ */
+export function probeTimeout(ms) {
+  const controller = new AbortController();
+  const abort = () => controller.abort(new DOMException("the probe timed out", "TimeoutError"));
+  setTimeout(() => setImmediate(abort), ms).unref();
+  return controller.signal;
+}
+
+/**
  * Whether the port holds the daemon `pid`. Nothing listening, or a listener answering as another app
  * or for another pid, is not it; a daemon too busy to answer within CONNECT_MS is, so a timeout
  * counts as alive.
@@ -53,7 +65,7 @@ export function pidAlive(pid) {
 async function isDaemon(port, pid) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(CONNECT_MS),
+      signal: probeTimeout(CONNECT_MS),
     });
     const status = /** @type {any} */ (await res.json());
     return status?.app === name && status.pid === pid;
