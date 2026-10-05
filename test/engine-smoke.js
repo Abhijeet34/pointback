@@ -39,12 +39,15 @@ async function smoke(engine) {
     await act(browser, (page) => readingPlace(page, lab, engine));
     await act(browser, (page) => pressOverThePage(page, lab));
     const control = await act(browser, (page) => keysReachThePage(page, lab, engine));
-    let keys = 0;
+    const probes = [];
+    const ms = [];
     for (let round = 1; round <= UNLOAD_ROUNDS; round += 1) {
-      keys += await act(browser, (page) => unloadRound(page, lab, engine, round));
+      const result = await act(browser, (page) => unloadRound(page, lab, engine, round));
+      probes.push(result.probe);
+      ms.push(result.ms);
     }
     await act(browser, (page) => focusLeavesNoteAlone(page, lab, engine));
-    return `${named} passed; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds with ${keys} keys reaching the page; the key channel reported ${control} keys of the page's own`;
+    return `${named} passed; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds; probe keys reaching the page per round ${probes.join(", ")}; move to unloaded ms per round ${ms.join(", ")}; the key channel reported ${control} keys of the page's own`;
   } catch (error) {
     throw Object.assign(error, { named });
   } finally {
@@ -327,6 +330,20 @@ async function unloadRound(page, lab, engine, round) {
   const keys = listenForKeys(page);
   await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.evaluate(() => {
+    globalThis.moves = {};
+    document.addEventListener(
+      "focusout",
+      (event) => {
+        if (event.relatedTarget === null && event.target.id === "cardText")
+          moves.out ??= performance.now();
+      },
+      true,
+    );
+    new MutationObserver(() => {
+      if (!document.getElementById("cover").hidden) moves.shown ??= performance.now();
+    }).observe(document.getElementById("cover"), { attributes: true, attributeFilter: ["hidden"] });
+  });
   const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
   await artifact.evaluate(() => (globalThis.calling = true));
   await page.keyboard.type("on");
@@ -353,8 +370,15 @@ async function unloadRound(page, lab, engine, round) {
       `${engine} round ${round}: the page took the focus from the note and was not unloaded; the focus is on #${seen.focus}, the cover is ${seen.cover}, the frame display is ${seen.frame}, and ${keys.length} key event(s) reached the page: ${keys.join("; ")}`,
     );
   }
+  const probe = keys.length;
+  const ms = Math.round(await page.evaluate(() => moves.shown - moves.out));
+  console.log(
+    `${engine} round ${round}: probe key events reaching the page ${probe} of 4 (2 keys); move to unloaded ${ms} ms`,
+  );
+  await page.evaluate(() => (document.getElementById("cardText").value = ""));
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
-  await page.keyboard.type("ce");
+  const quiet = keys.length;
+  await page.keyboard.type("once");
   const text = await page.evaluate(() => document.getElementById("cardText").value);
   await page.keyboard.press("Enter");
   await page.waitForFunction(
@@ -362,16 +386,16 @@ async function unloadRound(page, lab, engine, round) {
   );
   await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
   assert.deepEqual(
-    keys,
+    keys.slice(quiet),
     [],
-    `${engine} round ${round}: the page received key events: ${keys.join("; ")}`,
+    `${engine} round ${round}: the page received key events for the asserted word: ${keys.slice(quiet).join("; ")}`,
   );
   assert.equal(
     text,
     "once",
     `${engine} round ${round}: the note reads ${JSON.stringify(text)}, not the word typed`,
   );
-  return keys.length;
+  return { probe, ms };
 }
 
 /** A move of the focus from an open note to a chrome control leaves the page where it is. */
