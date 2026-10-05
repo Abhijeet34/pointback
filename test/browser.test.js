@@ -905,6 +905,24 @@ async function pageAddress(page) {
   return null;
 }
 
+/**
+ * The key events the focus fixture reports to this process, in the order they arrive. A page the
+ * wrapper removes takes its own window and its own state with it, so the record lives here, and is
+ * reset for each review opened.
+ */
+let keyReports = [];
+let hearing = false;
+function hearKeys(page) {
+  keyReports = [];
+  if (hearing) return;
+  hearing = true;
+  page.browser.listeners.push((message) => {
+    if (message.method !== "Runtime.consoleAPICalled") return;
+    const [marker, type, key] = message.params.args.map((arg) => arg.value);
+    if (marker === "focus-calls key") keyReports.push(`${type} ${key}`);
+  });
+}
+
 /** Real key presses, which go wherever the browser has the focus. */
 async function press(page, word) {
   for (const ch of word) {
@@ -922,6 +940,7 @@ async function press(page, word) {
  * the frame's address while it was open, and whether a key reached the page, read once it is back.
  */
 async function writeNote(page, field, done) {
+  const quiet = keyReports.length;
   await page.waitFor(kept(field, UNLOADED_LINE));
   await press(page, "a");
   await until(async () => (await pageAddress(page)) === "about:blank", {
@@ -939,7 +958,7 @@ async function writeNote(page, field, done) {
   await page.waitFor(
     `getComputedStyle(document.getElementById("artifact")).display !== "none" && document.getElementById("cover").hidden`,
   );
-  result.keyed = await (await page.frame()).eval("globalThis.keyed");
+  result.keys = keyReports.length - quiet;
   return result;
 }
 
@@ -1018,7 +1037,7 @@ test(
     }
 
     console.log(`focus handling: ${JSON.stringify(results)}`);
-    const expected = { kept: true, text: "abc", address: "about:blank", keyed: false };
+    const expected = { kept: true, text: "abc", address: "about:blank", keys: 0 };
     for (const [name, result] of Object.entries(results)) assert.deepEqual(result, expected, name);
     assert.deepEqual(Object.keys(results), ["answer", "card", "second note", "edit"]);
   },
@@ -1049,6 +1068,7 @@ async function hiddenStateFocusChange(outOfView) {
     addEventListener("message", (event) => {
       if (event.data?.type === "unloaded") unload.out ??= performance.now();
     })`);
+  const quiet = keyReports.length;
   await artifact.eval("globalThis.calling = true");
   await page.waitFor(kept(card, UNLOADED_LINE));
   await press(page, "on");
@@ -1069,7 +1089,7 @@ async function hiddenStateFocusChange(outOfView) {
     shown: await page.eval(
       `getComputedStyle(document.getElementById("artifact")).display !== "none" && document.getElementById("cover").hidden`,
     ),
-    keyed: await back.eval("globalThis.keyed"),
+    keys: keyReports.length - quiet,
     place: Math.abs(nowAt - wasAt) <= 2 || `moved from ${wasAt} px to ${nowAt} px`,
   };
   const ms = Math.round(Number(await page.eval("unload.out - unload.moved")));
@@ -1081,7 +1101,7 @@ async function hiddenStateFocusChange(outOfView) {
     text: "once",
     address: "about:blank",
     shown: true,
-    keyed: false,
+    keys: 0,
     place: true,
   });
 }
@@ -1167,6 +1187,7 @@ test(
     await pointAt(page, artifact, "#p2");
     await clickOn(page, "document.querySelector('.mark-edit')");
     await page.waitFor(`${edit} === document.activeElement`);
+    const quiet = keyReports.length;
     await artifact.eval("globalThis.calling = true");
     await page.waitFor(kept(edit, UNLOADED_LINE));
     await clickOn(page, "document.getElementById('cardCancel')");
@@ -1178,14 +1199,14 @@ test(
     const text = await page.eval(`${edit}.value`);
     await page.enter();
     await page.waitFor(`${edit} === null && document.getElementById("cover").hidden`);
-    const keyed = await (await page.frame()).eval("globalThis.keyed");
+    const keys = keyReports.length - quiet;
     await page.close();
-    assert.deepEqual({ text, keyed }, { text: "abc", keyed: false });
+    assert.deepEqual({ text, keys }, { text: "abc", keys: 0 });
   },
 );
 
 test(
-  "focus handling returns the focus to an open margin edit when Back leaves a page that strayed",
+  "focus handling holds the reload Back asks for while a margin edit is open, and lands it when the edit is saved",
   { skip: !executable && "no browser found" },
   async () => {
     const edit = "document.querySelector('.mark-edit-text')";
@@ -1203,16 +1224,52 @@ test(
     await page.eval("delete document.body.dataset.revision");
     await page.eval("document.getElementById('back').focus()");
     await clickOn(page, "document.getElementById('back')");
-    await page.waitFor("document.body.dataset.revision === '0'");
-    await page.waitFor(kept(edit, EARLIER_LINE));
+    // A held margin edit defers the reload Back asks for, so the page announces no revision; a reload
+    // that were not deferred would announce it well within this bound.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const held = await page.eval("document.body.dataset.revision ?? null");
+    await page.eval(`${edit}.focus()`);
+    await page.waitFor(`${edit} === document.activeElement`);
     await page.eval(`${edit}.value = ''`);
     await press(page, "abc");
     const text = await page.eval(`${edit}.value`);
     await page.enter();
     await page.waitFor(`${edit} === null && document.getElementById("cover").hidden`);
-    const keyed = await (await page.frame()).eval("globalThis.keyed");
+    await page.waitFor("document.body.dataset.revision === '0'");
+    const keys = keyReports.length;
     await page.close();
-    assert.deepEqual({ text, keyed }, { text: "abc", keyed: false });
+    assert.deepEqual({ held, text, keys }, { held: null, text: "abc", keys: 0 });
+  },
+);
+
+test(
+  "page holds its revision while a margin edit is open after it took the focus, and reloads when the edit is saved",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const edit = "document.querySelector('.mark-edit-text')";
+    const { file, session } = await focusCallsReview();
+    await api(session, "POST", "drafts", {
+      draft: { prompt: "Say when", selector: "#p1", tag: "p", text: "The cache was cold" },
+    });
+    const { page, ...first } = await openReview(session.url);
+    await tookFocusEarlier(page, first.artifact);
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor(kept(edit, EARLIER_LINE));
+    const before = await page.eval("document.body.dataset.revision");
+    writeFileSync(file, readFileSync(file, "utf8").replace("Incident review", "Incident review, revised"));
+    await page.waitFor(
+      `document.getElementById("status").textContent === "The file changed. This page updates as soon as you finish this note."`,
+    );
+    const held = await page.eval("document.body.dataset.revision");
+    await page.eval(`${edit}.value = ''`);
+    await press(page, "abc");
+    const text = await page.eval(`${edit}.value`);
+    await page.enter();
+    await page.waitFor(`${edit} === null && document.getElementById("cover").hidden`);
+    await page.waitFor(`document.body.dataset.revision === '${Number(before) + 1}'`);
+    const after = await page.eval("document.body.dataset.revision");
+    await page.close();
+    assert.deepEqual({ before, held, text, after }, { before: "0", held: "0", text: "abc", after: "1" });
   },
 );
 
@@ -2299,6 +2356,7 @@ test(
  */
 async function openReview(url, viewport) {
   const page = await browser.page(url, viewport);
+  hearKeys(page);
   const attaching = page.frame();
   await page.waitFor("document.body.dataset.ready === '1'");
   const artifact = await attaching;

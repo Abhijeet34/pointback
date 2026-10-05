@@ -214,9 +214,10 @@ function sync(state) {
 }
 
 function show() {
-  if (editing || unloaded) {
+  if (editing || unloaded || (tookFocus && editingNote !== null)) {
     // A half-typed note is worth more than three seconds of freshness, and a page unloaded for a note
-    // stays out until it is done; the reload lands then.
+    // stays out until it is done, as does one that took the focus while a margin edit is open; the
+    // reload lands when the note or edit closes.
     deferredReload = true;
     return;
   }
@@ -629,7 +630,7 @@ function renderReason() {
 function renderCover() {
   const kept = tookFocus && (composing !== null || editingNote !== null);
   // The note the page was unloaded for is done, so the page comes back the way a save brings it.
-  if (unloaded && !kept) {
+  if (!kept && (unloaded || deferredReload)) {
     unloaded = false;
     show();
   }

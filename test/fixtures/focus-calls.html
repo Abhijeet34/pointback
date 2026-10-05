@@ -4,13 +4,14 @@
     <meta charset="utf-8" />
     <title>Incident review</title>
     <script>
-      // While `calling` is set, the page moves the focus to its own field every 20 ms; `keyed` says
-      // whether any key reached it, kept in the frame's name so it outlives the page being unloaded and
-      // loaded again (a sandboxed page has no storage). A focus() on an element already focused does
+      // While `calling` is set, the page moves the focus to its own field every 20 ms. Every key event
+      // the page receives is reported to the console as it arrives, in the capture phase, so the test
+      // process hears it even after the frame is removed. A focus() on an element already focused does
       // nothing, so it lets go first; it keeps the page where the reviewer scrolled it.
       globalThis.calling = false;
-      Object.defineProperty(globalThis, "keyed", { get: () => name === "keyed" });
-      addEventListener("keydown", () => (name = "keyed"), true);
+      for (const type of ["keydown", "keyup"]) {
+        addEventListener(type, (event) => console.log("focus-calls key", event.type, event.key), true);
+      }
       setInterval(() => {
         if (!globalThis.calling) return;
         const field = document.getElementById("field");

@@ -35,7 +35,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - A note is composed in the chrome, never the artifact; the chrome acts on what the frame proposes only under `gesture`, and pins carry no instruction or reply (`src/browser/chrome.js`).
   The page reaches the chrome only through the wrapper frame, served under the other loopback name (`pairedHost` in `src/http-guard.js`), whose own activation is the gesture; outside Chromium a key in the chrome also holds the page off for 5 s (`docs/THREAT-MODEL.md`).
   Read activation in a test through the wrapper's stamp, never a Playwright `evaluate` in a frame, which carries a gesture in Firefox and WebKit.
-- A page that moves the focus out of an open note is unloaded to about:blank until that note is done, then hidden whenever a note is open (`unload` in `src/browser/chrome.js`); a test reads whether a key reached it from `keyed` in `test/fixtures/focus-calls.html`, kept in the frame's name because a sandboxed page has no storage.
+- A page that moves the focus out of an open note is unloaded to about:blank until that note is done, then hidden whenever a note is open (`unload` in `src/browser/chrome.js`); a test counts the key events it reports to the console from `test/fixtures/focus-calls.html`, which the test process records, since the page's own window goes with its frame.
 - Replies are set as text, never HTML (`replyLine`).
 - Only fonts under the root and the vendored house faces get `Access-Control-Allow-Origin` (`FONT_HEADERS` in `src/http-guard.js`); never widen it.
 - The token in `server.json` goes only to a server that answered `tokenProof` (`src/http-guard.js`).
