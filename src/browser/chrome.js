@@ -990,9 +990,10 @@ function closeCompose(refocus) {
 }
 
 // Only the page can put the focus on one of its own elements, and it does so when it hears the card
-// closed, which a busy page hears late: on macOS, hunt 37251442770, after the reviewer had gone on to
-// edit a note in the margin. Until the page says it heard, a pull into the frame that follows the
-// reviewer moving on in the chrome is that late one, and the focus goes back to where they moved.
+// closed, which a busy page hears late, possibly after the reviewer had gone on to edit a note in the
+// margin (`docs/ENGINEERING-NOTES.md` has the run). Until the page says it heard, a pull into the frame
+// that follows the reviewer moving on in the chrome is that late one, and the focus goes back to where
+// they moved.
 // This acts on the chrome's own focus events alone; the page's word only ends the wait.
 let handoff = null;
 
