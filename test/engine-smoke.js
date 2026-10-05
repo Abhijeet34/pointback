@@ -2,6 +2,7 @@
 // browser, which is Safari on an unconfigured Mac, while test/browser.test.js drives Chromium
 // only. Open a file, point at an element, write a note, send, and a poll returns it. Then the gate
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
+// And an add after the tab sat idle past Node's default keep-alive close is kept.
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
@@ -11,6 +12,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { firefox, webkit } from "playwright-core";
+import { serve } from "../src/server.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
 import { until } from "./helpers/wait.js";
 
@@ -47,6 +49,7 @@ async function smoke(engine) {
       ms.push(result.ms);
     }
     await act(browser, (page) => focusLeavesNoteAlone(page, lab, engine));
+    await act(browser, addAfterAnIdle);
     return `${named} passed; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds; probe keys reaching the page per round ${probes.join(", ")}; move to unloaded ms per round ${ms.join(", ")}; the key channel reported ${control} keys of the page's own`;
   } catch (error) {
     throw Object.assign(error, { named });
@@ -434,6 +437,49 @@ async function focusLeavesNoteAlone(page, lab, engine) {
     { card: true, cover: true, frame: "block" },
     `${engine}: a move of the focus from the note to a chrome control unloaded the page`,
   );
+}
+
+/**
+ * The reviewer writes a note, sits idle 6.5 s, and presses Enter: the add is kept, and it rides a
+ * connection the tab opened before the idle. Node closes an idle connection after 5 s by default,
+ * and WebKit sent the add on one as it closed and lost it (docs/ENGINEERING-NOTES.md). The daemon
+ * runs in this process, so the act can see which connection the add arrived on.
+ */
+async function addAfterAnIdle(page) {
+  const lab = isolatedEnv();
+  const daemon = await serve({ stateDir: lab.dir });
+  const opened = new WeakMap();
+  const adds = [];
+  daemon.server.on("connection", (socket) => opened.set(socket, performance.now()));
+  daemon.server.on("request", (req) => {
+    if (req.method === "POST" && req.url.endsWith("/drafts")) adds.push(opened.get(req.socket));
+  });
+  try {
+    const { session } = (await cli([fixture], lab.env)).json();
+    await open(page, session.url);
+    await page.waitForFunction(() => document.body.dataset.annotate === "1");
+    await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
+    await page.waitForFunction(() => document.activeElement?.id === "cardText");
+    await page.keyboard.insertText(NOTE);
+    await page.evaluate(() => fetch("/health").then((res) => res.json()));
+    const idleFrom = performance.now();
+    // The idle is the case itself: past Node's default 5 s keep-alive close and its 1 s buffer.
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(
+      () =>
+        document.getElementById("card").hidden &&
+        document.querySelectorAll(".mark:not(.sent)").length === 1,
+    );
+    assert.equal(adds.length, 1, "one add reached the daemon");
+    assert.ok(
+      adds[0] < idleFrom,
+      `the add rode a connection opened ${Math.round(adds[0] - idleFrom)} ms after the idle began, so the server had closed the tab's idle ones`,
+    );
+  } finally {
+    await daemon.close();
+    rmSync(lab.dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
 }
 
 const requested = process.argv.slice(2);

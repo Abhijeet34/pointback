@@ -12,7 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createServer, request } from "node:http";
+import { Agent, createServer, request } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -692,6 +692,42 @@ test("the reviewer ends the review with the queue attached, and only a reopen re
     }),
     400,
   );
+});
+
+test("an idle connection is still open past the 5 s Node closes one at by default, so an add reuses it", async () => {
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  const send = (method, path, body) =>
+    new Promise((resolve, reject) => {
+      const req = request(base + path, { method, agent, headers: { ...headers, origin: base } });
+      req.on("error", reject);
+      req.on("response", (res) => {
+        let text = "";
+        res.on("data", (d) => (text += d));
+        res.on("end", () => resolve({ status: res.statusCode, reused: req.reusedSocket, text }));
+      });
+      req.end(body === undefined ? undefined : JSON.stringify(body));
+    });
+  let added;
+  try {
+    assert.equal((await send("GET", "/health")).status, 200);
+    // The idle is the case itself: past Node's default 5 s keep-alive close and its 1 s buffer.
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    const prompt = "after an idle";
+    const draft = { prompt, selector: "#title", tag: "h1", text: "" };
+    const { status: code, reused, text } = await send("POST", `/api/${key}/drafts`, { draft });
+    added = JSON.parse(text).drafts?.find((entry) => entry.prompt === prompt);
+    assert.deepEqual(
+      { code, reused, kept: Boolean(added) },
+      { code: 200, reused: true, kept: true },
+    );
+  } finally {
+    agent.destroy();
+    if (added)
+      await fetch(`${base}/api/${key}/drafts/${added.id}`, {
+        method: "DELETE",
+        headers: { ...headers, origin: base },
+      });
+  }
 });
 
 test("unsent notes live on the server: added, removed, sent as one batch, and kept across a restart", async () => {
