@@ -436,6 +436,10 @@ class Page {
    *
    * Resolves once the page's own document is there, never a frame's initial blank one, and after a
    * reload with the new document's frame, so a caller asks for it after the navigation it awaits.
+   * A tab's first show is one of those: a first load that never announces itself is shown once more,
+   * so the page is looked for only once the chrome has heard one announce itself. A handle on the
+   * document the chrome replaces is answered "Inspected target navigated or closed" mid-wait, as on
+   * windows-2025, run 37299968339, attempt 7, and 2 of 900 local runs of its sdk.js test at 0d46b08.
    *
    * It also waits for the page to have a viewport. The frame the wrapper creates can finish loading
    * before it is given its size, and until then nothing in it is laid out: every rect reads 0x0, so
@@ -444,6 +448,7 @@ class Page {
    */
   async frame() {
     await this.watch();
+    await this.waitFor("document.body.dataset.ready === '1'", { timeoutMs: ATTACH_MS });
     const artifact = await this.explained(
       until(() => this.#findArtifact(), {
         what: "the page under review to load in its frame",

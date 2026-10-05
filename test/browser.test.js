@@ -2495,6 +2495,199 @@ test(
   },
 );
 
+/** What a reviewer sees on opening a review: a cover over the frame, the help line, the file's name. */
+const OPENED_SEEN = `JSON.stringify({
+  cover: document.getElementById('cover').checkVisibility() ? document.getElementById('coverText').textContent : null,
+  status: document.getElementById('status').textContent.replace(/ ⌘Enter| Ctrl\\+Enter/, " <send key>"),
+  file: document.getElementById('fileName').textContent,
+})`;
+const HELP_LINE =
+  "Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, <send key> sends.";
+
+/**
+ * Opens a review in its own daemon with the first load matching `path` refused, and has the reviewer
+ * note the title once it opens; answers what the reviewer saw and how many loads were asked and refused.
+ */
+async function openWithOneRefused(path) {
+  const own = isolatedEnv();
+  const page = await browser.page("about:blank");
+  let refused;
+  try {
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { port } = own.serverInfo();
+    refused = await refuseLoads(page, path.replace("<port>", String(port)));
+    await page.navigate(url);
+    const { artifact } = await reviewIn(page);
+    const seen = JSON.parse(await page.eval(OPENED_SEEN));
+    await noteOn(page, artifact, "#title", "Name the queue in the title");
+    return { seen, ...refused.counts };
+  } finally {
+    await refused?.stop();
+    await page.close();
+    await own.stop();
+  }
+}
+
+for (const [what, path] of [
+  ["the page under review", "http://127.0.0.1:<port>/artifact/*/plan.html*"],
+  ["the page's script from the review", "http://127.0.0.1:<port>/sdk.js*"],
+  ["the frame the page is shown in", "http://localhost:<port>/wrapper.html*"],
+  ["the review itself", "http://127.0.0.1:<port>/api/*/session*"],
+]) {
+  test(
+    `a refused first load of ${what} is asked for again, and the reviewer gets a working review, never a dead end`,
+    { skip: !executable && "no browser found" },
+    async () => {
+      assert.deepEqual(await openWithOneRefused(path), {
+        seen: { cover: null, status: HELP_LINE, file: "plan.html" },
+        asked: 2,
+        refused: 1,
+      });
+    },
+  );
+}
+
+test(
+  "a refused first load of a reload held behind an open answer card gets the stray cover and Back, never the file-changed line",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    const counts = { asked: 0, refused: 0 };
+    const held = [];
+    const listener = ({ method, params, sessionId }) => {
+      if (method !== "Fetch.requestPaused" || sessionId) return;
+      counts.asked += 1;
+      if (held.length === 0) held.push(params.requestId);
+      else
+        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
+    };
+    page.browser.listeners.push(listener);
+    try {
+      const { file, html } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      await page.navigate(url);
+      const { artifact } = await reviewIn(page);
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+      const { uid } = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().prompts[0];
+      await cli(["reply", file, String(uid), "--question", "--message", "Which queue?"], own.env);
+      await page.waitFor("document.querySelector('.mark-answer') !== null");
+      await page.browser.send("Fetch.enable", {
+        patterns: [{ urlPattern: `http://127.0.0.1:${port}/artifact/*/plan.html*` }],
+      });
+      writeFileSync(file, html.replace("<main>", "<main><p>Added by the agent.</p>"));
+      await until(() => held.length === 1, { what: "the reload's page request to be held" });
+      // The answer card opens from the margin, which the chrome alone does: the page under review
+      // cannot be evaluated while its reload is held, so a click in it would never return.
+      await clickOn(page, "document.querySelector('.mark-answer')");
+      await page.waitFor("document.activeElement.id === 'cardText'");
+      await page.browser.send("Fetch.failRequest", {
+        requestId: held[0],
+        errorReason: "ConnectionRefused",
+      });
+      counts.refused += 1;
+      await page.waitFor("document.getElementById('cover')?.checkVisibility()");
+      assert.deepEqual(JSON.parse(await page.eval(OPENED_SEEN)), {
+        cover:
+          "The frame went to a page that is missing or is not plan.html, so nothing on it can be noted.",
+        status: "Go back to the page under review to point at it again.",
+        file: "plan.html",
+      });
+      await clickOn(page, "document.getElementById('cardCancel')");
+      await page.waitFor("document.getElementById('card').hidden");
+      await clickOn(page, "document.getElementById('back')");
+      await page.waitFor("document.body.dataset.revision === '1'");
+      const reloaded = await page.frame();
+      await noteOn(page, reloaded, "#title", "Name the queue in the title");
+      assert.deepEqual({ asked: counts.asked, refused: counts.refused }, { asked: 2, refused: 1 });
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.browser.send("Fetch.disable").catch(() => {});
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a page under review that never loads is asked for once more, then covered with Back, never reloaded in a loop",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    let refused;
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      refused = await refuseLoads(page, `http://127.0.0.1:${port}/artifact/*/plan.html*`, Infinity);
+      await page.navigate(url);
+      // The cover is drawn in the same turn that declines a second re-show, so once it shows, the
+      // count of loads asked for is final: nothing else shows the page until Back.
+      await page.waitFor("document.getElementById('cover').checkVisibility()");
+      assert.deepEqual(
+        { seen: JSON.parse(await page.eval(OPENED_SEEN)), asked: refused.counts.asked },
+        {
+          seen: {
+            cover:
+              "The frame went to a page that is missing or is not plan.html, so nothing on it can be noted.",
+            status: "Go back to the page under review to point at it again.",
+            file: "plan.html",
+          },
+          asked: 2,
+        },
+      );
+      await refused.stop();
+      refused = null;
+      await clickOn(page, "document.getElementById('back')");
+      const { artifact } = await reviewIn(page);
+      await noteOn(page, artifact, "#title", "Name the queue in the title");
+    } finally {
+      await refused?.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a review whose loads all answer asks for the frame the page is shown in once, and never loads it again",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    let refused;
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      refused = await refuseLoads(page, `http://localhost:${port}/wrapper.html*`, 0);
+      await page.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `window.frameLoads = 0;
+        document.addEventListener("load", (event) => {
+          if (event.target.id === "artifact") window.frameLoads += 1;
+        }, true);`,
+      });
+      await page.navigate(url);
+      const { artifact } = await reviewIn(page);
+      // The frame's first counted load is its initial about:blank, which fires before the chrome's script
+      // runs; the second is the wrapper's, and the chrome's listener for it runs in that same dispatch,
+      // so once two are counted the chrome has handled the wrapper's load and asked for nothing more.
+      await page.waitFor("window.frameLoads >= 2");
+      await noteOn(page, artifact, "#title", "Name the queue in the title");
+      assert.equal(refused.counts.asked, 1);
+    } finally {
+      await refused?.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
 test(
   "a save reloads the open page, keeps the reviewer's place, and the notes follow the new text",
   { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
@@ -5367,10 +5560,9 @@ test(
     await pickTextSize(review.page, "xl");
     // The house root is 15px at M and 19px at XL, and the page's prose is rem on it.
     await review.artifact.waitFor(`Math.abs(${prose} - ${atM * (19 / 15)}) < 0.05`);
-    // A reload is a new document, told the size again when it says it is ready. The frame is asked
-    // for once it has said so, since `frame()` answers with the page's current one.
+    // A reload is a new document, told the size again when it says it is ready, which `frame()`
+    // waits for.
     await review.page.reload();
-    await review.page.waitFor("document.body.dataset.ready === '1'");
     const reloaded = await review.page.frame();
     await reloaded.waitFor(`Math.abs(${prose} - ${atM * (19 / 15)}) < 0.05`);
 
