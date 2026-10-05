@@ -40,16 +40,17 @@ export async function health(info) {
   }
 }
 
-export async function api(info, method, path, body, retried = false) {
+export async function api(info, method, path, body, retried = false, signal) {
   const res = await fetch(`http://127.0.0.1:${info.port}${path}`, {
     method,
+    signal,
     headers: { authorization: `Bearer ${info.token}`, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = /** @type {any} */ (await res.json());
   // A refused write left the daemon holding the copy another process wrote, so the same call made once
   // more lands on it. The second refusal is the answer.
-  if (res.status === 409 && !retried) return api(info, method, path, body, true);
+  if (res.status === 409 && !retried) return api(info, method, path, body, true, signal);
   // The body rides on the error, because a refusal such as a gone file is an answer to print.
   if (!res.ok)
     throw Object.assign(new Error(json.error ?? `${method} ${path} failed with ${res.status}`), {
@@ -133,10 +134,12 @@ export async function ensureServer(stateDir, environment = process.env) {
  */
 export async function stopServer(stateDir, info, status, backstopMs = STOP_BACKSTOP_MS) {
   const backstop = Date.now() + backstopMs;
-  const asked = await api(info, "POST", "/shutdown").then(
+  const shutdown = probeTimeout(backstopMs, backstopMs);
+  const asked = await api(info, "POST", "/shutdown", undefined, false, shutdown.signal).then(
     () => true,
     () => false,
   );
+  shutdown.done();
   if (!status.proven) writeJsonAtomic(join(stateDir, "server.json"), { ...info, token: null });
   if (!asked) return false;
   const pid = Number.isInteger(info.pid) ? info.pid : status.pid;
