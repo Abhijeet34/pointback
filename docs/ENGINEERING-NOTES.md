@@ -63,8 +63,8 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   `skills/pointback/SKILL.md` is the agent-facing copy of the CLI contract and ships outside the npm package, so change it with any command, flag or field it names.
 - A reviewer's work survives the tab and the daemon.
   Unsent notes are drafts on the session (`addDraft`/`send` in `src/session-store.js`), never tab storage, and a restart reuses the port and token in `server.json` so an open tab reconnects (`serve` in `src/server.js`, `listen` in `src/browser/chrome.js`).
-  Because the token outlives the process, nothing may present it to a server that has not answered a fresh challenge with `tokenProof` (`src/http-guard.js`): the CLI's `health` and the chrome's `health` both check it first, and a token shown to an unproven server, or carried to a new port, is replaced.
-  `test/cli.test.js` asserts a squatter on the old port sees nothing but the challenge.
+  Because the token outlives the process, nothing may present it to a server that has not answered a fresh challenge with `tokenProof` (`src/http-guard.js`): the CLI's `health` and the chrome's `health` both check it first, the chrome's `connection`, which `api` requires, goes live only on a proven answer (`boot` and `listen` in `src/browser/chrome.js`), and a token shown to an unproven server, or carried to a new port, is replaced.
+  `test/cli.test.js` asserts a squatter on the old port sees nothing but the challenge, and `test/browser.test.js` that a tab whose health check is answered without proof sends nothing carrying the token.
 - The artifact frame is opaque-origin, so every asset load from it is a CORS request.
   Only a font under the root (`FONT_HEADERS` in `src/http-guard.js`) and the daemon's own vendored house faces, which a rendered Markdown page loads, are served with `Access-Control-Allow-Origin`, never the page, another file or the API: the frame has unrestricted egress, so widening it lets a hostile page read and send out anything under `--root`.
   `test/browser.test.js` and `test/server.test.js` fail on either side of that line.
