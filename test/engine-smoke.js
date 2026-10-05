@@ -353,7 +353,7 @@ async function unloadRound(page, lab, engine, round) {
     document.addEventListener(
       "focusout",
       (event) => {
-        if (event.relatedTarget === null && event.target.id === "cardText")
+        if (event.target.id === "cardText")
           moves.out ??= performance.now();
       },
       true,

@@ -1319,6 +1319,37 @@ test(
 );
 
 test(
+  "a press on the page after a press on the chrome reaches the page",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await artifact.eval("addEventListener('mousedown', () => (globalThis.pressed = true), true)");
+    await clickOn(page, "document.getElementById('appName')");
+    await page.waitFor("document.activeElement === document.body");
+    // The shield follows the focus a task after it leaves the note; this waits for that task.
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    const at = JSON.parse(
+      await page.eval(`JSON.stringify((() => {
+        const box = document.getElementById("artifact").getBoundingClientRect();
+        for (const y of [box.top + 8, box.bottom - 8, box.top + box.height / 2])
+          for (const x of [box.left + 8, box.right - 8, box.left + box.width / 2]) {
+            const hit = document.elementFromPoint(x, y)?.id;
+            if (hit === "shield" || hit === "artifact") return { x, y };
+          }
+        return null;
+      })())`),
+    );
+    assert.ok(at, "a point of the page is not under the card");
+    await page.click(at.x, at.y);
+    await artifact.waitFor("globalThis.pressed === true");
+    assert.equal(await page.eval("document.getElementById('cover').hidden"), true);
+    await page.close();
+  },
+);
+
+test(
   "keys the page takes with no note open reach the key channel",
   { skip: !executable && "no browser found" },
   async () => {

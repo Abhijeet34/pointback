@@ -1397,7 +1397,12 @@ document.addEventListener("keydown", (event) => {
 document.addEventListener("focusout", (event) => {
   const field = /** @type {HTMLElement} */ (event.target);
   const named = event.relatedTarget;
-  if (tabbing && (named === null || named === frame)) handed = true;
+  setTimeout(() => (shield.hidden = !writing(document.activeElement)));
+  if (tabbing && (named === null || named === frame)) {
+    setTimeout(() => {
+      if (document.activeElement === frame) handed = true;
+    });
+  }
   if (handing || tabbing || (named !== null && named !== frame) || !writing(field)) return;
   takenFrom(field);
 });
