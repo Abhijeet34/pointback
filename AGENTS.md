@@ -15,6 +15,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - A review shows HTML or Markdown only (`artifactKind` in `src/markdown.js`); the daemon idles out and evicts at `limits.sessions`, never a review with a tab open (`touch` in `src/server.js`, `#evict` in `src/session-store.js`).
 - `src/browser/` is static, excluded from coverage, and tested only by `test/browser.test.js` over the CDP harness in `test/helpers/cdp.js`.
   Never import Playwright into `test/*.test.js`; WebKit and Firefox are `npm run smoke` only.
+  The smoke gates the release pull request, so it opens a review with `open` (the chrome's `ready`), never `page.goto` (`docs/ENGINEERING-NOTES.md`).
   Drive Annotate with the CDP harness, never chrome-devtools-axi, which never moves focus into the out-of-process frame.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
 - Every wait goes through `until` in `test/helpers/wait.js` and carries its own deadline; a failed `waitFor` on a tab reports what the chrome showed (`describe` in `test/helpers/cdp.js`).
