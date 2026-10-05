@@ -1456,6 +1456,7 @@ function regained() {
   const field = away;
   away = undefined;
   if (!field || !writing(field) || document.activeElement !== frame || unloaded) return;
+  // A pull the hand-off is still taking back is looked at once that is done, as a focus-out's is.
   if (handoff?.returning) return takenFrom(field);
   taken = field;
   unload();

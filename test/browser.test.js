@@ -929,7 +929,6 @@ const slowFrameOnHide = (page) =>
     }).observe(frame, { attributes: true, attributeFilter: ["hidden"] });
   })()`);
 
-/** The address of the page's frame as the browser has it, from the wrapper's frame tree. */
 /**
  * The address of the page's frame from the wrapper's frame tree: about:blank once the page is unloaded,
  * and null while it is loaded, since it then runs in its own process, outside that tree.
@@ -1340,19 +1339,6 @@ async function windowAwayAndBack(page) {
   await page.browser.send("Target.closeTarget", { targetId });
 }
 
-/** The page holds the focus and the keys, is shown, and is still loaded at its address. */
-async function assertPageHeld(page) {
-  const state = JSON.parse(
-    await page.eval(`JSON.stringify({
-      shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
-      cover: document.getElementById("cover").hidden,
-      focus: document.activeElement.id,
-    })`),
-  );
-  assert.deepEqual(state, { shown: true, cover: true, focus: "artifact" });
-  assert.notEqual(await pageAddress(page), "about:blank");
-}
-
 test(
   "a press over the page keeps the page loaded when the window comes back",
   { skip: !executable && "no browser found" },
@@ -1363,7 +1349,8 @@ test(
     await pressOverPage(page);
     assert.equal(await page.eval("document.hasFocus()"), true);
     await windowAwayAndBack(page);
-    await assertPageHeld(page);
+    await assertPageStays(page);
+    assert.equal(await page.eval("document.activeElement.id"), "artifact");
     await page.close();
   },
 );
@@ -1379,7 +1366,8 @@ test(
     await page.waitFor("document.activeElement === document.getElementById('artifact')");
     await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
     await windowAwayAndBack(page);
-    await assertPageHeld(page);
+    await assertPageStays(page);
+    assert.equal(await page.eval("document.activeElement.id"), "artifact");
     await page.close();
   },
 );
@@ -1409,7 +1397,8 @@ test(
     await page.waitFor("document.activeElement === document.getElementById('artifact')");
     await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
     await windowAwayAndBack(page);
-    await assertPageHeld(page);
+    await assertPageStays(page);
+    assert.equal(await page.eval("document.activeElement.id"), "artifact");
     await page.close();
   },
 );
@@ -1508,7 +1497,8 @@ test(
     await page.front();
     await pressOverPage(page, false);
     await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
-    await assertPageHeld(page);
+    await assertPageStays(page);
+    assert.equal(await page.eval("document.activeElement.id"), "artifact");
     await page.browser.send("Target.closeTarget", { targetId });
     await page.close();
   },
@@ -2362,12 +2352,7 @@ test(
     }
     await pointAt(page, artifact, "#p1");
     await page.waitFor("document.body.dataset.handoff === 'settled'");
-    // Every value the handoff takes from here on, so a take-back that ran is seen even if it settled again.
-    await page.eval(`globalThis.handoffs = [];
-      new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
-        attributes: true,
-        attributeFilter: ["data-handoff"],
-      })`);
+    await recordHandoffs(page);
     await page.eval("document.getElementById('artifact').focus()");
     await page.waitFor(kept("document.getElementById('cardText')", UNLOADED_LINE));
     assert.equal(await pageAddress(page), "about:blank", "the page is unloaded");
@@ -2406,11 +2391,7 @@ for (const late of [false, true]) {
         await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
         await page.type(", four words at most");
         if (late) await lateWhileAway(page);
-        await page.eval(`globalThis.handoffs = [];
-          new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
-            attributes: true,
-            attributeFilter: ["data-handoff"],
-          })`);
+        await recordHandoffs(page);
         ({ targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" }));
         await page.browser.send("Target.activateTarget", { targetId });
         await until(async () => !(await page.eval("document.hasFocus()")), {
@@ -2455,11 +2436,7 @@ test(
       await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
       await page.type(", four words at most");
       await heldWhileAway(page);
-      await page.eval(`globalThis.handoffs = [];
-        new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
-          attributes: true,
-          attributeFilter: ["data-handoff"],
-        })`);
+      await recordHandoffs(page);
       ({ targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" }));
       await page.browser.send("Target.activateTarget", { targetId });
       await until(async () => !(await page.eval("document.hasFocus()")), {
@@ -2504,11 +2481,7 @@ test(
       await clickOn(page, "document.querySelector('.mark-edit')");
       await page.waitFor(`${edit} === document.activeElement`);
       await heldWhileAway(page);
-      await page.eval(`globalThis.handoffs = [];
-        new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
-          attributes: true,
-          attributeFilter: ["data-handoff"],
-        })`);
+      await recordHandoffs(page);
       ({ targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" }));
       await page.browser.send("Target.activateTarget", { targetId });
       await until(async () => !(await page.eval("document.hasFocus()")), {
@@ -2583,11 +2556,7 @@ test(
       await held.reached();
       await clickOn(page, "document.querySelector('.mark-edit')");
       await page.waitFor(`${edit} === document.activeElement`);
-      await page.eval(`globalThis.handoffs = [];
-        new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
-          attributes: true,
-          attributeFilter: ["data-handoff"],
-        })`);
+      await recordHandoffs(page);
       // Once released, the page takes the focus every 20 ms after its late refocus.
       await held.evaluate("globalThis.calling = true");
     } finally {
@@ -3482,6 +3451,18 @@ async function countCloseAcks(page) {
       if (event.data?.type === "page" && event.data.message?.type === "closed") window.closeAcks += 1;
     });
   })()`);
+}
+
+/**
+ * Records every value the hand-off takes from here on, so a take-back that ran is seen even if it
+ * settled again.
+ */
+async function recordHandoffs(page) {
+  await page.eval(`globalThis.handoffs = [];
+    new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
+      attributes: true,
+      attributeFilter: ["data-handoff"],
+    })`);
 }
 
 /**
