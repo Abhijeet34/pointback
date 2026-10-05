@@ -4,6 +4,7 @@ import { openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
+import { daemonHolds, pidAlive } from "./daemon-lock.js";
 import { tokenProof } from "./http-guard.js";
 import { env, name, version } from "./identity.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
@@ -35,13 +36,16 @@ export async function health(info) {
   }
 }
 
-export async function api(info, method, path, body) {
+export async function api(info, method, path, body, retried = false) {
   const res = await fetch(`http://127.0.0.1:${info.port}${path}`, {
     method,
     headers: { authorization: `Bearer ${info.token}`, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = /** @type {any} */ (await res.json());
+  // A refused write left the daemon holding the copy another process wrote, so the same call made once
+  // more lands on it. The second refusal is the answer.
+  if (res.status === 409 && !retried) return api(info, method, path, body, true);
   // The body rides on the error, because a refusal such as a gone file is an answer to print.
   if (!res.ok)
     throw Object.assign(new Error(json.error ?? `${method} ${path} failed with ${res.status}`), {
@@ -56,33 +60,49 @@ export async function api(info, method, path, body) {
  * is asked to stop first, so the CLI and the daemon never disagree about the protocol.
  */
 export async function ensureServer(stateDir, environment = process.env) {
+  const older = ({ port, pid }) =>
+    new Error(
+      `an older ${name} daemon${Number.isInteger(pid) ? ` (pid ${pid})` : ""} on port ${port} did not stop; end that process and retry`,
+    );
   const existing = readServerInfo(stateDir);
   if (existing) {
     const status = await health(existing);
     if (status?.proven && status.version === version) return existing;
-    if (status?.proven || status?.app === name) await stopServer(stateDir, existing, status);
+    if (status?.proven || (status?.app === name && recordHolds(existing, status)))
+      await stopServer(stateDir, existing, status);
   }
+  // A second daemon beside one that did not stop would split the directory, so the start refuses.
+  const holding = await refusingServer(stateDir);
+  if (holding) throw older(holding);
   const log = openSync(join(stateDir, "server.log"), "a", 0o600);
-  const child = spawn(process.execPath, [bin, "server"], {
-    detached: true,
-    stdio: ["ignore", log, log],
-    env: environment,
-    // Without this a detached console application on Windows opens a console window of its
-    // own and leaves it on the reviewer's desktop for as long as the daemon lives.
-    windowsHide: true,
-  });
-  child.unref();
+  const start = () => {
+    const started = spawn(process.execPath, [bin, "server"], {
+      detached: true,
+      stdio: ["ignore", log, log],
+      env: environment,
+      // Without this a detached console application on Windows opens a console window of its
+      // own and leaves it on the reviewer's desktop for as long as the daemon lives.
+      windowsHide: true,
+    });
+    started.unref();
+    return started;
+  };
+  let child = start();
   // Bounded by attempts as well as by the clock. Every turn of this loop can cost a probe's
   // own `AbortSignal.timeout`, so a budget written only in milliseconds is really a budget in
   // however many looks the machine can afford - and a busy windows-2025 runner affords few.
-  // The child exiting is the one fact that means "not coming"; everything else means "not yet".
+  // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
+  // directory; the rest exit 0. A start that stepped aside for a daemon that has since let go,
+  // one caught on its way out, is replaced; only a failed exit means "not coming".
   const startedAt = Date.now();
   let probes = 0;
   for (;;) {
     probes += 1;
     const info = readServerInfo(stateDir);
-    if (info && info.pid === child.pid && (await health(info))?.proven) return info;
-    if (child.exitCode !== null) break;
+    const status = info && (await health(info));
+    if (status?.proven && status.version === version) return info;
+    if (child.exitCode !== null && child.exitCode !== 0) break;
+    if (child.exitCode === 0 && !(await daemonHolds(stateDir))) child = start();
     if (probes >= START_PROBES && Date.now() - startedAt >= START_TIMEOUT_MS) break;
     await sleep(50);
   }
@@ -92,7 +112,8 @@ export async function ensureServer(stateDir, environment = process.env) {
 /**
  * Asks the recorded server to stop. A daemon from before the proof existed answers as this app
  * but cannot prove it holds the token, and still has to stop, or two would share its sessions; it
- * has then been shown the token, so the token is retired and the next daemon mints a fresh one.
+ * has then been shown the token, so the token is retired whether or not it stopped, and the next
+ * daemon mints a fresh one. The record keeps its port, so a start still finds a daemon that refused.
  */
 export async function stopServer(stateDir, info, status) {
   const stopped = await api(info, "POST", "/shutdown").then(
@@ -101,6 +122,38 @@ export async function stopServer(stateDir, info, status) {
   );
   if (!status.proven) writeJsonAtomic(join(stateDir, "server.json"), { ...info, token: null });
   return stopped;
+}
+
+/**
+ * Whether a record's server is the one still holding its port. Its process must be alive, and when the
+ * answer reports a pid it must be the record's, so a port that a later daemon took is not the record's.
+ * Only signal 0 is ever sent, to test liveness.
+ */
+export function recordHolds(record, status) {
+  if (Number.isInteger(record.pid) && !pidAlive(record.pid)) return false;
+  const reported = Number.isInteger(status?.pid) && Number.isInteger(record.pid);
+  return !reported || status.pid === record.pid;
+}
+
+/**
+ * The recorded server when it still holds its port: its port answers as this app, or accepts the
+ * connection and is too busy to answer, with its token or with the token retired. A server that was
+ * asked to stop and did not is still there, so a start and `stop` both need to name it.
+ */
+export async function refusingServer(stateDir) {
+  const record = readJson(join(stateDir, "server.json"));
+  if (!Number.isInteger(record?.port) || !recordHolds(record, null)) return null;
+  try {
+    const challenge = randomBytes(16).toString("hex");
+    const res = await fetch(`http://127.0.0.1:${record.port}/health?challenge=${challenge}`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    const status = /** @type {any} */ (await res.json());
+    return status?.app === name && recordHolds(record, status) ? record : null;
+  } catch (error) {
+    const busy = error.name === "TimeoutError" || error.name === "AbortError";
+    return busy ? record : null;
+  }
 }
 
 /** How long, and how many looks, a spawned daemon gets to answer before it is called dead. */

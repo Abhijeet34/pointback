@@ -8,6 +8,7 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -2277,6 +2278,86 @@ test(
       ["Say how long each step takes"],
     );
     await page.close();
+  },
+);
+
+// The review's split-brain reproduction, in a real tab: the tab outlives its daemon, seven opens race
+// to start the next one, and the note the reviewer sends from the same tab must reach the agent.
+// Before the single-daemon fix, the racing starts left two daemons and the tab's send was lost.
+test(
+  "a tab that outlived its daemon sends a note through 7 racing opens and the poll delivers it, with one daemon",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    const own = isolatedEnv();
+    const dirs = [];
+    try {
+      const { file } = copyOfFixture();
+      dirs.push(dirname(file));
+      const session = (await cli([file], own.env)).json().session;
+      const { page, artifact } = await openReview(session.url);
+      const { port: tabPort } = own.serverInfo();
+
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      await page.waitFor("document.getElementById('notice').checkVisibility()");
+      await until(
+        () =>
+          fetch(`http://127.0.0.1:${tabPort}/health`).then(
+            () => false,
+            () => true,
+          ),
+        { what: "the stopped daemon to stop answering" },
+      );
+
+      const racing = Array.from({ length: 7 }, () => copyOfFixture());
+      dirs.push(...racing.map(({ file: copy }) => dirname(copy)));
+      const opened = await Promise.all(racing.map(({ file: copy }) => cli([copy], own.env)));
+      assert.deepEqual(
+        opened.map((o) => o.code),
+        Array(7).fill(0),
+        opened.map((o) => o.stderr).join(""),
+      );
+      const info = own.serverInfo();
+      assert.equal(info.port, tabPort, "the restarted daemon takes the port the tab is looking at");
+      assert.deepEqual(
+        [...new Set(opened.map((o) => new URL(o.json().session.url).port))],
+        [String(tabPort)],
+        "every review opened on that one port",
+      );
+      const health = await fetch(`http://127.0.0.1:${info.port}/health`).then((res) => res.json());
+      assert.equal(health.pid, info.pid, "the port answers as the daemon server.json names");
+      const top = Math.max(
+        ...readdirSync(own.dir)
+          .filter((f) => /^daemon\.\d+\.lock$/.test(f))
+          .map((f) => Number(f.split(".")[1])),
+      );
+      assert.equal(
+        JSON.parse(readFileSync(join(own.dir, `daemon.${top}.lock`), "utf8")).pid,
+        info.pid,
+        "the highest claim names that same daemon",
+      );
+      assert.doesNotThrow(() => process.kill(info.pid, 0), "and that daemon is alive");
+
+      // The tab reconnects on its own once the new daemon answers on its port, with no agent step.
+      await page.waitFor("!document.getElementById('notice').checkVisibility()", {
+        timeoutMs: 20_000,
+      });
+      await noteOn(page, artifact, "#title", "the note that must not be lost");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1", {
+        timeoutMs: 45_000,
+      });
+
+      const polled = (await cli(["poll", file, "--timeout-ms", "3000"], own.env)).json();
+      assert.equal(polled.status, "feedback", JSON.stringify(polled));
+      assert.deepEqual(
+        polled.prompts.map((p) => p.prompt),
+        ["the note that must not be lost"],
+      );
+      await page.close();
+    } finally {
+      await own.stop();
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    }
   },
 );
 

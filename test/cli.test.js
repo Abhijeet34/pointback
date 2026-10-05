@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -478,6 +480,121 @@ test("stop shuts the server down and reports when none runs", async () => {
   assert.deepEqual((await cli(["stop"], lab.env)).json(), { status: "not-running" });
 });
 
+/** `count` copies of the fixture under a fresh folder, so concurrent opens each review their own file. */
+function copies(count) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-copies-"));
+  return Array.from({ length: count }, (_, i) => {
+    const file = join(dir, `f${i}.html`);
+    copyFileSync(fixture, file);
+    return file;
+  });
+}
+
+// An agent's parallel tool calls are the usual way two commands meet a state directory with no
+// daemon on it. Each start spawns one; on 0.1.6 every one of them bound a port and loaded the
+// sessions, and every CLI but the last to write server.json gave up after 10 s.
+test("eight opens at once on a cold state directory all succeed, against one daemon", async () => {
+  const cold = isolatedEnv();
+  try {
+    const files = copies(8);
+    const started = Date.now();
+    const opened = await Promise.all(files.map((file) => cli([file], cold.env)));
+    console.log(`eight concurrent opens returned in ${Date.now() - started} ms`);
+    assert.deepEqual(
+      opened.map((o) => o.code),
+      Array(8).fill(0),
+      opened.map((o) => o.stderr).join(""),
+    );
+    const ports = new Set(opened.map((o) => new URL(o.json().session.url).port));
+    assert.deepEqual([...ports], [String(cold.serverInfo().port)], "every review on one daemon");
+    const info = cold.serverInfo();
+    const lockFiles = readdirSync(cold.dir).filter((file) => /^daemon\.\d+\.lock$/.test(file));
+    assert.equal(lockFiles.length, 1, `one claim holds the directory: ${lockFiles.join(", ")}`);
+    assert.equal(
+      JSON.parse(readFileSync(join(cold.dir, lockFiles[0]), "utf8")).pid,
+      info.pid,
+      "the claim names the daemon the record names",
+    );
+    const health = await fetch(`http://127.0.0.1:${info.port}/health`).then((res) => res.json());
+    assert.equal(health.pid, info.pid, "the one port answers as the one daemon");
+    assert.doesNotThrow(() => process.kill(info.pid, 0), "that daemon is alive");
+  } finally {
+    await cold.stop();
+  }
+});
+
+// The review's split-brain reproduction. After an idle-out, concurrent starts raced for the old
+// port: a tab reconnected to the daemon that won it while server.json, and so the agent, named
+// another, and the agent's next open wrote that other daemon's stale copy over the sent note.
+test("a note sent from a tab that outlived its daemon reaches the agent after concurrent restarts", async () => {
+  const split = isolatedEnv();
+  try {
+    const [reviewed, ...others] = copies(8);
+    const url = new URL((await cli([reviewed], split.env)).json().session.url);
+    const tab = { port: Number(url.port), token: url.hash.slice(1) };
+    const key = url.pathname.split("/").pop();
+    assert.deepEqual((await cli(["stop"], split.env)).json(), { status: "stopped" });
+    await until(
+      () =>
+        fetch(`http://127.0.0.1:${tab.port}/health`).then(
+          () => false,
+          () => true,
+        ),
+      { what: "the stopped daemon to stop answering" },
+    );
+    const reopened = await Promise.all(others.map((file) => cli([file], split.env)));
+    assert.deepEqual(
+      reopened.map((o) => o.code),
+      Array(others.length).fill(0),
+      reopened.map((o) => o.stderr).join(""),
+    );
+
+    // The tab reconnects on its own port with the token in its fragment, as it does on its own.
+    const note = { selector: "#title", tag: "h1", text: "Rollout" };
+    const sent = await sendNote(tab, key, { ...note, prompt: "the note that must not be lost" });
+    assert.equal(sent.status, 200);
+    assert.equal((await cli([reviewed], split.env)).code, 0, "the agent opens the file again");
+    const polled = (await cli(["poll", reviewed, "--timeout-ms", "0"], split.env)).json();
+    assert.equal(polled.status, "feedback", JSON.stringify(polled));
+    assert.deepEqual(
+      polled.prompts.map((p) => p.prompt),
+      ["the note that must not be lost"],
+    );
+  } finally {
+    await split.stop();
+  }
+});
+
+// A start that finds a daemon still holding the directory exits 0 and leaves it to that daemon;
+// when that daemon was on its way out and never answers, the CLI has to start another itself.
+test("an open that meets a daemon on its way out starts the next one", async () => {
+  const leaving = isolatedEnv();
+  const holder = createServer(() => {});
+  await new Promise((r) => holder.listen(0, "127.0.0.1", r));
+  const port = /** @type {import("node:net").AddressInfo} */ (holder.address()).port;
+  writeFileSync(join(leaving.dir, "daemon.1.lock"), JSON.stringify({ pid: process.pid, port }));
+  try {
+    const opening = cli([copies(1)[0]], leaving.env);
+    await until(
+      () => {
+        try {
+          return readFileSync(join(leaving.dir, "server.log"), "utf8").includes("already serves");
+        } catch {
+          return false;
+        }
+      },
+      { what: "a start to find the holder and step aside" },
+    );
+    holder.close();
+    const opened = await opening;
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(new URL(opened.json().session.url).port, String(leaving.serverInfo().port));
+  } finally {
+    holder.close();
+    await leaving.stop();
+  }
+});
+
 // "server did not start; see <path>" was the whole of what this said, and a path is no help
 // wherever the log cannot be reached afterwards - which is every CI runner. Run 33875622583,
 // attempt 19, failed exactly here on windows-2025 and left nothing behind but the path, so the
@@ -504,7 +621,7 @@ const RECORDED_TOKEN = "ab".repeat(24);
 async function recordServer(dir, port) {
   const { writeJsonAtomic } = await import("../src/state-dir.js");
   writeJsonAtomic(join(dir, "server.json"), {
-    pid: 1,
+    pid: process.pid,
     port,
     token: RECORDED_TOKEN,
     version: "0.0.0-other",
@@ -554,6 +671,115 @@ for (const [how, args] of [
     }
   });
 }
+
+// An older daemon that refuses to stop still holds the port and the sessions. Starting another beside it
+// would split the directory between two daemons, so each open refuses until that daemon is gone. It has
+// been shown the token without proving it holds it, so the token is retired at once, whether or not it
+// stopped, and is never shown again: when the port comes back, the next daemon takes a fresh token.
+test("an older daemon that refuses to stop blocks every open, sees the token once, and the token is retired", async () => {
+  const other = isolatedEnv();
+  const shown = [];
+  const refuser = createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "POST" && req.url === "/shutdown") {
+      shown.push(req.headers.authorization);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: "busy" }));
+      return;
+    }
+    res.end(JSON.stringify({ ok: true, app: name, version: "0.0.0-other" }));
+  });
+  await new Promise((r) => refuser.listen(0, "127.0.0.1", r));
+  const port = refuser.address().port;
+  await recordServer(other.dir, port);
+  try {
+    for (const attempt of [1, 2]) {
+      const opened = await cli([fixture], other.env);
+      assert.equal(opened.code, 1, `attempt ${attempt}: ${opened.stdout}`);
+      assert.ok(
+        opened.stderr.includes(
+          `error: an older ${name} daemon (pid ${process.pid}) on port ${port} did not stop; end that process and retry`,
+        ),
+        opened.stderr,
+      );
+      assert.equal(
+        other.serverInfo().token,
+        null,
+        `attempt ${attempt}: the token it saw is retired`,
+      );
+    }
+    assert.deepEqual(
+      (await cli(["stop"], other.env)).json(),
+      { status: "refused", pid: process.pid, port },
+      "stop names the server it could not stop, by pid and port",
+    );
+    assert.deepEqual(shown, [`Bearer ${RECORDED_TOKEN}`], "the token reached it once, never again");
+    assert.equal(
+      existsSync(join(other.dir, "daemon.1.lock")),
+      false,
+      "no daemon claimed the directory",
+    );
+
+    refuser.close();
+    refuser.closeAllConnections();
+    const opened = await cli([fixture], other.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(other.serverInfo().port, port, "the port it gave back is taken up again");
+    assert.notEqual(other.serverInfo().token, RECORDED_TOKEN, "with a token it never saw");
+  } finally {
+    refuser.close();
+    await other.stop();
+  }
+});
+
+test("a recorded server that accepts the connection but never answers blocks the open instead of a second daemon starting", async () => {
+  const other = isolatedEnv();
+  const stalled = createServer(() => {});
+  await new Promise((r) => stalled.listen(0, "127.0.0.1", r));
+  const port = stalled.address().port;
+  await recordServer(other.dir, port);
+  try {
+    const opened = await cli([fixture], other.env);
+    assert.equal(opened.code, 1, opened.stdout);
+    assert.ok(
+      opened.stderr.includes(
+        `error: an older ${name} daemon (pid ${process.pid}) on port ${port} did not stop; end that process and retry`,
+      ),
+      opened.stderr,
+    );
+    assert.equal(existsSync(join(other.dir, "daemon.1.lock")), false, "no daemon claimed it");
+  } finally {
+    stalled.closeAllConnections();
+    stalled.close();
+    await other.stop();
+  }
+});
+
+test("a record whose process has exited blocks nothing, and a live daemon on its port is neither named nor sent its token", async () => {
+  const stale = isolatedEnv();
+  const live = isolatedEnv();
+  const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+  try {
+    assert.equal((await cli([fixture], live.env)).code, 0);
+    const livePort = live.serverInfo().port;
+    writeFileSync(
+      join(stale.dir, "server.json"),
+      JSON.stringify({
+        pid: exited,
+        port: livePort,
+        token: RECORDED_TOKEN,
+        version: "0.0.0-other",
+      }),
+    );
+    assert.deepEqual((await cli(["stop"], stale.env)).json(), { status: "not-running" });
+    const opened = await cli([fixture], stale.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.notEqual(stale.serverInfo().port, livePort, "it starts its own daemon");
+  } finally {
+    await stale.stop();
+    await live.stop();
+  }
+});
 
 // The port a daemon left behind can be taken by anything, and the token outlives the daemon, so
 // it is presented only to a server that answers a fresh challenge keyed by it.
@@ -678,6 +904,19 @@ test("reply answers a note done, declined or with a question, and refuses a uid 
   const unopened = await cli(["reply", never, "1", "--done"], lab.env);
   assert.equal(unopened.code, 1);
   assert.match(unopened.stderr, /no such session/);
+});
+
+test("a reply that meets a session another process rewrote is made once more and lands", async () => {
+  const { file } = scratch();
+  const key = keyOf(await cli([file], lab.env));
+  await daemon(lab).note(key, "the note the reply answers");
+  const [{ uid }] = (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json().prompts;
+  const path = join(lab.dir, "sessions", `${key}.json`);
+  writeFileSync(`${path}.tmp`, readFileSync(path));
+  renameSync(`${path}.tmp`, path);
+  const replied = await cli(["reply", file, String(uid), "--done"], lab.env);
+  assert.equal(replied.code, 0, replied.stderr);
+  assert.equal(replied.json().reply.status, "done");
 });
 
 test("a note that answers the agent's question names its uid, and only a uid the review issued", async () => {

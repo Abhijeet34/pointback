@@ -52,7 +52,7 @@ pointback reply plan.html 2 --done  # tells the reviewer what became of note 2
 pointback end plan.html             # ends the review from the agent's side
 pointback plan.html --reopen        # opens a review the reviewer ended
 pointback components/sheets/actions.html --root .   # lets the page load assets from anywhere under .
-pointback stop                      # stops the background server
+pointback stop                      # stops the background server, or reports `refused` for one it cannot stop
 ```
 
 `poll` waits 60000 ms unless `--timeout-ms` says otherwise, and at most 600000.
@@ -252,9 +252,12 @@ The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on se
 ## How it holds together
 
 The first CLI call starts a detached server bound to `127.0.0.1` only and records its port and a random capability token in `~/.pointback/server.json`, readable by the owner alone.
-A restarted server takes the same port and token again while that port is free, which is what lets an open tab reconnect, and mints a fresh token whenever it has to take another port.
+A restarted server takes the same port and token again while that port is free and its token has not been retired, which is what lets an open tab reconnect, and mints a fresh token whenever it has to take another port.
+One daemon serves a state directory: a start claims it before loading any session, and a start that finds a live daemon there exits while its CLI goes on to that daemon, so commands an agent runs at once share one (`src/daemon-lock.js`).
 Because the token outlives the process, whatever holds a dead daemon's port must never receive it: the CLI and the tab present it only to a server that first answers a fresh challenge keyed with it (`tokenProof` in `src/http-guard.js`).
-There is one exception: a daemon from 0.1.4 or earlier cannot answer the challenge and still has to stop, so to a server on the recorded port that answers as `{"app":"pointback"}` without the proof, the CLI sends the token once on `POST /shutdown` and then retires it in `server.json`, and the next daemon mints a fresh one (`stopServer` in `src/client.js`).
+There is one exception, for a daemon from 0.1.4 or earlier, which cannot answer the challenge: the CLI shows it the token once on `POST /shutdown` and retires the token whether or not it stopped (`stopServer` in `src/client.js`, scope in `docs/THREAT-MODEL.md`).
+A retired token is never shown again, so while its recorded process is alive and its port still answers as this app, every open refuses with `an older pointback daemon (pid P) on port N did not stop; end that process and retry`, and `pointback stop` answers `{"status":"refused","pid":P,"port":N}` without signalling P.
+Once that port stops answering, the next daemon mints a fresh token.
 A process squatting the port with that answer receives a token that no running daemon accepts.
 Every API call, from the CLI or from the chrome page, carries that token; the browser receives it in the URL fragment, which never reaches a server log.
 A session is keyed by a hash of the file's canonical path, but that key opens nothing: the artifact bytes are served under a second random per-session token, and the store is a `Map`, so no key can resolve to an inherited property.
@@ -264,6 +267,8 @@ The review script is inserted into the artifact as a DOM node through a real HTM
 Assets resolve within the review's root through a path check that survives encoded traversal, backslashes, unicode lookalikes, null bytes, absolute paths and symlink escape.
 A font (`.woff2`, `.woff`, `.ttf`, `.otf`) is the one asset served with `Access-Control-Allow-Origin`, because the opaque origin makes every `@font-face` load a CORS request; any other file under the root, and the API, stay unreadable to the page's own script, so a stray `.env` beside the artifact cannot be read and sent out.
 Each session is its own file under `sessions/` in the state directory, so a file save rewrites the one review it belongs to rather than every review the daemon holds.
+Each write to a session file counts itself in the file, and before it replaces the file a daemon checks whether the file holds a readable session written more times than its own copy: if it does, the daemon takes that copy and refuses that one change, so a stale process cannot overwrite a note the reviewer sent.
+The check and the replace are not a single atomic step, so the one-daemon lock is the real guarantee and the check catches a second writer only when one gets in.
 `npm run bench` times exactly that save at 200 notes a session: when every session shared one `state.json` it wrote 0.22 MB in about 0.4 ms with 1 session held and 14.05 MB in about 17.5 ms with 64, and now it writes 0.21 MB in about 0.4 ms at every count from 1 to 64.
 A `state.json` from an earlier version is split on the first start, and renamed to `state.json.migrated` only once every session in it reads back from its own file.
 State is written to a temporary file and renamed, a temporary file a crash left behind is removed on the next start, and nothing but the owning user can read it.

@@ -43,6 +43,8 @@ const newEpoch = () => randomBytes(8).toString("hex");
 /** The one file every session lived in before each got its own. */
 const LEGACY_FILE = "state.json";
 
+const writesOf = (session) => (Number.isSafeInteger(session?.writes) ? session.writes : 0);
+
 export class SessionStore {
   #stateDir;
   #dir;
@@ -53,6 +55,8 @@ export class SessionStore {
   #lingering = new Map();
   #working = new Map();
   #live;
+  /** Each session file as this process last read or wrote it; see `#persist`. */
+  #seen = new Map();
 
   /**
    * `stateDir` holds one file per session under `sessions/`, so a mutation rewrites only the session
@@ -71,7 +75,11 @@ export class SessionStore {
       // A temp file is a write that died before its rename; the session file it was replacing is
       // still whole, so the temp is only litter, and it can be as large as the session.
       if (name.endsWith(".tmp")) rmSync(path, { force: true });
-      else if (name.endsWith(".json")) this.#load(name.slice(0, -".json".length), readJson(path));
+      else if (name.endsWith(".json")) {
+        const key = name.slice(0, -".json".length);
+        this.#seen.set(key, this.#fingerprint(key));
+        this.#load(key, readJson(path));
+      }
     }
     this.#split(join(stateDir, LEGACY_FILE));
   }
@@ -124,8 +132,36 @@ export class SessionStore {
     return join(this.#dir, `${key}.json`);
   }
 
+  /**
+   * Writes the session through. Each write counts itself in the session file, so when the file has
+   * been touched since this one last read or wrote it, a copy written more times than this one is a
+   * newer copy another process holds: this process takes it and refuses the change rather than
+   * writing over notes the reviewer already sent. A copy written no more often than this one, such as
+   * an older one put back, is overwritten. A file that is missing, unreadable or not a session is
+   * no newer copy, so the session is written from memory.
+   */
   #persist(session) {
-    writeJsonAtomic(this.#path(session.key), session);
+    const { key } = session;
+    const current = this.#fingerprint(key);
+    if (current !== undefined && current !== this.#seen.get(key)) {
+      this.#seen.set(key, this.#fingerprint(key));
+      const disk = readJson(this.#path(key));
+      if (disk && writesOf(disk) > writesOf(session) && this.#load(key, disk))
+        throw new HttpError(409, "this review was changed by another process; try again");
+    }
+    session.writes = writesOf(session) + 1;
+    writeJsonAtomic(this.#path(key), session);
+    this.#seen.set(key, this.#fingerprint(key));
+  }
+
+  /** A rename gives every write a new inode, so a write by anyone changes this. */
+  #fingerprint(key) {
+    try {
+      const { ino, mtimeMs, size } = statSync(this.#path(key));
+      return `${ino}:${mtimeMs}:${size}`;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -215,6 +251,7 @@ export class SessionStore {
     const victim = evictable[0];
     this.#sessions.delete(victim.key);
     rmSync(this.#path(victim.key), { force: true });
+    this.#seen.delete(victim.key);
     this.#clearWorking(victim.key);
   }
 
@@ -411,7 +448,15 @@ export class SessionStore {
       return session.revision;
     }
     session.revision += 1;
-    this.#persist(session);
+    try {
+      this.#persist(session);
+    } catch (error) {
+      // Refused because another process holds a newer copy; a throw here would end the daemon.
+      if (!(error instanceof HttpError)) throw error;
+      const adopted = this.#sessions.get(key);
+      if (adopted) this.#events.emit(key, { type: "reload", revision: adopted.revision });
+      return adopted?.revision ?? 0;
+    }
     this.#events.emit(key, { type: "reload", revision: session.revision });
     return session.revision;
   }
@@ -553,9 +598,33 @@ export class SessionStore {
     return final;
   }
 
+  /**
+   * An event listener runs inside `emit`: a refused write thrown from it would end the event for every
+   * listener after it, and the watcher or request that emitted it. A refusal has already adopted the
+   * newer copy, so the answer is asked once more against that copy. If that is refused too, a gone
+   * file is still answered gone, and any other event leaves the poll waiting for the next one.
+   */
+  #answerOnce(key, cursor, type) {
+    try {
+      return this.#answer(key, cursor, false);
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+    }
+    try {
+      return this.#answer(key, cursor, false);
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      return type === "gone" ? { status: "gone", file: this.get(key).file } : null;
+    }
+  }
+
   /** Tells every open tab the file is gone, and returns the answer the CLI prints for it. */
   #gone(session) {
-    this.#events.emit(session.key, { type: "gone" });
+    try {
+      this.#events.emit(session.key, { type: "gone" });
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+    }
     // Nothing the page can do waits on the agent any more, so it no longer shows it working.
     this.#clearWorking(session.key);
     return { status: "gone", file: session.file };
@@ -592,7 +661,7 @@ export class SessionStore {
       // Two pollers race for one batch; the one that finds nothing keeps waiting.
       const onEvent = (event) => {
         if (event.type !== "feedback" && event.type !== "ended" && event.type !== "gone") return;
-        const answer = this.#answer(key, cursor, false);
+        const answer = this.#answerOnce(key, cursor, event.type);
         if (answer) finish(answer);
       };
       const onAbort = () => finish(null);

@@ -19,6 +19,7 @@ import {
   sendJson,
   tokenProof,
 } from "./http-guard.js";
+import { claimDaemon } from "./daemon-lock.js";
 import { EventStreams } from "./events.js";
 import { name, version } from "./identity.js";
 import { injectSdk } from "./inject.js";
@@ -89,6 +90,10 @@ const contentTypes = {
  * A restart comes back on the port and with the token the last server recorded, so a tab opened
  * before an idle-out, a stop or an upgrade reconnects on its own. `port` 0 asks for exactly that,
  * falling back to an ephemeral port when the old one is taken; any other port is used as given.
+ *
+ * Resolves to null when another daemon already serves the state directory: two would each hold their
+ * own copy of every session and overwrite the other's. A start that loses the race to publish its
+ * port may already have loaded sessions and bound one before it steps aside.
  */
 export async function serve({
   stateDir,
@@ -97,6 +102,8 @@ export async function serve({
   onIdle = () => {},
 }) {
   const recorded = join(stateDir, "server.json");
+  const lock = await claimDaemon(stateDir);
+  if (!lock) return null;
   const previous = readJson(recorded);
   const store = new SessionStore(stateDir, { live: (key) => streams.live(key) });
   const streams = new EventStreams(store);
@@ -148,6 +155,7 @@ export async function serve({
       for (const socket of sockets) socket.destroy();
       server.close(() => resolve(undefined));
       server.closeAllConnections();
+      lock.release();
     });
 
   const listen = (at) =>
@@ -169,6 +177,10 @@ export async function serve({
     );
   }
   const bound = boundPort();
+  if (!lock.publish(bound)) {
+    await close();
+    return null;
+  }
   // The token is kept only with the port it was paired with: a tab can reach no other port, and a
   // fresh token on a fresh port is one fewer place an old one is still worth anything.
   const token =
@@ -202,7 +214,14 @@ async function route(req, res, ctx) {
       challenge !== null && CHALLENGE_PATTERN.test(challenge)
         ? { proof: tokenProof(ctx.token, challenge) }
         : {};
-    return sendJson(res, 200, { ok: true, app: name, version, idleMs: ctx.idleMs, ...proof });
+    return sendJson(res, 200, {
+      ok: true,
+      app: name,
+      version,
+      pid: process.pid,
+      idleMs: ctx.idleMs,
+      ...proof,
+    });
   }
   if (req.method === "POST" && pathname === "/shutdown") {
     assertOrigin(req, ctx.port);

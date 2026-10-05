@@ -15,7 +15,7 @@ export const LAYERS = [
     "watch.js",
     "websocket.js",
   ],
-  ["session-store.js", "events.js"],
+  ["session-store.js", "events.js", "daemon-lock.js"],
   ["server.js", "client.js"],
   ["cli.js"],
 ];

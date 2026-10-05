@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import {
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -15,6 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { limits } from "../src/limits.js";
+import { SessionStore } from "../src/session-store.js";
 import { serve } from "../src/server.js";
 import { tokenProof } from "../src/http-guard.js";
 import { fixture } from "./helpers/env.js";
@@ -909,4 +913,69 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
   });
   watching.close();
   await held.close();
+});
+
+test("a waiting poll whose batch was taken is answered with the note behind it when its file goes, and the daemon keeps serving", async (t) => {
+  if (!(await watchAvailable())) return t.skip("file watching is refused in this sandbox");
+  const stateDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-server-gone-"));
+  const folder = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-server-folder-"));
+  const file = join(folder, "plan.html");
+  copyFileSync(fixture, file);
+  const daemon = await serve({ stateDir, port: 0, idleMs: 60_000 });
+  const url = `http://127.0.0.1:${daemon.port}`;
+  const auth = { authorization: `Bearer ${daemon.token}`, "content-type": "application/json" };
+  const session = (path) => fetch(url + path, { headers: auth }).then((res) => res.json());
+  let socket;
+  try {
+    const { key } = await fetch(`${url}/api/sessions`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ file }),
+    }).then((res) => res.json());
+    socket = new WebSocket(`ws://127.0.0.1:${daemon.port}/api/${key}/events`, [
+      "events",
+      `bearer.${daemon.token}`,
+    ]);
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve);
+      socket.addEventListener("error", reject);
+    });
+    const note = (text) => ({ prompt: text, selector: "#t", tag: "h1", text: "Title" });
+    const poll = (query) =>
+      fetch(`${url}/api/poll?file=${encodeURIComponent(file)}&timeoutMs=20000&${query}`, {
+        headers: auth,
+      }).then((res) => res.json());
+    const epoch = new SessionStore(stateDir).get(key).epoch;
+    const waiting = poll(`ack=1&epoch=${epoch}`);
+    await until(async () => (await session(`/api/${key}/session`)).presence.state === "listening", {
+      what: "the poll to attach",
+    });
+    new SessionStore(stateDir).queue(key, [note("batch one")]);
+    const refused = await fetch(`${url}/api/${key}/drafts`, {
+      method: "POST",
+      headers: { ...auth, origin: url },
+      body: JSON.stringify({ draft: note("typed while the other process wrote") }),
+    });
+    assert.equal(refused.status, 409, "a write over a newer copy is refused");
+    const taken = await poll("");
+    assert.deepEqual(
+      taken.prompts.map((p) => p.prompt),
+      ["batch one"],
+      "the daemon took the newer copy's batch",
+    );
+    new SessionStore(stateDir).queue(key, [note("the note behind the batch")]);
+    renameSync(file, `${file}.away`);
+    const answer = await waiting;
+    assert.equal(answer.status, "feedback", "the poll is answered before its timeout");
+    assert.deepEqual(
+      answer.prompts.map((p) => p.prompt),
+      ["the note behind the batch"],
+    );
+    assert.equal((await fetch(`${url}/health`)).status, 200, "the daemon still serves");
+  } finally {
+    socket?.close();
+    await daemon.close();
+    rmSync(stateDir, { recursive: true, force: true });
+    rmSync(folder, { recursive: true, force: true });
+  }
 });

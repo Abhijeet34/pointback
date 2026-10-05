@@ -104,6 +104,165 @@ test("opening the same file twice yields one session, and it survives a restart"
   assert.equal(readFileSync(sessionFile(dir, a.key), "utf8").includes("nextUid"), true);
 });
 
+// The second line behind the one-daemon lock: should two processes ever hold one state directory,
+// the one that did not see the reviewer's note must not write its stale copy over it.
+test("a process holding a stale copy of a session refuses to write it over a newer one", () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  const agents = new SessionStore(dir);
+  tabs.queue(key, [prompt("the note that must not be lost")]);
+
+  assert.throws(() => agents.open(artifact), { status: 409 });
+  const onDisk = JSON.parse(readFileSync(sessionFile(dir, key), "utf8"));
+  assert.deepEqual(
+    onDisk.pending.map((p) => p.prompt),
+    ["the note that must not be lost"],
+  );
+  // The refusal took the newer copy, so the agent's next try goes through and gets the note.
+  agents.open(artifact);
+  assert.deepEqual(
+    agents.take(key).map((p) => p.prompt),
+    ["the note that must not be lost"],
+  );
+});
+
+test("a refused write raised while a missing file is announced leaves the watcher's change handler standing", () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  new SessionStore(dir).queue(key, [prompt("written by the other process")]);
+  tabs.on(key, (event) => {
+    if (event.type === "gone") tabs.addDraft(key, prompt("typed as the file goes"));
+  });
+  renameSync(artifact, `${artifact}.away`);
+  assert.doesNotThrow(() => tabs.fileChanged(key));
+  assert.equal(tabs.status(key).gone, true);
+});
+
+test("a poll that acknowledges a batch taken from a newer copy is answered with the note behind it when the file goes, and a listener after it still hears the gone", async () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  new SessionStore(dir).queue(key, [prompt("batch one")]);
+  const waiting = tabs.waitForFeedback(key, 5000, undefined, cursor(tabs, key, 1));
+  assert.throws(() => tabs.addDraft(key, prompt("typed while the other process wrote")), {
+    status: 409,
+  });
+  const taker = await tabs.waitForFeedback(key, 5000);
+  assert.deepEqual(
+    taker.prompts.map((p) => p.prompt),
+    ["batch one"],
+  );
+  new SessionStore(dir).queue(key, [prompt("the note behind the batch")]);
+  const seen = [];
+  tabs.on(key, (event) => seen.push(event.type));
+  renameSync(artifact, `${artifact}.away`);
+  tabs.fileChanged(key);
+  const answer = await waiting;
+  assert.equal(answer.status, "feedback", "answered before its timeout");
+  assert.deepEqual(
+    answer.prompts.map((p) => p.prompt),
+    ["the note behind the batch"],
+  );
+  assert.deepEqual(
+    seen.filter((type) => type === "gone"),
+    ["gone"],
+  );
+});
+
+test("an older copy put back over a session drops none of the notes written after it", () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  const older = readFileSync(sessionFile(dir, key), "utf8");
+  store.queue(key, [prompt("written after that copy")]);
+  writeFileSync(sessionFile(dir, key), older);
+  store.addDraft(key, prompt("the next write"));
+  assert.deepEqual(
+    store.get(key).pending.map((p) => p.prompt),
+    ["written after that copy"],
+  );
+  assert.deepEqual(
+    JSON.parse(readFileSync(sessionFile(dir, key), "utf8")).pending.map((p) => p.prompt),
+    ["written after that copy"],
+  );
+});
+
+test("a copy another writer has written more times is refused and adopted, and the write after it lands", () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  new SessionStore(dir).queue(key, [prompt("written by the other process")]);
+  assert.throws(() => tabs.addDraft(key, prompt("typed")), { status: 409 });
+  assert.deepEqual(
+    tabs.get(key).pending.map((p) => p.prompt),
+    ["written by the other process"],
+  );
+  tabs.addDraft(key, prompt("typed again"));
+  assert.deepEqual(
+    tabs.get(key).drafts.map((d) => d.prompt),
+    ["typed again"],
+  );
+});
+
+test("a session file with no write count loads, keeps its notes, and is counted from the next write", () => {
+  const { dir, artifact } = lab();
+  const { key } = new SessionStore(dir).open(artifact);
+  new SessionStore(dir).queue(key, [prompt("kept from before the count")]);
+  const stored = JSON.parse(readFileSync(sessionFile(dir, key), "utf8"));
+  delete stored.writes;
+  writeFileSync(sessionFile(dir, key), JSON.stringify(stored));
+  const store = new SessionStore(dir);
+  store.addDraft(key, prompt("typed after the upgrade"));
+  assert.deepEqual(
+    store.get(key).pending.map((p) => p.prompt),
+    ["kept from before the count"],
+  );
+  const counted = JSON.parse(readFileSync(sessionFile(dir, key), "utf8")).writes;
+  assert.ok(Number.isSafeInteger(counted) && counted >= 1, `counted: ${counted}`);
+});
+
+test("a session file deleted by hand is written again from memory, so an unsent note survives", () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  rmSync(sessionFile(dir, key));
+  store.addDraft(key, prompt("the note written after the file went"));
+  assert.deepEqual(
+    new SessionStore(dir).get(key).drafts.map((d) => d.prompt),
+    ["the note written after the file went"],
+  );
+});
+
+test("a session file that no longer parses is written again from memory, so an unsent note survives", () => {
+  const { dir, artifact } = lab();
+  const store = new SessionStore(dir);
+  const { key } = store.open(artifact);
+  writeFileSync(sessionFile(dir, key), "{ a torn write");
+  store.addDraft(key, prompt("the note written over the torn file"));
+  assert.deepEqual(
+    new SessionStore(dir).get(key).drafts.map((d) => d.prompt),
+    ["the note written over the torn file"],
+  );
+});
+
+test("a refused watcher write adopts the newer copy and tells every open tab to reload it", () => {
+  const { dir, artifact } = lab();
+  const tabs = new SessionStore(dir);
+  const { key } = tabs.open(artifact);
+  const agents = new SessionStore(dir);
+  agents.queue(key, [prompt("written by the other process")]);
+  const events = [];
+  tabs.on(key, (event) => events.push(event));
+  tabs.fileChanged(key);
+  assert.deepEqual(events, [{ type: "reload", revision: tabs.get(key).revision }]);
+  assert.deepEqual(
+    tabs.get(key).pending.map((p) => p.prompt),
+    ["written by the other process"],
+  );
+});
+
 test("prompts are validated field by field", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);

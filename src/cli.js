@@ -9,6 +9,8 @@ import {
   health,
   openBrowser,
   readServerInfo,
+  recordHolds,
+  refusingServer,
   shouldOpenBrowser,
   stopServer,
 } from "./client.js";
@@ -77,6 +79,8 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     const port = Number(env("PORT") ?? 0);
     const idleMs = Number(env("IDLE_MS") ?? limits.idleShutdownMs);
     const started = await serve({ stateDir: dir, port, idleMs, onIdle: () => process.exit(0) });
+    // Exit 0: the CLI that spawned this start waits for whichever daemon holds the directory.
+    if (!started) return print(stderr, `another ${name} server already serves ${dir}`);
     print(stderr, `${name} listening on http://127.0.0.1:${started.port}`);
     return;
   }
@@ -84,11 +88,17 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   if (command === "stop") {
     const info = readServerInfo(dir);
     const status = info && (await health(info));
+    const held = status?.proven || (status?.app === name && recordHolds(info, status));
+    if (held && (await stopServer(dir, info, status)))
+      return print(stdout, JSON.stringify({ status: "stopped" }));
     // Whatever holds the recorded port and does not even answer as this app is sent nothing.
-    if (!status?.proven && status?.app !== name)
-      return print(stdout, JSON.stringify({ status: "not-running" }));
-    const stopped = await stopServer(dir, info, status);
-    return print(stdout, JSON.stringify({ status: stopped ? "stopped" : "not-running" }));
+    const holding = await refusingServer(dir);
+    if (holding)
+      return print(
+        stdout,
+        JSON.stringify({ status: "refused", pid: holding.pid, port: holding.port }),
+      );
+    return print(stdout, JSON.stringify({ status: "not-running" }));
   }
 
   const file = args[0];
