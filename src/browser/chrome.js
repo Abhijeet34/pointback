@@ -68,6 +68,11 @@ let fileGone = false;
 // link the reviewer followed or a missing page the server answered for, and the frame has strayed.
 let announced = false;
 let strayed = false;
+// The first load after a show that comes back unannounced is shown once more before it counts as a
+// stray: Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused document
+// or SDK load looks exactly like a page that went elsewhere (docs/ENGINEERING-NOTES.md).
+let firstLoad = false;
+let shownAgain = false;
 // The page took the focus out of a note being written; for the rest of the review it is hidden
 // whenever a note is open, and `unloaded` says it took the focus from the open one, so the frame
 // holds about:blank until that note is done (`unload`).
@@ -126,7 +131,8 @@ const api = (method, path, body) => {
     })
     .then(async (res) => {
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.error ?? `${res.status}`);
+      if (!res.ok)
+        throw Object.assign(new Error(json.error ?? `${res.status}`), { answered: true });
       return json;
     });
 };
@@ -156,13 +162,22 @@ const pause = (failures) =>
 
 async function boot() {
   let app;
-  for (let failures = 1; !app; failures += 1) {
+  for (let failures = 1; !session; failures += 1) {
     try {
       app = await health();
-    } catch {
-      // Nothing answers: a daemon between an idle-out and the agent's next command. The review is
-      // still there, so the page waits for it rather than calling its link dead, and the bar and
-      // Send say it is not connected rather than offering what cannot work yet.
+      connection = "live";
+      if (!app.proven) throw Object.assign(new Error("unproven"), { answered: true });
+      session = await api("GET", `/api/${key}/session`);
+    } catch (error) {
+      // Only an answer says the link is spent. A load nothing answered is a daemon between an
+      // idle-out and the agent's next command, or one connect Windows refused (about 5 in 100000 of
+      // Chrome's, docs/ENGINEERING-NOTES.md); the review is still there, so the page waits for it,
+      // and the bar and Send say it is not connected rather than offering what cannot work yet.
+      if (error.answered) {
+        statusLine.textContent =
+          "This link no longer works. Run the command on the file again to get a fresh one.";
+        return;
+      }
       connection = "lost";
       renderPresence();
       setText(sendButton, "Not connected");
@@ -172,15 +187,6 @@ async function boot() {
       );
       await pause(failures);
     }
-  }
-  connection = "live";
-  try {
-    if (!app.proven) throw new Error("unproven");
-    session = await api("GET", `/api/${key}/session`);
-  } catch {
-    statusLine.textContent =
-      "This link no longer works. Run the command on the file again to get a fresh one.";
-    return;
   }
   appName = app.app;
   document.getElementById("appName").textContent = appName;
@@ -213,7 +219,13 @@ function sync(state) {
   if (!fileGone && (revision !== shownRevision || session.artifactUrl !== shownUrl)) show();
 }
 
+/** Shows the page under review afresh, with its own one chance to be shown again (`pageLoaded`). */
 function show() {
+  shownAgain = false;
+  showPage();
+}
+
+function showPage() {
   if (editing || unloaded || (tookFocus && editingNote !== null)) {
     // A half-typed note is worth more than three seconds of freshness, and a page unloaded for a note
     // stays out until it is done, as does one that took the focus while a margin edit is open; the
@@ -224,6 +236,7 @@ function show() {
   deferredReload = false;
   shownRevision = revision;
   shownUrl = session.artifactUrl;
+  firstLoad = true;
   // Absolute: the wrapper is served under the other loopback name, and the page under this one.
   showing = new URL(`${shownUrl}?r=${revision}`, location.href).href;
   if (wrapperReady) frame.contentWindow.postMessage({ type: "show", url: showing }, wrapperOrigin);
@@ -1179,6 +1192,13 @@ annotateSwitch.addEventListener("click", () => {
 function pageLoaded() {
   // about:blank loading in the page's place is the chrome's own doing, not a stray.
   if (!shownUrl || unloaded) return;
+  const first = firstLoad;
+  firstLoad = false;
+  if (first && !announced && !shownAgain) {
+    shownAgain = true;
+    showPage();
+    return;
+  }
   strayed = !announced;
   announced = false;
   render();
@@ -1464,5 +1484,13 @@ function focusFrame() {
 // no click or key in this chrome activates it, and another site, so Chromium gives it a process of
 // its own and the page under review stays an out-of-process frame whose timers run at full rate.
 // It is set from here rather than the markup, so it cannot announce itself before this script listens.
+// A first load that ends without the wrapper announcing itself was refused (an error page stands in
+// its place, and nothing else would ever replace it), so it is loaded once more; the page under
+// review gets the same one chance in `pageLoaded`.
+let wrapperLoads = 0;
+frame.addEventListener("load", () => {
+  wrapperLoads += 1;
+  if (wrapperLoads === 1 && !wrapperReady) frame.src = `${wrapperOrigin}/wrapper.html`;
+});
 frame.src = `${wrapperOrigin}/wrapper.html`;
 boot();
