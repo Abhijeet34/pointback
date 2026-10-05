@@ -93,13 +93,15 @@ for (const [name, made] of [
     const split = {};
     for (const key of keys) {
       split[key] = readFileSync(sessionFile(stateDir, key), "utf8");
-      const { epoch, root, ...held } = JSON.parse(split[key]);
+      const { epoch, root, writes, ...held } = JSON.parse(split[key]);
       const { epoch: wasEpoch, root: wasRoot, ...had } = stored[key];
       assert.deepEqual(held, had, `${key}: every field the old file held, ack state included`);
       // 0.1.4 recorded neither; the split gives each session the one a later version would have.
       assert.equal(epoch, wasEpoch ?? epoch);
       assert.match(epoch, EPOCH_PATTERN);
       assert.equal(root, wasRoot ?? dirname(stored[key].file));
+      // Nor a write count: the split's own write is the first one counted.
+      assert.ok(Number.isSafeInteger(writes) && writes > 0, `${key}: counted from its first write`);
     }
 
     // A restart reads the split files and changes nothing in them, the epochs included.
