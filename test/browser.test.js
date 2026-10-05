@@ -2429,9 +2429,11 @@ test(
       await noteOn(page, artifact, "#title", "Shorter title");
       firstSettled = true;
       await noteOn(page, artifact, "#p1", "Say how long");
-    } finally {
-      await releasing;
+    } catch (error) {
+      await releasing.catch(() => {});
+      throw error;
     }
+    await releasing;
     assert.deepEqual(
       JSON.parse(
         await page.eval(
@@ -3213,7 +3215,9 @@ async function handled(page, artifact, attempts) {
 /**
  * Adds a note the way a reviewer does: point at the element, type, press Enter. The page ignores
  * what it is pointed at until it hears the card close, which crosses the wrapper and can land after
- * the chrome hid the card, so the next gesture waits for the chrome to say the page heard.
+ * the chrome hid the card, so the next gesture waits for the chrome to say the page heard. On this
+ * path only the page's acknowledgement settles the hand-off: a new card opened from the page or focus
+ * taken back also settle it, which `noteOn` never reaches, since it moves no focus in the chrome.
  */
 async function noteOn(page, artifact, selector, text) {
   await addNote(page, artifact, selector, text);
