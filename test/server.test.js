@@ -31,6 +31,9 @@ let dir, srv, base, headers, key, artifactUrl;
 const sendOn = (agent, url, { method, headers, body, onSocket }) =>
   new Promise((resolve, reject) => {
     const req = request(url, { method, agent, headers });
+    req.setTimeout(10_000, () =>
+      req.destroy(new Error(`no answer to ${method} ${new URL(url).pathname} within 10 s`)),
+    );
     if (onSocket) req.on("socket", onSocket);
     req.on("error", reject);
     req.on("response", (res) => {
