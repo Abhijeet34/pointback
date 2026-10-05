@@ -2240,7 +2240,7 @@ test(
 );
 
 test(
-  "a page that never acknowledges the card close stops holding the focus once the reviewer points at the next element",
+  "a page that never acknowledges the card close is not pulled back once the wait settles, and its late refocus into an open note unloads it",
   { skip: !executable && "no browser found" },
   async () => {
     const { file } = copyOfFixture();
@@ -2255,19 +2255,26 @@ test(
     }
     await pointAt(page, artifact, "#p1");
     await page.waitFor("document.body.dataset.handoff === 'settled'");
-    // A timer queued by the stale close would run before this one, so one tick passes it.
-    await page.eval("new Promise((resolve) => setTimeout(resolve))");
-    assert.equal(
-      await page.eval("document.activeElement.id"),
-      "cardText",
-      "the new note keeps the focus after the stale close",
-    );
+    // Every value the handoff takes from here on, so a take-back that ran is seen even if it settled again.
+    await page.eval(`globalThis.handoffs = [];
+      new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
+        attributes: true,
+        attributeFilter: ["data-handoff"],
+      })`);
     await page.eval("document.getElementById('artifact').focus()");
     await page.waitFor(kept("document.getElementById('cardText')", UNLOADED_LINE));
+    assert.equal(await pageAddress(page), "about:blank", "the page is unloaded");
     assert.equal(
-      await pageAddress(page),
-      "about:blank",
-      "the page the reviewer's note took the focus from is unloaded",
+      await page.eval("document.body.dataset.handoff"),
+      "settled",
+      "the wait stays settled",
+    );
+    assert.deepEqual(
+      JSON.parse(
+        await page.eval("JSON.stringify(handoffs.filter((value) => value === 'returning'))"),
+      ),
+      [],
+      "the late pull is not taken back as the card close",
     );
     await page.close();
   },
