@@ -15,8 +15,7 @@ In scope:
 - Recovering the token by listening on the port a daemon left when it exited.
   The token outlives the process, so the CLI and the review tab present it only to a server that has proved it holds it (`tokenProof` in `src/http-guard.js`), and a daemon that cannot take its old port back mints a fresh one.
   The one exception stops a daemon from 0.1.4 or earlier, which predates the proof: to a server on the recorded port that answers `{"app":"pointback"}` without a proof, the CLI sends the token once on `POST /shutdown` and then retires it in `server.json` whether or not that server stopped (`stopServer` in `src/client.js`).
-  A retired token is never shown again: while its recorded process is alive and its port still answers as this app, every open refuses with `an older pointback daemon (pid P) on port N did not stop; end that process and retry`.
-  `pointback stop` answers `{"status":"refused","pid":P,"port":N}` for that server and signals no pid, because the CLI cannot prove P still belongs to this app.
+  A retired token is never shown again: while its recorded process is alive and its port still answers as this app, every open refuses (`ensureServer` in `src/client.js`), and `pointback stop` signals no pid there, because the CLI cannot prove that pid still belongs to this app.
   Once that port stops answering, the next daemon mints a fresh token.
   A squatter that answers that way receives a token no running daemon accepts; a token that still opens a daemon after that exchange is in scope.
 - Escaping the artifact iframe: the page under review reading the review chrome or its wrapper frame, calling the API, or recovering the server token from the URL fragment the chrome page is opened with (`src/browser/`).

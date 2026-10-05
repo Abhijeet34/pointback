@@ -764,7 +764,12 @@ test("a record whose process has exited blocks nothing, and a live daemon on its
     const livePort = live.serverInfo().port;
     writeFileSync(
       join(stale.dir, "server.json"),
-      JSON.stringify({ pid: exited, port: livePort, token: RECORDED_TOKEN, version: "0.0.0-other" }),
+      JSON.stringify({
+        pid: exited,
+        port: livePort,
+        token: RECORDED_TOKEN,
+        version: "0.0.0-other",
+      }),
     );
     assert.deepEqual((await cli(["stop"], stale.env)).json(), { status: "not-running" });
     const opened = await cli([fixture], stale.env);

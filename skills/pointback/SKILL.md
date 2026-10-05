@@ -28,6 +28,7 @@ If it exits 1 saying every review held is open in a tab, being polled or holding
 - a review holding notes not yet sent or received: poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way.
 
 A review held for more than one of these needs each cause cleared before it is freed.
+If it exits 1 saying an older pointback daemon did not stop, the process on that port is one `pointback stop` does not signal: ask the user to end that process, then open the file again.
 
 ## 2. Poll
 
