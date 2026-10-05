@@ -2672,11 +2672,19 @@ const HELP_LINE =
   "Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, <send key> sends.";
 
 /**
+ * Resolves once the document's faces have settled and two frames have painted since. A face can land
+ * well after the review is ready (Plex Mono started 2673 ms into a reloaded chrome on windows-2025),
+ * and what a layout or a paint reports before then is the fallback it replaces.
+ */
+const SETTLED =
+  "document.fonts.ready.then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))))";
+
+/**
  * The family of the face the renderer drew most of `selector`'s text in, in a tab or the page under
  * review in one: what paints, never the family a style names.
  */
 async function paintedFace(target, selector) {
-  await target.eval("document.fonts.ready.then(() => true)");
+  await target.eval(SETTLED);
   await target.send("DOM.enable");
   await target.send("CSS.enable");
   // A render that lands first, such as Send relabelled by an event, replaces the text node, and the
@@ -2698,9 +2706,10 @@ async function paintedFace(target, selector) {
 }
 
 /**
- * How a working review paints and answers, read after a note on its title: the computed styles of
- * the elements each of the chrome's sheets and the page's own set, the faces the renderer drew their
- * text in, and the text size's arrow keys, which the house's radiogroup.js gives it.
+ * How a working review paints and answers, read after a note on its title: whether each of the
+ * chrome's faces loaded, the computed styles of the elements each of the chrome's sheets and the
+ * page's own set, the faces the renderer drew their text in, and the text size's arrow keys, which
+ * the house's radiogroup.js gives it.
  */
 async function lookOf(
   page,
@@ -2714,7 +2723,14 @@ async function lookOf(
     return [s, c.color, c.backgroundColor, c.fontFamily, c.fontSize, c.fontWeight, c.lineHeight,
       c.paddingTop, c.borderTopLeftRadius, Math.round(r.width), Math.round(r.height)];
   }))`;
+  await page.eval(SETTLED);
+  await artifact.eval(SETTLED);
   const look = {
+    loads: JSON.parse(
+      await page.eval(
+        "JSON.stringify([...document.fonts].map((f) => `${f.family} ${f.weight} ${f.status}`))",
+      ),
+    ),
     chrome: JSON.parse(await page.eval(styles(chrome))),
     page: JSON.parse(await artifact.eval(styles(["body", "h1", "p"]))),
     faces: [
