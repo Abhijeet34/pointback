@@ -349,14 +349,14 @@ class Page {
   async navigate(url) {
     const loaded = this.loaded();
     await this.send("Page.navigate", { url });
-    await loaded;
+    await this.explained(loaded);
   }
 
   /** A real reload, since navigating to the same URL with a different fragment loads nothing. */
   async reload() {
     const loaded = this.loaded();
     await this.send("Page.reload");
-    await loaded;
+    await this.explained(loaded);
   }
 
   loaded() {
@@ -403,11 +403,20 @@ class Page {
    * `until` in helpers/wait.js carries the measurement of what one of those can cost.
    */
   waitFor(expression, options = {}) {
-    const waited = until(() => this.eval(expression), { what: expression, ...options });
-    if (!this.documents) return waited;
-    // A watched tab is the chrome, and a wait on it that fails says what was there instead.
+    return this.explained(until(() => this.eval(expression), { what: expression, ...options }));
+  }
+
+  /**
+   * A wait on a watched tab, or on the page under review in one, that fails says what the tab showed
+   * instead (`describe`); one already explained by a wait inside it is passed on as it is.
+   */
+  explained(waited) {
+    const tab = this.documents ? this : this.tab;
+    if (!tab) return waited;
     return waited.catch(async (error) => {
-      throw new Error(`${error.message}\n  ${await this.describe()}`, { cause: error });
+      if (error.explained) throw error;
+      const described = new Error(`${error.message}\n  ${await tab.describe()}`, { cause: error });
+      throw Object.assign(described, { explained: true });
     });
   }
 
@@ -435,10 +444,13 @@ class Page {
    */
   async frame() {
     await this.watch();
-    const artifact = await until(() => this.#findArtifact(), {
-      what: "the page under review to load in its frame",
-      timeoutMs: ATTACH_MS,
-    });
+    const artifact = await this.explained(
+      until(() => this.#findArtifact(), {
+        what: "the page under review to load in its frame",
+        timeoutMs: ATTACH_MS,
+      }),
+    );
+    artifact.tab = this;
     await artifact.waitFor("innerWidth > 0 && innerHeight > 0", { timeoutMs: ATTACH_MS });
     return artifact;
   }
@@ -453,6 +465,8 @@ class Page {
     this.contexts = new Map();
     this.documents = [];
     this.errors = [];
+    this.failed = [];
+    this.requests = new Map();
     this.browser.listeners.push((message) => this.#track(message));
     // Enabled again so the contexts this page already has are announced to the tracker too.
     await this.send("Runtime.disable");
@@ -464,9 +478,9 @@ class Page {
   /**
    * What a wait that failed on this page cannot see for itself: what the chrome shows and where its
    * focus is, with its event stream's state, every frame's address, the answers its documents got,
-   * its last console errors, and any renderer that crashed. On run 37247968168, attempt 20, a
-   * reloaded review never got ready in 10 s while the browser answered every 31 ms, and the timeout
-   * was all it said.
+   * the loads that got none, its last console errors, and any renderer that crashed. On run
+   * 37247968168, attempt 20, a reloaded review never got ready in 10 s while the browser answered
+   * every 31 ms, and the timeout was all it said.
    */
   async describe() {
     // `presence` reads `lost` or `gone` while the event stream is down, the agent's state while up.
@@ -483,7 +497,8 @@ class Page {
     ]).catch((error) => `unreadable: ${error.message}`);
     const frames = [];
     const walk = (node) => {
-      frames.push(node.frame.url);
+      const { url, unreachableUrl } = node.frame;
+      frames.push(unreachableUrl ? `${url} in place of ${unreachableUrl}` : url);
       for (const child of node.childFrames ?? []) walk(child);
     };
     // A crashed frame's session never answers, so every tree is asked at once and given DESCRIBE_MS.
@@ -503,7 +518,8 @@ class Page {
       items.length ? items.map((item) => `\n    ${item}`).join("") : " none";
     return (
       `the chrome shows ${shown}\n  frames:${list(frames)}\n  documents answered:${list(this.documents)}` +
-      `\n  console errors:${list(this.errors)}\n  crashed renderers:${list(this.browser.crashes)}`
+      `\n  loads failed:${list(this.failed)}\n  console errors:${list(this.errors)}` +
+      `\n  crashed renderers:${list(this.browser.crashes)}`
     );
   }
 
@@ -521,6 +537,18 @@ class Page {
       this.browser.send("Target.setAutoAttach", ATTACH, params.sessionId).catch(() => {});
     } else if (method === "Network.responseReceived" && params.type === "Document") {
       keep(this.documents, `${params.response.status} ${params.response.url}`);
+    } else if (method === "Network.requestWillBeSent") {
+      this.requests.set(`${sessionId} ${params.requestId}`, params.request.url);
+    } else if (method === "Network.loadingFinished") {
+      this.requests.delete(`${sessionId} ${params.requestId}`);
+    } else if (method === "Network.loadingFailed") {
+      // A load that never got an answer has no response to list above, and the console names only
+      // some of them: a frame's own document that failed shows as an error page and nothing else.
+      const request = `${sessionId} ${params.requestId}`;
+      const url = this.requests.get(request) ?? "sent before its frame was watched";
+      this.requests.delete(request);
+      const how = `${params.errorText}${params.canceled ? " (canceled)" : ""}`;
+      keep(this.failed, `${where}: ${how} ${params.type} ${url}`);
     } else if (method === "Runtime.exceptionThrown") {
       const { exception, text } = params.exceptionDetails;
       keep(this.errors, `${where}: ${exception?.description ?? text}`);
@@ -638,7 +666,8 @@ class Page {
     throw new Error(
       `the pointer never reached the frame at ${point.x},${point.y}: ${moves} moves over ` +
         `${Date.now() - started} ms, the page has "${at}" at that point, and the frame's own flag is ` +
-        `${watching}${watching === "undefined" ? " (its document was replaced under the test)" : ""}`,
+        `${watching}${watching === "undefined" ? " (its document was replaced under the test)" : ""}` +
+        (this.documents ? `\n  ${await this.describe()}` : ""),
     );
   }
 
@@ -717,10 +746,12 @@ class ArtifactFrame extends Page {
     // A navigation replaces the document between finding its context and using it; the context
     // a reload leaves behind is gone, and the next one is the one to ask.
     for (let attempt = 1; ; attempt += 1) {
-      const id = await until(() => this.context(), {
-        what: "the page under review to have a document to evaluate in",
-        timeoutMs: ATTACH_MS,
-      });
+      const id = await this.explained(
+        until(() => this.context(), {
+          what: "the page under review to have a document to evaluate in",
+          timeoutMs: ATTACH_MS,
+        }),
+      );
       try {
         return await super.eval(expression, id);
       } catch (error) {
