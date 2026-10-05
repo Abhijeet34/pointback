@@ -24,6 +24,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - A test that mocks `setTimeout` makes its HTTP requests with `node:http`, never `fetch`, which stalls on a reused connection under the mock on Node 24.20.0 (`docs/ENGINEERING-NOTES.md`).
 - Every wait goes through `until` in `test/helpers/wait.js` and carries its own deadline; a failed wait on a tab or the page in it reports what the chrome showed, failed loads included (`describe` in `test/helpers/cdp.js`).
   A positive expectation waits for its condition; a negative one waits on the barrier proving the thing it rules out was handled (`handled` and `TRACK_API_ANSWERS` in `test/browser.test.js`), sleeping only where nothing would have fired and saying in a comment what the duration bounds; a latency is printed, never asserted.
+  An order a test forces between the chrome and the page holds one side until the other is seen, never a fixed delay (`holdTasks` in `test/browser.test.js`, `docs/ENGINEERING-NOTES.md`).
 - Never assert on the next line of an event stream: a failed watch arrives as `reload-off` on the same stream (`src/events.js`).
 - A test needing a review in a known state takes its own (`copyOfFixture`); a browser test's agent poll runs after the notes are sent, with `--timeout-ms 0`.
 - A test adds or sends on a tab it opened only once the chrome publishes its event stream open (`FOLLOWING` in `test/browser.test.js`): Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused stream is retried after a pause (`docs/ENGINEERING-NOTES.md`).
