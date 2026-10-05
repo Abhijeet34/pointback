@@ -1246,7 +1246,7 @@ test(
 );
 
 /** A press on the shield, over a corner of the page the card does not cover, hands the page the focus. */
-async function pressOverPage(page) {
+async function pressOverPage(page, settled = true) {
   const at = JSON.parse(
     await page.eval(`JSON.stringify((() => {
       const box = document.getElementById("artifact").getBoundingClientRect();
@@ -1259,7 +1259,7 @@ async function pressOverPage(page) {
   assert.ok(at, "a corner of the page is under the shield");
   await page.click(at.x, at.y);
   await page.waitFor("document.activeElement === document.getElementById('artifact')");
-  await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+  if (settled) await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
 }
 
 /** Another tab takes the window from the review, and the review tab comes back to the front. */
@@ -1371,6 +1371,27 @@ test(
     const result = await writeNote(page, "document.getElementById('cardText')", "document.getElementById('card').hidden");
     await page.browser.send("Target.closeTarget", { targetId });
     assert.deepEqual({ text: result.text, keys: result.keys, kept: result.kept }, { text: "abc", keys: 0, kept: true });
+    await page.close();
+  },
+);
+
+test(
+  "a press over the page as the window comes back keeps the page loaded",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    const { targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" });
+    await page.browser.send("Target.activateTarget", { targetId });
+    await until(async () => !(await page.eval("document.hasFocus()")), {
+      what: "the review window to lose focus",
+    });
+    await page.front();
+    await pressOverPage(page, false);
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
+    await page.browser.send("Target.closeTarget", { targetId });
     await page.close();
   },
 );

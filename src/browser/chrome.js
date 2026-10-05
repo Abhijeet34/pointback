@@ -1365,6 +1365,7 @@ document.addEventListener("focusin", guard);
 let handing = false;
 shield.addEventListener("mousedown", (event) => {
   event.preventDefault();
+  away = undefined;
   handing = true;
   frame.focus();
   handing = false;
@@ -1388,6 +1389,7 @@ let tabbing = false;
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Tab" || !event.isTrusted || !writing(event.target)) return;
   tabbing = true;
+  away = undefined;
   setTimeout(() => (tabbing = false));
 });
 document.addEventListener("focusout", (event) => {
@@ -1420,7 +1422,10 @@ function leftWindow() {
 function regained() {
   const field = away;
   away = undefined;
-  if (field) takenFrom(field);
+  if (field && writing(field) && document.activeElement === frame && !unloaded) {
+    taken = field;
+    unload();
+  }
 }
 window.addEventListener("blur", leftWindow);
 window.addEventListener("focus", regained);
