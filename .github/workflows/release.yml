@@ -147,10 +147,13 @@ jobs:
                 echo "in_flight=true" >> "$GITHUB_OUTPUT"
               else
                 labels=$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
-                if [ -n "$statuses" ] && ! grep -qx "autorelease: pending" <<< "$labels"; then
-                  echo "::notice::release pull request #$number merged as $sha was tagged by the run for $sha" >&2
-                else
+                if ! grep -qx "autorelease: pending" <<< "$labels"; then
+                  echo "::notice::release pull request #$number merged as $sha was tagged already" >&2
+                elif [ -n "$statuses" ]; then
                   echo "::error::release pull request #$number merged as $sha, but this run tested $GITHUB_SHA; re-run the failed jobs of the run for $sha, so the matrix that gates its tag is its own" >&2
+                  rc=1
+                else
+                  echo "::error::release pull request #$number merged as $sha, but no release.yml run exists for $sha; remove the autorelease: pending label from #$number to abandon that release, or tag it by hand" >&2
                   rc=1
                 fi
               fi

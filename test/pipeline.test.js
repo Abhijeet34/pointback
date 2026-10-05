@@ -593,7 +593,21 @@ test("release-tag refuses to tag or release a tree its own run did not test", ()
     );
     assert.equal(swapped.output, "", "a tagged merge left release-please to run");
 
-    assert.equal(run(`59 ${older}`).status, 1, "a merge with no run for its commit was tagged");
+    const noRun = run(`59 ${older}`);
+    assert.equal(noRun.status, 1, "a merge with no run for its commit was tagged");
+    assert.match(
+      noRun.stderr,
+      new RegExp(
+        `::error::release pull request #59 merged as ${older}, but no release.yml run exists`,
+      ),
+    );
+    assert.equal(noRun.output, "", "a merge with no run left release-please to run");
+    const noRunSwapped = run(`59 ${older}`, "", "autorelease: tagged");
+    assert.equal(noRunSwapped.status, 0, "a tagged merge with no run was refused");
+    assert.match(
+      noRunSwapped.stderr,
+      new RegExp(`::notice::release pull request #59 merged as ${older} was tagged`),
+    );
     const matching = run(`59 ${tested}`);
     assert.equal(matching.status, 0, "the run the release merge started may tag it");
     assert.doesNotMatch(matching.calls, /^run list/m);

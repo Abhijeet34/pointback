@@ -245,8 +245,9 @@ If that run goes red on a flake, `release-tag` skips, and the next push to `main
 So `release-tag` first lists merged pull requests labelled `autorelease: pending`, the label release-please finds them by, before any tag exists.
 For one merged as a commit other than `github.sha`, it asks for that commit's `release.yml` runs.
 While one of them is still going, the step passes with a notice and `release-please` is skipped, so that run tags the commit behind its own matrix and this run cannot tag it first.
-When those runs have all finished and the pull request still carries `autorelease: pending`, or there is no run, the step fails and names the commit, and re-running the failed jobs of its own run releases it behind its own matrix.
-If the label is already swapped, that finished run has tagged the commit, so the step passes with a notice.
+When those runs have all finished and the pull request still carries `autorelease: pending`, the step fails and names the commit, and re-running the failed jobs of its own run releases it behind its own matrix.
+When no `release.yml` run exists for the commit, the step fails and names it without asking for a re-run, because there is nothing to re-run: the release is abandoned by removing `autorelease: pending` from that pull request, or tagged by hand.
+If the label is already swapped, the commit is tagged, so the step passes with a notice.
 After release-please answers, a second step compares the `sha` it released with `github.sha` and fails `release-tag` on a difference, so `artifacts` and `publish` never attach to an untested tree even if the two searches ever disagree.
 `test/pipeline.test.js` runs both step bodies against a fake `gh` that answers `pr list` and `run list` separately, covering an in-flight run, a finished one, no run, a matching sha and nothing pending.
 
