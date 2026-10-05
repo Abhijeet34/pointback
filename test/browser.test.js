@@ -1047,6 +1047,317 @@ test(
   },
 );
 
+// The note card as the reviewer sees it: its words only while it paints, and the reason on it.
+const CARD_SEEN = `JSON.stringify({
+  words: document.getElementById('card').checkVisibility() ? document.getElementById('cardText').value : null,
+  reason: document.getElementById('cardReason').checkVisibility() ? document.getElementById('cardReason').textContent : null,
+})`;
+// Each forced close below is decided in the same turn that draws its notice, so the notice is the
+// barrier that proves the card has had its chance to close.
+const noticeSays = (text) =>
+  `document.getElementById('noticeText').textContent === ${JSON.stringify(text)}`;
+
+test(
+  "a note half-typed when the agent ends the review stays in its card, and Add keeps it to send anyway",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#title");
+    await page.type("This title is long; I would cut it to");
+    assert.equal((await cli(["end", file], lab.env)).json().ended_by, "agent");
+    await page.waitFor(noticeSays("Your agent ended this review."));
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), {
+      words: "This title is long; I would cut it to",
+      reason: "This review ended. Add note keeps this, and Send can still send it.",
+    });
+    // The reviewer goes on typing where they were, finishes, and adds it.
+    assert.equal(await page.eval("document.activeElement.id"), "cardText");
+    await page.type(" four words");
+    await clickOn(page, "document.getElementById('cardAdd')");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
+    assert.equal(
+      await page.eval("document.getElementById('send').textContent"),
+      "Send 1 note anyway",
+    );
+    await clickOn(page, "document.getElementById('send')");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map(({ prompt, selector }) => ({ prompt, selector })),
+      [{ prompt: "This title is long; I would cut it to four words", selector: "#title" }],
+      "the agent receives the note the end would have thrown away",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a file change held back by a half-typed note still shows once the agent ends the review, and Add loads it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#title");
+    await page.type("This title is long; I would cut it to");
+    writeFileSync(file, html.replace("<main>", "<main><p>Added by the agent.</p>"));
+    const FILE_CHANGED = "The file changed. This page updates as soon as you finish this note.";
+    await page.waitFor(
+      `document.getElementById('status').textContent === ${JSON.stringify(FILE_CHANGED)}`,
+    );
+    assert.equal((await cli(["end", file], lab.env)).json().ended_by, "agent");
+    await page.waitFor(noticeSays("Your agent ended this review."));
+    assert.equal(
+      await page.eval(
+        "JSON.stringify(document.getElementById('status').checkVisibility() ? document.getElementById('status').textContent : null)",
+      ),
+      JSON.stringify(FILE_CHANGED),
+      "the status line says the page is stale while the card holds the reviewer's words",
+    );
+    assert.equal(await page.eval("document.body.dataset.revision"), "0");
+    assert.equal(
+      JSON.parse(await page.eval(CARD_SEEN)).words,
+      "This title is long; I would cut it to",
+    );
+    await clickOn(page, "document.getElementById('cardAdd')");
+    await page.waitFor("document.body.dataset.revision === '1'");
+    await page.waitFor("document.getElementById('card').hidden");
+    await page.close();
+  },
+);
+
+test(
+  "a reload held back while the file is gone is not requested by Add or Cancel, and lands when the file returns",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const away = `${file}.away`;
+    const FILE_CHANGED = "The file changed. This page updates as soon as you finish this note.";
+    const goneWhileTyping = async (selector, words, change) => {
+      await pointAt(page, artifact, selector);
+      await page.type(words);
+      const shown = await page.eval("document.body.dataset.revision");
+      writeFileSync(file, change);
+      await page.waitFor(
+        `document.getElementById('status').textContent === ${JSON.stringify(FILE_CHANGED)}`,
+      );
+      renameSync(file, away);
+      assert.equal((await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status, "gone");
+      await page.waitFor(noticeSays("The file was moved or deleted, so this review cannot go on."));
+      return shown;
+    };
+    // The file's return is a change of its own, so the revision moves on from the one shown.
+    const returnedAfter = async (shown) => {
+      renameSync(away, file);
+      await page.waitFor("!document.getElementById('notice').checkVisibility()");
+      await page.waitFor(`document.body.dataset.revision !== ${JSON.stringify(shown)}`);
+    };
+    // The frame's own window is replaced when it navigates to the missing revision, so a marker
+    // on it proves the frame stayed on the page under review.
+    const staysOnPage = async (revision) => {
+      // Add and Cancel reach the reload synchronously, and the frame would begin its load within
+      // one task of the message. 1000 ms bounds that load on a loaded runner, so an absence here
+      // means the frame was not sent anywhere.
+      await new Promise((r) => setTimeout(r, 1000));
+      assert.equal(
+        await artifact.eval("window.stillOnPage === true"),
+        true,
+        "the frame never navigated",
+      );
+      assert.equal(await page.eval("document.getElementById('cover').hidden"), true);
+      assert.equal(await page.eval("document.body.dataset.revision"), revision);
+    };
+
+    const firstShown = await goneWhileTyping(
+      "#title",
+      "Shorter title, please",
+      html.replace("<main>", "<main><p>First change.</p>"),
+    );
+    await artifact.eval("window.stillOnPage = true");
+    await clickOn(page, "document.getElementById('cardAdd')");
+    await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    assert.equal(
+      await page.eval("document.querySelector('.mark:not(.sent) .mark-note').textContent"),
+      "Shorter title, please",
+      "Add keeps the words as a queued note",
+    );
+    await staysOnPage(firstShown);
+    await returnedAfter(firstShown);
+
+    const secondShown = await goneWhileTyping(
+      "#p1",
+      "Say who owns the rollback",
+      html.replace("<main>", "<main><p>Second change.</p>"),
+    );
+    await artifact.eval("window.stillOnPage = true");
+    await clickOn(page, "document.getElementById('cardCancel')");
+    await page.waitFor("document.getElementById('card').hidden");
+    await staysOnPage(secondShown);
+    assert.equal(
+      await page.eval("document.querySelectorAll('.mark:not(.sent)').length"),
+      1,
+      "Cancel drops the words, so the margin still holds only the first note",
+    );
+    await returnedAfter(secondShown);
+    await page.close();
+  },
+);
+
+test(
+  "a card opened empty in a tab another tab took over shows no reason line",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    const second = await browser.page(session.url);
+    await second.waitFor("document.body.dataset.ready === '1'");
+    await page.front();
+    await page.waitFor(
+      noticeSays("Another tab took over this review, so this page has stopped updating."),
+    );
+    await pointAt(page, artifact, "#title");
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: "", reason: null });
+    await second.close();
+    await page.close();
+  },
+);
+
+test(
+  "a card the agent's end held open loses its reason when the reviewer deletes its words, and gets it back on typing",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#title");
+    await page.type("Cut");
+    assert.equal((await cli(["end", file], lab.env)).json().ended_by, "agent");
+    await page.waitFor(noticeSays("Your agent ended this review."));
+    assert.equal(JSON.parse(await page.eval(CARD_SEEN)).words, "Cut");
+    for (let deleted = 0; deleted < 3; deleted += 1) await page.key("Backspace", { keyCode: 8 });
+    await page.waitFor("!document.getElementById('cardReason').checkVisibility()");
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: "", reason: null });
+    await page.type("x");
+    await page.waitFor("document.getElementById('cardReason').checkVisibility()");
+    await page.close();
+  },
+);
+
+test(
+  "a note half-typed when the file goes stays in its card until the reviewer's own Cancel drops it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#p1");
+    await page.type("Say who owns the rollback");
+    const away = `${file}.away`;
+    renameSync(file, away);
+    assert.equal((await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status, "gone");
+    await page.waitFor(noticeSays("The file was moved or deleted, so this review cannot go on."));
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), {
+      words: "Say who owns the rollback",
+      reason:
+        "The file was moved or deleted. Add note keeps this with your other notes, and Send opens again if the file comes back.",
+    });
+
+    await clickOn(page, "document.getElementById('cardCancel')");
+    await page.waitFor("document.getElementById('card').hidden");
+    renameSync(away, file);
+    await page.waitFor("!document.getElementById('notice').checkVisibility()");
+    // Cancel asks the server for nothing, so no note can still be on its way to the margin.
+    assert.equal(await page.eval("document.querySelectorAll('.mark').length"), 0);
+    await pointAt(page, artifact, "#p1");
+    assert.equal(
+      JSON.parse(await page.eval(CARD_SEEN)).words,
+      "",
+      "the next card starts empty: Cancel dropped the words",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a note half-typed when another tab takes over stays in its card, and Add puts it in that tab too",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#title");
+    await page.type("Name the queue in the title");
+    const second = await browser.page(session.url);
+    await second.waitFor("document.body.dataset.ready === '1'");
+    await page.front();
+    await page.waitFor(
+      noticeSays("Another tab took over this review, so this page has stopped updating."),
+    );
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), {
+      words: "Name the queue in the title",
+      reason: "Another tab took over this review. Add note keeps this, and that tab shows it too.",
+    });
+    await clickOn(page, "document.getElementById('cardAdd')");
+    await second.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+    assert.equal(
+      await second.eval("document.querySelector('.mark:not(.sent) .mark-note').textContent"),
+      "Name the queue in the title",
+    );
+    await second.close();
+    await page.close();
+  },
+);
+
+test(
+  "a note being edited in the margin when the agent ends the review keeps its words, and Enter saves them",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Shorter title");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+    await page.type(", four words at most");
+    await cli(["end", file], lab.env);
+    await page.waitFor(noticeSays("Your agent ended this review."));
+    assert.equal(
+      await page.eval("document.activeElement.value"),
+      "Shorter title, four words at most",
+      "the editor kept its words and the focus",
+    );
+    await page.enter();
+    await page.waitFor(
+      "document.querySelector('.mark:not(.sent) .mark-note')?.textContent === 'Shorter title, four words at most'",
+    );
+    assert.equal(
+      await page.eval("document.getElementById('send').textContent"),
+      "Send 1 note anyway",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "Discard and end drops the note in the card along with the queued ones",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Shorter title");
+    await pointAt(page, artifact, "#p1");
+    await page.type("Say how long");
+    await clickOn(page, "document.getElementById('end')");
+    await clickOn(page, "document.getElementById('endDiscard')");
+    await page.waitFor(noticeSays("You ended this review."));
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: null, reason: null });
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.equal(polled.status, "ended", "the agent receives neither note");
+    await page.close();
+  },
+);
+
 test(
   "Escape closes the note card each time it opens, and the page goes on answering",
   { skip: !executable && "no browser found" },
