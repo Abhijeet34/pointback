@@ -1004,8 +1004,9 @@ async function pageAddress(page) {
 
 /**
  * The key events the focus fixture reports to this process, in the order they arrive, and the ids of
- * the elements it holds after its focus calls. A page the wrapper removes takes its own window and its
- * own state with it, so the record lives here, and is reset for each review opened.
+ * the elements it holds after its focus calls, each with the time the page made the call. A page the
+ * wrapper removes takes its own window and its own state with it, so the record lives here, and is
+ * reset for each review opened.
  */
 let keyReports = [];
 let focusReports = [];
@@ -1019,7 +1020,8 @@ function hearKeys(page) {
     if (message.method !== "Runtime.consoleAPICalled") return;
     const [marker, type, key] = message.params.args.map((arg) => arg.value);
     if (marker === "focus-calls key") keyReports.push(`${type} ${key}`);
-    else if (marker === "focus-calls focus") focusReports.push(type);
+    else if (marker === "focus-calls focus")
+      focusReports.push({ id: type, at: message.params.timestamp });
   });
 }
 
@@ -1027,7 +1029,7 @@ function hearKeys(page) {
  * Waits for the page to report that its own field holds the focus. The chrome can unload the page for
  * that move before the window comes back, which removes the page's target, so the page is never asked.
  */
-const pageTookFocus = (what) => until(() => focusReports.at(-1) === "field", { what });
+const pageTookFocus = (what) => until(() => focusReports.at(-1)?.id === "field", { what });
 
 /** Real key presses, which go wherever the browser has the focus. */
 async function press(page, word) {
@@ -1472,17 +1474,47 @@ test(
 );
 
 /**
- * Has the chrome's deferred tasks run 200 ms late while its window is away, as a loaded runner or a
+ * Holds every task the chrome queues from here until `runHeld()` runs them, as a loaded runner or a
  * hidden tab's throttled timers can, so its check of the focus-out the window's leaving gives the note
- * runs after the page has taken the focus, and the page is unloaded before the window comes back
- * (macos-15, run 37279709792: the page's target was gone before a wait on it saw the move).
+ * runs once the page's move has reached the chrome, and the page is unloaded before the window comes
+ * back (macos-15, run 37279709792: the page's target was gone before a wait on it saw the move). A
+ * fixed delay instead left that order to the runner (`docs/ENGINEERING-NOTES.md`).
  */
-const lateWhileAway = (page) =>
+const holdTasks = (page) =>
   page.eval(`(() => {
     const real = window.setTimeout;
-    window.setTimeout = (run, ms, ...rest) =>
-      real(run, document.hasFocus() ? ms : Math.max(ms ?? 0, 200), ...rest);
+    // Each task: the event that queued it and when, when it ran, where the focus was as it did, and
+    // whether the page was out after it, so a wait on that unload can say what the check found.
+    globalThis.heldTasks = [];
+    window.setTimeout = (run, ms, ...rest) => {
+      heldTasks.push({ from: window.event?.type ?? "a task", queued: Date.now(), run: () => run(...rest) });
+      return 0;
+    };
+    globalThis.runHeld = () => {
+      window.setTimeout = real;
+      for (const task of heldTasks) {
+        task.ran = Date.now();
+        task.focus = document.activeElement?.id || document.activeElement?.tagName;
+        task.run();
+        task.unloaded = document.getElementById("coverText").textContent === ${JSON.stringify(UNLOADED_LINE)};
+      }
+    };
   })()`);
+
+/**
+ * Where the page put the focus and what each of the chrome's held tasks found as it ran, in ms from
+ * `left`, so a wait for the unload that fails says whether the check saw the page holding the focus.
+ */
+async function heldReport(page, left) {
+  const tasks = JSON.parse(await page.eval("JSON.stringify(heldTasks)"));
+  const moves = focusReports.map(({ id, at }) => `${id} at +${Math.round(at - left)} ms`);
+  const found = tasks.map(({ from, queued, ran, focus, unloaded }) => {
+    const task = `${from} at +${queued - left} ms`;
+    if (ran === undefined) return `${task}, never ran`;
+    return `${task}, ran at +${ran - left} ms with the focus on ${focus}, ${unloaded ? "unloaded" : "kept"} the page`;
+  });
+  return `the page took the focus to ${moves.join(", ") || "nothing"}; the chrome's held tasks, from ${found.join("; ") || "none queued"}`;
+}
 
 for (const late of [false, true]) {
   test(
@@ -1494,7 +1526,6 @@ for (const late of [false, true]) {
       const { session } = await focusCallsReview();
       const { page, artifact } = await openReview(session.url);
       await pointAt(page, artifact, "#p1");
-      if (late) await lateWhileAway(page);
       await artifact.eval(
         `document.addEventListener("visibilitychange", () => {
           if (!document.hidden) return;
@@ -1502,17 +1533,30 @@ for (const late of [false, true]) {
           console.log("focus-calls focus", document.activeElement.id);
         })`,
       );
+      if (late) await holdTasks(page);
+      const left = Date.now();
       const { targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" });
       await page.browser.send("Target.activateTarget", { targetId });
       await until(async () => !(await page.eval("document.hasFocus()")), {
         what: "the review window to lose focus",
       });
+      await pageTookFocus("the page to take the focus in its own field as the window leaves");
       if (late) {
+        await page.waitFor("document.activeElement === document.getElementById('artifact')", {
+          what: "the chrome to hold the page's move while the window is away",
+        });
+        const moved = focusReports.at(-1).at - left;
+        console.log(
+          `window-away late check: the page took the focus at +${Math.round(moved)} ms, the chrome held it by +${Date.now() - left} ms`,
+        );
+        await page.eval("runHeld()");
         await until(async () => (await pageAddress(page)) === "about:blank", {
           what: "the page's frame to hold about:blank while the window is away",
+        }).catch(async (error) => {
+          error.message += `\n  ${await heldReport(page, left)}`;
+          throw error;
         });
       }
-      await pageTookFocus("the page to take the focus in its own field as the window leaves");
       await page.front();
       const result = await writeNote(
         page,
