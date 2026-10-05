@@ -3744,6 +3744,229 @@ test(
   },
 );
 
+/**
+ * Lists every request `page` sends that carries `token`: its API calls, caught at the browser on
+ * `port`, and its event stream's handshake, which no Fetch pattern catches. Given `health`, the
+ * chrome's health checks are answered with it instead of by the daemon, and each request carrying
+ * the token is refused, so none reaches the daemon.
+ */
+async function tokenRequests(page, port, token, health) {
+  const carried = [];
+  const carries = ({ url, headers }) =>
+    url.includes(token) || Object.values(headers).some((value) => value.includes(token));
+  const listener = ({ method, params, sessionId }) => {
+    if (method === "Network.webSocketWillSendHandshakeRequest" && sessionId === page.sessionId) {
+      if (carries({ url: "", headers: params.request.headers })) carried.push("WebSocket events");
+      return;
+    }
+    if (method !== "Fetch.requestPaused" || sessionId) return;
+    const { requestId, request } = params;
+    const { pathname } = new URL(request.url);
+    if (carries(request)) carried.push(`${request.method} ${pathname}`);
+    const send = (command, extra = {}) =>
+      page.browser.send(command, { requestId, ...extra }).catch(() => {});
+    if (!health) send("Fetch.continueRequest");
+    else if (pathname === "/health")
+      send("Fetch.fulfillRequest", {
+        responseCode: 200,
+        responseHeaders: [{ name: "content-type", value: "application/json" }],
+        body: Buffer.from(JSON.stringify(health)).toString("base64"),
+      });
+    else send("Fetch.failRequest", { errorReason: "ConnectionRefused" });
+  };
+  page.browser.listeners.push(listener);
+  await page.browser.send("Fetch.enable", {
+    patterns: [
+      { urlPattern: `http://127.0.0.1:${port}/health*` },
+      { urlPattern: `http://127.0.0.1:${port}/api/*` },
+    ],
+  });
+  return {
+    carried,
+    async stop() {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.browser.send("Fetch.disable");
+    },
+  };
+}
+
+/** The bar and margin as a reviewer reads them before the review has opened. */
+const BOOT_SEEN = `JSON.stringify({
+  presence: document.getElementById('presenceText').textContent,
+  status: document.getElementById('status').textContent,
+  notice: document.getElementById('notice').hidden ? null : document.getElementById('noticeText').textContent,
+})`;
+
+test(
+  "a tab whose health check is answered without proof says it is disconnected, and End review sends nothing carrying its token",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    let watched;
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port, token } = own.serverInfo();
+      watched = await tokenRequests(page, port, token, { app: "stand-in" });
+      await page.navigate(url);
+      await page.waitFor(
+        "document.getElementById('status').textContent.includes('no longer works')",
+      );
+      await clickOn(page, "document.getElementById('end')");
+      await page.waitFor("document.getElementById('endDialog').open");
+      await clickOn(page, "document.getElementById('endGo')");
+      // The barrier: End review has been handled, whether its request was refused or never sent.
+      await page.waitFor(
+        "document.getElementById('status').textContent.startsWith('Could not end the review')",
+      );
+      assert.deepEqual(
+        { carried: watched.carried, seen: JSON.parse(await page.eval(BOOT_SEEN)) },
+        {
+          carried: [],
+          seen: {
+            presence: "Disconnected",
+            status: "Could not end the review: not connected",
+            notice:
+              "This page can no longer reach its review. Run the command on this file again for a fresh page; your notes are kept there.",
+          },
+        },
+      );
+    } finally {
+      await watched?.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a tab whose health check is proven ends its review with End review, and the agent hears the end",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    let watched;
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port, token } = own.serverInfo();
+      watched = await tokenRequests(page, port, token);
+      await page.navigate(url);
+      await reviewIn(page);
+      await clickOn(page, "document.getElementById('end')");
+      await page.waitFor("document.getElementById('endDialog').open");
+      await clickOn(page, "document.getElementById('endGo')");
+      await page.waitFor(noticeSays("You ended this review."));
+      const key = new URL(url).pathname.split("/").pop();
+      assert.ok(watched.carried.includes(`POST /api/${key}/end`), watched.carried.join(", "));
+      const polled = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json();
+      assert.equal(polled.status, "ended");
+    } finally {
+      await watched?.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+/**
+ * Holds each health check `page` makes, not its heartbeats, until `release` lets it through to the
+ * daemon, and refuses each API call until then. Lists every request that carries `token`.
+ */
+async function holdHealth(page, port, token) {
+  const carried = [];
+  const held = [];
+  let refusing = true;
+  const carries = ({ url, headers }) =>
+    url.includes(token) || Object.values(headers).some((value) => value.includes(token));
+  const listener = ({ method, params, sessionId }) => {
+    if (sessionId !== page.sessionId) return;
+    if (method === "Network.webSocketWillSendHandshakeRequest") {
+      if (carries({ url: "", headers: params.request.headers })) carried.push("WebSocket events");
+      return;
+    }
+    if (method !== "Fetch.requestPaused") return;
+    const { requestId, request } = params;
+    const { pathname, searchParams } = new URL(request.url);
+    if (carries(request)) carried.push(`${request.method} ${pathname}`);
+    if (pathname === "/health" && searchParams.has("challenge")) held.push(requestId);
+    else if (refusing && pathname.startsWith("/api/"))
+      page
+        .send("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" })
+        .catch(() => {});
+    else page.send("Fetch.continueRequest", { requestId }).catch(() => {});
+  };
+  page.browser.listeners.push(listener);
+  await page.send("Fetch.enable", {
+    patterns: [
+      { urlPattern: `http://127.0.0.1:${port}/health*` },
+      { urlPattern: `http://127.0.0.1:${port}/api/*` },
+    ],
+  });
+  return {
+    carried,
+    held,
+    async release() {
+      refusing = false;
+      for (const requestId of held.splice(0))
+        await page.send("Fetch.continueRequest", { requestId });
+    },
+    async stop() {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.send("Fetch.disable");
+    },
+  };
+}
+
+test(
+  "a tab taken over whose health check is held sends nothing carrying its token, and ends its review once proven",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { port, token } = own.serverInfo();
+    const { page } = await openReview(url);
+    const second = await browser.page(url);
+    let watched;
+    try {
+      await second.waitFor("document.body.dataset.ready === '1'");
+      await page.waitFor(
+        noticeSays("Another tab took over this review, so this page has stopped updating."),
+      );
+      // The second tab opened after this one, so this one is in the background until it is brought forward.
+      await page.front();
+      watched = await holdHealth(page, port, token);
+      await clickOn(page, "document.getElementById('takeOver')");
+      await until(() => watched.held.length === 1, {
+        what: "the take over's health check to be held",
+      });
+      await clickOn(page, "document.getElementById('end')");
+      await page.waitFor("document.getElementById('endDialog').open");
+      await clickOn(page, "document.getElementById('endGo')");
+      // The barrier: End review has been handled, whether its request was refused or never sent.
+      await page.waitFor(
+        "document.getElementById('status').textContent.startsWith('Could not end the review')",
+      );
+      assert.deepEqual(watched.carried, []);
+      await watched.release();
+      await page.waitFor(FOLLOWING);
+      await clickOn(page, "document.getElementById('end')");
+      await page.waitFor("document.getElementById('endDialog').open");
+      await clickOn(page, "document.getElementById('endGo')");
+      await page.waitFor(noticeSays("You ended this review."));
+      const polled = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json();
+      assert.equal(polled.status, "ended");
+    } finally {
+      await watched?.stop();
+      await second.close();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
 // A tab that could not reach the daemon while its review was evicted (a laptop asleep, a dropped
 // network) comes back to a review that no longer exists: the server refuses its stream with 4404,
 // and the tab must say so and how to get a fresh page, and the agent's next open must give one.
