@@ -36,6 +36,7 @@ In scope:
   A Tab the reviewer presses in the note that moves the focus into the page is left alone, and so is a press over the page.
   When the window loses focus while a note field holds it, the chrome records that field at once, and the next task drops the record if the window has the focus again.
   When the window comes back with the page holding the focus, the page's move from the recorded field is unloaded at once (`leftWindow`, `regained` and `takenFrom` in `src/browser/chrome.js`); a press on the shield or a Tab handoff from the note clears that record, so a press that lands as the window returns is a handoff in either order.
+  On that path, too, a key typed between the window's return and the wrapper taking the page out can reach the page, and that window is not measured.
   The ordering of a real click that activates the window cannot be expressed in the harness; the test presses over the page after the window is back, not as it returns.
   A page focus() in the same task as the window's blur is not separated from the blur by any test, since the harness cannot order the two in one task.
   A page focus() that lands in the same task as the reviewer's Tab is taken as part of that handoff, since the two cannot be told apart in that task.
