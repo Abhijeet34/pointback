@@ -148,7 +148,7 @@ export async function refusingServer(stateDir) {
     const res = await fetch(`http://127.0.0.1:${record.port}/health?challenge=${challenge}`, {
       signal: AbortSignal.timeout(1500),
     });
-    const status = await res.json();
+    const status = /** @type {any} */ (await res.json());
     return status?.app === name && recordHolds(record, status) ? record : null;
   } catch (error) {
     const busy = error.name === "TimeoutError" || error.name === "AbortError";
