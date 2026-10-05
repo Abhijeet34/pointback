@@ -572,13 +572,16 @@ test("eight opens at once on a cold state directory all succeed, against one dae
 
 // Hunt 37263767133, attempt 9: on windows-2025 three of these opens said "server did not start" after
 // 10.9 s, quoting a server log that ended with the winner listening. Each open timed the start from its
-// own spawn, though the lock gives the winner 10 s from its later claim. Here every daemon is held 6 s
-// before it claims and the winner 5 s more before it binds: 11 s after the opens, 5 s into its claim.
+// own spawn, though the lock gives the winner 10 s from its later claim. Here every daemon claims no
+// sooner than 7 s after its process started and binds no sooner than 10.5 s: after the 10 s the open
+// that spawned it allows, and at most 3.5 s into the claim's 10 s. In the windows-2025 trace a claim
+// came at most 6.7 s after the first spawn, inside that open's 10 s, and claim to listening took at
+// most 7.2 s, so the 6.5 s the claim has left after the bind covers the publish that follows it.
 test("eight cold opens wait for a winning daemon that is slow to come up, while the lock calls it starting", async () => {
   const slow = isolatedEnv();
   const env = loading(slow.env, "slow-start.js", {
-    TEST_BOOT_HOLD_MS: "6000",
-    TEST_BIND_HOLD_MS: "5000",
+    TEST_CLAIM_AT_MS: "7000",
+    TEST_BIND_AT_MS: "10500",
   });
   try {
     const opened = await Promise.all(copies(8).map((file) => cli([file], env)));
@@ -596,13 +599,13 @@ test("eight cold opens wait for a winning daemon that is slow to come up, while 
 
 // A start that fails before it claims the directory, as one the platform refuses does, ended the open's
 // wait at once even while a concurrent start's daemon was coming up. Now it ends it only once no live
-// start is left: here the concurrent start has claimed the directory and binds 5 s later.
+// start is left: here the concurrent start has claimed the directory and binds 5 s after it started.
 test("an open whose own start fails still gets the daemon a concurrent start brings up", async () => {
   const racing = isolatedEnv();
   const concurrent = spawn(process.execPath, [bin, "server"], {
     env: loading(racing.env, "slow-start.js", {
-      TEST_BOOT_HOLD_MS: "0",
-      TEST_BIND_HOLD_MS: "5000",
+      TEST_CLAIM_AT_MS: "0",
+      TEST_BIND_AT_MS: "5000",
     }),
     stdio: "ignore",
   });

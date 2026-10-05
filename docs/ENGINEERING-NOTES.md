@@ -172,7 +172,8 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   An open whose own start fails before any start has claimed the lock reports at once, so a concurrent open whose daemon is still booting before its claim is not waited for.
   0 of 1050 traced rounds met that case.
   Waiting the full 10 s on every failed start would delay each genuine start failure, such as a taken fixed port or an unwritable state directory, by that much.
-  `test/cli.test.js` holds a real winner 6 s before its claim and 5 s before its bind (`test/helpers/slow-start.js`), and fails an open's own start while a concurrent one comes up (`test/helpers/failed-start.js`).
+  `test/cli.test.js` lets a real winner claim no sooner than 7 s after its process started and bind no sooner than 10.5 s (`test/helpers/slow-start.js`), and fails an open's own start while a concurrent one comes up (`test/helpers/failed-start.js`).
+  Those holds are times to reach, not pauses, so a slow runner's own boot counts toward them: a fixed 6 s before the claim, on top of a slow windows-2025 boot, ran past the open's own 10 s before any claim (hunt 37358533578, attempts 6 and 18).
   `stopServer` in `src/client.js` says stopped only once the daemon's pid is gone or a connect to its port is refused, either of which frees the port, and not on its "stopping": on run 37250521173, attempt 16, windows-2025 still held the port when the next listener asked for it, and a start in that window falls back to a new port and strands every open tab.
   A daemon still there after 5 s is reported as `refused`; `test/helpers/slow-exit.js` holds a real daemon's exit so `test/cli.test.js` meets both orders every run.
   It never binds the port to find out, because a probe that binds could itself push a concurrent start off the port, and it reads the pid first, because a concurrent start's daemon may rightly hold that port by then.
