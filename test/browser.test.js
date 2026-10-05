@@ -2812,6 +2812,78 @@ test(
   },
 );
 
+/**
+ * Refuses the first `times` loads whose address matches `pattern` as Windows refuses a loopback
+ * connect (docs/ENGINEERING-NOTES.md), and lets the rest through. It intercepts at the browser, so a
+ * frame's load is caught however early its target attaches; `pattern` names a port only the calling
+ * test's daemon holds, so no other tab is touched.
+ */
+async function refuseLoads(page, pattern, times = 1) {
+  const counts = { asked: 0, refused: 0 };
+  const listener = ({ method, params, sessionId }) => {
+    if (method !== "Fetch.requestPaused" || sessionId) return;
+    counts.asked += 1;
+    const refuse = counts.refused < times;
+    if (refuse) counts.refused += 1;
+    page.browser
+      .send(
+        refuse ? "Fetch.failRequest" : "Fetch.continueRequest",
+        refuse
+          ? { requestId: params.requestId, errorReason: "ConnectionRefused" }
+          : { requestId: params.requestId },
+      )
+      .catch(() => {});
+  };
+  page.browser.listeners.push(listener);
+  await page.browser.send("Fetch.enable", { patterns: [{ urlPattern: pattern }] });
+  return {
+    counts,
+    async stop() {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.browser.send("Fetch.disable");
+    },
+  };
+}
+
+test(
+  "a wait that fails on a tab whose frame was refused names the refused load and the error page standing in for it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { port } = own.serverInfo();
+    const page = await browser.page("about:blank");
+    const refusal = await refuseLoads(page, `http://localhost:${port}/wrapper.html*`, Infinity);
+    const frameLine = `    chrome-error://chromewebdata/ in place of http://localhost:${port}/wrapper.html`;
+    const loadLine = `    chrome: net::ERR_CONNECTION_REFUSED Document http://localhost:${port}/wrapper.html`;
+    const section = (text, name) =>
+      text
+        .split(`\n  ${name}:`)[1]
+        .split(/\n(?! {4})/)[0]
+        .split("\n");
+    try {
+      await page.navigate(url);
+      const described = await until(
+        async () => {
+          const text = await page.describe();
+          const held =
+            section(text, "frames").includes(frameLine) &&
+            section(text, "loads failed").includes(loadLine);
+          return held ? text : null;
+        },
+        { what: "the chrome to describe the refused wrapper frame and its failed load" },
+      );
+      assert.ok(section(described, "frames").includes(frameLine));
+      assert.ok(section(described, "loads failed").includes(loadLine));
+    } finally {
+      await refusal.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
 let sentinel = 0;
 /**
  * Waits until the chrome has handled every message the page posted, after ten more of the page's
