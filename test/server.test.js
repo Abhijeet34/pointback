@@ -34,9 +34,15 @@ const sendOn = (agent, url, { method, headers, body, onSocket }) =>
     if (onSocket) req.on("socket", onSocket);
     req.on("error", reject);
     req.on("response", (res) => {
-      let text = "";
-      res.on("data", (d) => (text += d));
-      res.on("end", () => resolve({ status: res.statusCode, reused: req.reusedSocket, text }));
+      const chunks = [];
+      res.on("data", (d) => chunks.push(d));
+      res.on("end", () =>
+        resolve({
+          status: res.statusCode,
+          reused: req.reusedSocket,
+          text: Buffer.concat(chunks).toString(),
+        }),
+      );
     });
     req.end(body === undefined ? undefined : JSON.stringify(body));
   });
