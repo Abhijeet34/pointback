@@ -119,8 +119,9 @@
     } else if (data?.nonce === nonce && data.type === "compose" && !data.on) {
       // The chrome closed its note card; drop the selection and, for the keyboard path, hand
       // focus back to the element the reviewer came from so a Tab lands on the next one. The
-      // chrome is told when that is done, and whether the focus was taken for it.
-      send({ type: "closed", took: closeTarget(data.refocus === true) });
+      // chrome is told when that is done.
+      closeTarget(data.refocus === true);
+      send({ type: "closed" });
     } else if (data?.nonce === nonce && data.type === "pins") {
       setPins(data.pins);
     } else if (data?.nonce === nonce && data.type === "reveal") {
@@ -516,9 +517,8 @@
   // Whether the focused element is outlined; not after a note made by mouse, until a key is pressed.
   let focusShown = true;
 
-  /** Drops the open target; true when it took the focus back to the target's element. */
   function closeTarget(refocus) {
-    if (!open) return false;
+    if (!open) return;
     const { element, pointed, pressed } = open;
     open = null;
     outlineRects([]);
@@ -528,9 +528,8 @@
     focusShown = !pointed;
     // Not once the reviewer has pressed in the page: this close can land mid-drag, and moving focus
     // then ends the drag, so the passage is recorded cut short or as its whole element.
-    if (!refocus || !annotate || pressed || !element.isConnected) return false;
-    element.focus({ preventScroll: true });
-    return true;
+    if (refocus && annotate && !pressed && element.isConnected)
+      element.focus({ preventScroll: true });
   }
 
   function describe(element) {

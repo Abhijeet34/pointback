@@ -951,6 +951,7 @@ let held = false;
 
 function openCompose(note, label, outline, rects, from) {
   composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
+  if (handoff && !handoff.returning) settleHandoff();
   // A refusal belongs only to the words it refused; a fresh card gets a clean reason line.
   cardProblem = null;
   held = false;
@@ -1073,8 +1074,7 @@ window.addEventListener("message", (event) => {
   if (data.type === "annotate-ok") {
     document.body.dataset.annotate = data.on ? "1" : "0";
   } else if (data.type === "closed") {
-    // A focus the page took after the reviewer moved on is still to reach this page as a blur.
-    if (handoff && !handoff.returning && !(data.took === true && handoff.movedOn)) settleHandoff();
+    if (handoff && !handoff.returning) settleHandoff();
   } else if (data.type === "shown") {
     document.body.dataset.revision = String(shownRevision);
   } else if (data.type === "target" && data.note && typeof data.note === "object") {
