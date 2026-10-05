@@ -99,9 +99,11 @@ export async function ensureServer(stateDir, environment = process.env) {
     return started;
   };
   let child = start();
-  // Bounded by attempts as well as by the clock. Every turn of this loop can cost a probe's
-  // own `AbortSignal.timeout`, so a budget written only in milliseconds is really a budget in
-  // however many looks the machine can afford - and a busy windows-2025 runner affords few.
+  // Bounded by attempts as well as by the clock. Every turn of this loop can cost a health probe its
+  // running-time budget of 1.5 s, or under sustained starvation up to PROBE_CEILING_MS of wall time,
+  // so a budget written only in milliseconds is really a budget in however many looks the machine
+  // can afford - and a busy windows-2025 runner affords few. This loop has no whole-operation wall
+  // bound under starvation yet; the concurrent cold-opens work owns that.
   // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
   // directory; the rest exit 0. A start that stepped aside for a daemon that has since let go,
   // one caught on its way out, is replaced; only a failed exit means "not coming".
@@ -129,7 +131,8 @@ export async function ensureServer(stateDir, environment = process.env) {
  * on its port, either of which frees the port, so a start right after comes back on it and the tabs
  * holding it reconnect. One still there after STOP_TIMEOUT_MS did not stop.
  */
-export async function stopServer(stateDir, info, status) {
+export async function stopServer(stateDir, info, status, backstopMs = STOP_BACKSTOP_MS) {
+  const backstop = Date.now() + backstopMs;
   const asked = await api(info, "POST", "/shutdown").then(
     () => true,
     () => false,
@@ -139,10 +142,11 @@ export async function stopServer(stateDir, info, status) {
   const pid = Number.isInteger(info.pid) ? info.pid : status.pid;
   // The pid goes first: once it is gone, the port may rightly belong to a concurrent start's daemon.
   const gone = async (ms) =>
-    (Number.isInteger(pid) && !pidAlive(pid)) || !(await listening(info.port, ms));
+    (Number.isInteger(pid) && !pidAlive(pid)) ||
+    !(await listening(info.port, ms, backstop - Date.now()));
   const deadline = Date.now() + STOP_TIMEOUT_MS;
   while (!(await gone(deadline - Date.now()))) {
-    if (Date.now() >= deadline) return false;
+    if (Date.now() >= deadline || Date.now() >= backstop) return false;
     await sleep(50);
   }
   return true;
@@ -150,15 +154,21 @@ export async function stopServer(stateDir, info, status) {
 
 /** How long a daemon that answered "stopping" gets to exit before it is said not to have stopped. */
 const STOP_TIMEOUT_MS = 5_000;
+/**
+ * The wall backstop on the whole stop: STOP_TIMEOUT_MS plus the worst stalled probe measured, 11670 ms
+ * (windows-2025 hunt 37349003233, job 111894797244), rounded up to 20 s. A stop is given up at it even
+ * when starvation has spent no running time, so no look outlasts it.
+ */
+const STOP_BACKSTOP_MS = 20_000;
 
 /**
  * Whether anything accepts a connection on the loopback port; only a refusal says nothing does. A probe
- * that gets no answer within `ms` of running time is still listening; a stall does not spend that time,
- * so the wall ceiling of `probeTimeout` is the only bound on how far past the caller's deadline it runs.
+ * that gets no answer within `ms` of running time is still listening. Its wall ceiling is what remains
+ * of stopServer's backstop, so no look outlasts the backstop.
  */
-function listening(port, ms) {
+function listening(port, ms, ceiling) {
   return new Promise((resolve) => {
-    const probe = probeTimeout(Math.max(1, ms));
+    const probe = probeTimeout(Math.max(1, ms), ceiling);
     const socket = connect(port, "127.0.0.1");
     const settle = (answer) => {
       probe.done();

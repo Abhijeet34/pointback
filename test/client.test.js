@@ -39,12 +39,34 @@ test("a health probe stalled past its timeout still reads a server that proves i
 // The stop probe's deadline is STOP_TIMEOUT_MS (5 s), so this stall spans it.
 test("a stop whose refusal is read after a stall past its deadline reports the daemon stopped", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-client-"));
+  let stalled;
   const server = createServer((req, res) => {
     res.end("{}");
     server.close();
-    stallOnConnect(5_500);
+    stalled = stallOnConnect(5_500);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const info = { port: server.address().port, token: "c".repeat(64), pid: process.pid };
   assert.equal(await stopServer(dir, info, { proven: true, pid: process.pid }), true);
+  assert.equal(stalled(), true, "the stall landed on the stop probe's connect");
+});
+
+test("a stop whose daemon never goes is given up at its wall backstop, though starvation spends no running time", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-client-"));
+  const server = createServer((req, res) => res.end("{}"));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const info = { port: server.address().port, token: "c".repeat(64), pid: process.pid };
+  const started = Date.now();
+  let finished = false;
+  const stopping = stopServer(dir, info, { proven: true, pid: process.pid }, 300).finally(() => {
+    finished = true;
+  });
+  for (let turn = 0; !finished && turn < 200; turn += 1) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  server.close();
+  assert.equal(finished, true, "the stop returned");
+  assert.equal(await stopping, false);
+  assert.ok(Date.now() - started < 5_000, "given up before the 5 s deadline");
 });

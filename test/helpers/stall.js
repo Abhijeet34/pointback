@@ -45,8 +45,8 @@ export function stallNextTick(ms) {
 /**
  * As stallNextTick, for a probe that is not issued yet when the stall is armed, such as one that
  * follows a response the test's own server sends. The stall lands on the next client socket's connect,
- * which must be the probe's.
+ * which must be the probe's. Returns a check that the stall landed, to assert after the operation.
  */
 export function stallOnConnect(ms) {
-  armStall(ms);
+  return armStall(ms);
 }
