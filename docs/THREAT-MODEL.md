@@ -46,7 +46,7 @@ In scope:
   `test/browser.test.js` holds that no key typed into the note reaches the page, typed straight after the move and again once the frame holds about:blank, with the frame in view and out of it, on the note the page took the focus from and on a later one.
   The residual is the time from the page's move to the wrapper taking it out, in which a key typed can still reach the page: 5 to 47 ms, median 11 ms, over 126 rounds on Linux, macOS and Windows runners (runs 37247034749, 37247040827, 37247047306 and 37247053785).
   Those runs were on fix head 0c5b837, before the window-return check and the later changes to which moves count as the page's own; the unload that sets this window, from the chrome's check to the wrapper taking the page out (`unload` in `src/browser/chrome.js` and `src/browser/wrapper.js`), is unchanged since.
-  Locally, with six suites running at once, the frame removal failed 0 of 18 runs, with the page out 6 to 68 ms after the move, where navigating the frame instead failed 6 of 12 runs with the note empty and about:blank loading about 300 ms after the first put-back.
+  Locally, with six suites running at once, the frame removal failed 0 of 18 runs, with the page out 6 to 68 ms after the move, where navigating the frame instead failed 6 of 12 runs with the note empty and about:blank loading about 300 ms after the first put-back (transcript "tally: navigate design versus frame removal under six suites at once").
   On fix head c66c928, the two hidden-state tests printed the page out 4 ms after the move in each of 10 local rounds (5 with the frame out of view, 5 in view), with no key recorded (transcript "window: the two hidden-state tests on fix head c66c928, 5 local rounds").
   Still open: a page's late refocus can undo a Tab the reviewer pressed in the page (issue 57), and a page can take the focus from anywhere in the chrome other than a note field, such as the Annotate switch or the page body after a press on a non-focusable part of the card or margin, where the page's focus() is not seen as taken from a note, so the page is not hidden and keys typed afterwards can reach it.
   The engine smoke's unload step (`unloadOnPageFocus` in `test/engine-smoke.js`) runs five fresh reviews per engine. In each, the page calls focus() out of the note with a word typed at once, then the word is typed again once the unloaded line shows, and that second word must land exactly with no key event reaching the page.
@@ -55,11 +55,11 @@ In scope:
   The residual, for a word typed at once before the unload lands, was 0 of 15 WebKit 26.6 rounds and 1 key event in 1 of 15 Firefox 155.0 rounds (run 1, round 2).
   The time from the page's move to the unloaded line was 0 to 2 ms in WebKit 26.6 and 4 to 7 ms in Firefox 155.0.
   On the same head the Chromium browser suite (`test/browser.test.js`) passed 77 of 77 (label "browser suite on fix head 5c66d57").
-  The same step's control, with no note open, reported the page's own keys in each engine in each run (4 of 4 key events of "ok").
+  The same step's control, with no note open, reported the page's own 4 key events in each engine in each of those three runs.
   A move of the focus from a note to a chrome control leaves the page alone in the same step, and in Chromium the window losing focus does too (`test/browser.test.js`).
-  A press over the page while a note has the focus was not taken for the page's own move: it passed in 6 of 6 local runs each in WebKit 26.6 and Firefox 155.0 on 2026-10-05.
+  A press over the page while a note has the focus is not taken for the page's own move (`test/browser.test.js`, in Chromium).
   The engine smoke's press-over-the-page step (`pressOverThePage` in `test/engine-smoke.js`) checks this on every scheduled run.
-  A window that comes back with the page holding the focus is measured only in Chromium (`test/browser.test.js`): Playwright could not make the review window lose focus in WebKit 26.6 or Firefox 155.0 on 2026-10-05, where the step waited 30 s for the window to lose focus, so that path is unmeasured in those engines.
+  A window that comes back with the page holding the focus is measured only in Chromium (`test/browser.test.js`): Playwright could not make the review window lose focus in WebKit or Firefox, so that path is unmeasured in those engines.
 - State written where another user on the machine can read it: outside the state directory, with a mode other than `0600` in a `0700` directory on POSIX, or on Windows with any ACL entry beyond the current user (`src/state-dir.js`).
 - Any outbound connection opened by the process.
 - Markup in an artifact that changes what the injected review script does (`src/inject.js`).
