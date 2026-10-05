@@ -33,6 +33,10 @@ const LOAD_MS = 15_000;
 /** The iframe attaches within a paint or two of the page requesting it. */
 const ATTACH_MS = 10_000;
 const ATTACH = { autoAttach: true, waitForDebuggerOnStart: false, flatten: true };
+/** How many of a page's document answers and console errors `describe` reports, newest last. */
+const KEPT = 10;
+/** One frame tree's share of `describe`: long enough for a slow runner, never a hang. */
+const DESCRIBE_MS = 5000;
 /**
  * Two launches, not one. On run 33874545761, attempt 2, chrome.exe on windows-2025 was still
  * running 45 s after it was spawned, had written no DevToolsActivePort and had printed nothing
@@ -221,6 +225,16 @@ async function startBrowser(executable, { width = 1200, height = 800 } = {}) {
   let browser;
   try {
     browser = await connect(await devToolsUrl(child, executable, profile));
+    // Every renderer that crashes, with the address it held, for `describe` to name.
+    const urls = new Map();
+    browser.crashes = [];
+    browser.listeners.push(({ method, params }) => {
+      if (method === "Target.targetCreated" || method === "Target.targetInfoChanged")
+        urls.set(params.targetInfo.targetId, params.targetInfo.url);
+      else if (method === "Target.targetCrashed")
+        browser.crashes.push(`${urls.get(params.targetId) ?? params.targetId} (${params.status})`);
+    });
+    await browser.send("Target.setDiscoverTargets", { discover: true });
   } catch (error) {
     // The one line the incident turned on: a browser nobody kills keeps the suite alive
     // long after it has a verdict, and the verdict never gets printed.
@@ -238,7 +252,7 @@ async function startBrowser(executable, { width = 1200, height = 800 } = {}) {
       });
       const page = new Page(browser, sessionId, targetId);
       await page.send("Page.enable");
-      await page.send("Runtime.enable");
+      await page.watch();
       await page.send("Emulation.setDeviceMetricsOverride", {
         ...viewport,
         deviceScaleFactor: 1,
@@ -389,7 +403,12 @@ class Page {
    * `until` in helpers/wait.js carries the measurement of what one of those can cost.
    */
   waitFor(expression, options = {}) {
-    return until(() => this.eval(expression), { what: expression, ...options });
+    const waited = until(() => this.eval(expression), { what: expression, ...options });
+    if (!this.documents) return waited;
+    // A watched tab is the chrome, and a wait on it that fails says what was there instead.
+    return waited.catch(async (error) => {
+      throw new Error(`${error.message}\n  ${await this.describe()}`, { cause: error });
+    });
   }
 
   async click(x, y) {
@@ -415,15 +434,7 @@ class Page {
    * Measured on windows-2025, run 37089815210: 8 of 20 attempts read innerWidth 0 at "complete".
    */
   async frame() {
-    if (!this.children) {
-      this.children = new Map();
-      this.contexts = new Map();
-      this.browser.listeners.push((message) => this.#track(message));
-      // Enabled again so the contexts this page already has are announced to the tracker too.
-      await this.send("Runtime.disable");
-      await this.send("Runtime.enable");
-      await this.send("Target.setAutoAttach", ATTACH);
-    }
+    await this.watch();
     const artifact = await until(() => this.#findArtifact(), {
       what: "the page under review to load in its frame",
       timeoutMs: ATTACH_MS,
@@ -432,24 +443,99 @@ class Page {
     return artifact;
   }
 
+  /**
+   * Tracks this page's iframe targets and their contexts, and keeps what `describe` reports. A tab
+   * is watched from its creation, so a page that never gets ready can say why on its first load.
+   */
+  async watch() {
+    if (this.children) return;
+    this.children = new Map();
+    this.contexts = new Map();
+    this.documents = [];
+    this.errors = [];
+    this.browser.listeners.push((message) => this.#track(message));
+    // Enabled again so the contexts this page already has are announced to the tracker too.
+    await this.send("Runtime.disable");
+    for (const command of ["Runtime.enable", "Network.enable", "Log.enable"])
+      await this.send(command);
+    await this.send("Target.setAutoAttach", ATTACH);
+  }
+
+  /**
+   * What a wait that failed on this page cannot see for itself: what the chrome shows, with its
+   * event stream's state, every frame's address, the answers its documents got, its last console
+   * errors, and any renderer that crashed. On run 37247968168, attempt 20, a reloaded review never
+   * got ready in 10 s while the browser answered every 31 ms, and the timeout was all it said.
+   */
+  async describe() {
+    // `presence` reads `lost` or `gone` while the event stream is down, the agent's state while up.
+    const shown = await Promise.race([
+      this.eval(`JSON.stringify({
+        status: document.getElementById("status")?.textContent,
+        notice: document.getElementById("notice")?.hidden === false
+          ? document.getElementById("noticeText").textContent : null,
+        stream: document.getElementById("presence")?.dataset.state,
+        body: { ...document.body?.dataset },
+      })`),
+      sleep(DESCRIBE_MS, "no answer", { ref: false }),
+    ]).catch((error) => `unreadable: ${error.message}`);
+    const frames = [];
+    const walk = (node) => {
+      frames.push(node.frame.url);
+      for (const child of node.childFrames ?? []) walk(child);
+    };
+    // A crashed frame's session never answers, so every tree is asked at once and given DESCRIBE_MS.
+    const trees = await Promise.all(
+      [this.sessionId, ...this.children.keys()].map((session) =>
+        Promise.race([
+          this.browser.send("Page.getFrameTree", {}, session).then(
+            (answer) => answer.frameTree,
+            () => null,
+          ),
+          sleep(DESCRIBE_MS, null, { ref: false }),
+        ]),
+      ),
+    );
+    for (const tree of trees) if (tree) walk(tree);
+    const list = (items) =>
+      items.length ? items.map((item) => `\n    ${item}`).join("") : " none";
+    return (
+      `the chrome shows ${shown}\n  frames:${list(frames)}\n  documents answered:${list(this.documents)}` +
+      `\n  console errors:${list(this.errors)}\n  crashed renderers:${list(this.browser.crashes)}`
+    );
+  }
+
   /** Every iframe target under this page, and the default execution context of each frame in them. */
   #track({ method, params, sessionId }) {
     const ours = sessionId === this.sessionId || this.children.has(sessionId);
-    if (method === "Target.attachedToTarget" && ours && params.targetInfo.type === "iframe") {
+    if (!ours) return;
+    const keep = (items, item) => items.push(item) > KEPT && items.shift();
+    const where = sessionId === this.sessionId ? "chrome" : "frame";
+    if (method === "Target.attachedToTarget" && params.targetInfo.type === "iframe") {
       this.children.set(params.sessionId, sessionId);
       // A target's own iframes attach only when its own session asks for them.
-      for (const command of ["Runtime.enable", "Page.enable"])
+      for (const command of ["Runtime.enable", "Page.enable", "Network.enable", "Log.enable"])
         this.browser.send(command, {}, params.sessionId).catch(() => {});
       this.browser.send("Target.setAutoAttach", ATTACH, params.sessionId).catch(() => {});
-    } else if (method === "Target.detachedFromTarget" && ours) {
+    } else if (method === "Network.responseReceived" && params.type === "Document") {
+      keep(this.documents, `${params.response.status} ${params.response.url}`);
+    } else if (method === "Runtime.exceptionThrown") {
+      const { exception, text } = params.exceptionDetails;
+      keep(this.errors, `${where}: ${exception?.description ?? text}`);
+    } else if (method === "Runtime.consoleAPICalled" && params.type === "error") {
+      const text = params.args.map((arg) => arg.value ?? arg.description ?? arg.type).join(" ");
+      keep(this.errors, `${where}: console.error ${text}`);
+    } else if (method === "Log.entryAdded" && params.entry.level === "error") {
+      keep(this.errors, `${where}: ${params.entry.text} ${params.entry.url ?? ""}`.trim());
+    } else if (method === "Target.detachedFromTarget") {
       this.children.delete(params.sessionId);
-    } else if (method === "Runtime.executionContextCreated" && ours) {
+    } else if (method === "Runtime.executionContextCreated") {
       const { id, auxData } = params.context;
       if (auxData?.isDefault) this.contexts.set(`${sessionId} ${auxData.frameId}`, id);
-    } else if (method === "Runtime.executionContextDestroyed" && ours) {
+    } else if (method === "Runtime.executionContextDestroyed") {
       for (const [key, id] of this.contexts)
         if (id === params.executionContextId) this.contexts.delete(key);
-    } else if (method === "Runtime.executionContextsCleared" && ours) {
+    } else if (method === "Runtime.executionContextsCleared") {
       for (const key of this.contexts.keys())
         if (key.startsWith(`${sessionId} `)) this.contexts.delete(key);
     }
