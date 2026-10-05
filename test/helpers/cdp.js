@@ -464,8 +464,9 @@ class Page {
   /**
    * What a wait that failed on this page cannot see for itself: what the chrome shows and where its
    * focus is, with its event stream's state, every frame's address, the answers its documents got,
-   * its last console errors, and any renderer that crashed. On run 37247968168, attempt 20, a reloaded review never
-   * got ready in 10 s while the browser answered every 31 ms, and the timeout was all it said.
+   * its last console errors, and any renderer that crashed. On run 37247968168, attempt 20, a
+   * reloaded review never got ready in 10 s while the browser answered every 31 ms, and the timeout
+   * was all it said.
    */
   async describe() {
     // `presence` reads `lost` or `gone` while the event stream is down, the agent's state while up.
