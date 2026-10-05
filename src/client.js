@@ -153,7 +153,8 @@ const STOP_TIMEOUT_MS = 5_000;
 
 /**
  * Whether anything accepts a connection on the loopback port; only a refusal says nothing does. A probe
- * that gets no answer within `ms` is still listening, so the caller's deadline is never overrun.
+ * that gets no answer within `ms` of running time is still listening; a stall does not spend that time,
+ * so the wall ceiling of `probeTimeout` is the only bound on how far past the caller's deadline it runs.
  */
 function listening(port, ms) {
   return new Promise((resolve) => {
