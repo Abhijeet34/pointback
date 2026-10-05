@@ -17,15 +17,16 @@ export async function closedPort() {
  */
 function armStall(ms) {
   let attempted = false;
+  const disarm = () => unsubscribe("net.client.socket", onSocket);
   const onSocket = ({ socket }) => {
-    unsubscribe("net.client.socket", onSocket);
+    disarm();
     socket.once("connectionAttempt", () => {
       attempted = true;
       process.nextTick(() => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
     });
   };
   subscribe("net.client.socket", onSocket);
-  return () => attempted;
+  return { attempted: () => attempted, disarm };
 }
 
 /**
@@ -34,9 +35,10 @@ function armStall(ms) {
  * next turn unless the probe's connect was attempted, so a probe that never connects cannot pass.
  */
 export function stallNextTick(ms) {
-  const attempted = armStall(ms);
+  const stall = armStall(ms);
   setImmediate(() => {
-    if (!attempted()) {
+    stall.disarm();
+    if (!stall.attempted()) {
       throw new Error("stallNextTick: no connect was attempted, so the loop never blocked");
     }
   });
@@ -48,5 +50,5 @@ export function stallNextTick(ms) {
  * which must be the probe's. Returns a check that the stall landed, to assert after the operation.
  */
 export function stallOnConnect(ms) {
-  return armStall(ms);
+  return armStall(ms).attempted;
 }
