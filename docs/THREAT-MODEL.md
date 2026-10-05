@@ -66,6 +66,10 @@ In scope:
 - Markup in an artifact that changes what the injected review script does (`src/inject.js`).
 - Resource exhaustion that gets past the caps in `src/limits.js` rather than merely reaching them.
 
+Idle keep-alive connections have no count cap: `server.maxConnections` is unset on purpose, because any local user who can reach the loopback port could fill a count and lock the reviewer out.
+They are bounded only by the process's file-descriptor limit and the daemon's idle-out, which closes every connection after 30 minutes with no request (`idleShutdownMs` in `src/limits.js`, overridden by `POINTBACK_IDLE_MS`), and a visible review tab's heartbeat defers that idle-out.
+Before this change a local user could already hold a connection open: a connection that never sent a byte, opened against the daemon, was still open after 45 s on Node 26.10.0 and on Node 24.11.1.
+
 Out of scope:
 
 - Anything a process already running as your own user can do. That user can read `~/.pointback/server.json`; the mode bits and the Windows ACL defend against other users on the machine, not against yourself.
