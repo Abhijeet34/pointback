@@ -306,7 +306,7 @@ The CLI opens the reviewer's default browser, which is Safari on an unconfigured
 It then has a hostile page try to spend the note card's Enter, which exercises the gate those engines rely on (`docs/THREAT-MODEL.md`).
 It also presses over the page while a note has the focus and checks that the page is not hidden for it, since that press is the reviewer's own move.
 It then has a page call `focus()` out of a note in five fresh reviews and checks that the page is unloaded, that the note keeps the word typed, and that no key reaches the page (`unloadRound` in `test/engine-smoke.js`).
-Last, it writes a note, waits 6.5 s, and adds it, which WebKit used to lose when the daemon closed the idle connection the add went out on (`addAfterAnIdle`).
+Last, it writes a note, idles 6.5 s past Node's default keep-alive close, and adds it on the connection the tab already had (`addAfterAnIdle`).
 The `engines` job in `.github/workflows/cross-platform.yml` runs it every Monday and on the release pull request, WebKit on `macos-15` and Firefox on `ubuntu-24.04`, and names the engine and its version in the job summary, failed or passed.
 On the release pull request it reaches the required `checks` through `ci.yml`, so a release does not merge until both engines pass; it skips when `release.yml` calls that workflow on a push to `main`, so the tag itself waits on the platform matrix alone.
 The DevTools harness above cannot reach either engine: WebKit speaks its own inspector protocol and Firefox removed its CDP support in Firefox 141 in favour of WebDriver BiDi.

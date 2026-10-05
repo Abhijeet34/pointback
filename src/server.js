@@ -132,9 +132,10 @@ export async function serve({
   });
   server.requestTimeout = limits.pollTimeoutMaxMs + 10_000;
   server.headersTimeout = 30_000;
-  // An idle connection is never closed from this side, so the browser always closes first. WebKit
-  // sends a request on an idle connection the server is closing and never retries a POST that dies
-  // there, which lost an add after a 5 s idle (docs/ENGINEERING-NOTES.md).
+  // No idle connection is closed on Node's keep-alive timer, so the browser always closes first (the
+  // idle-out below is the one close). WebKit sends a request on an idle connection the server is
+  // closing and never retries a POST that dies there, which lost an add after a 5 s idle
+  // (docs/ENGINEERING-NOTES.md).
   server.keepAliveTimeout = 0;
   // An upgraded socket leaves the server's own connection tracking, so these are closed by hand.
   const sockets = new Set();
