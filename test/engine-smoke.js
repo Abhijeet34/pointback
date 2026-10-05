@@ -354,12 +354,12 @@ async function unloadRound(page, lab, engine, round) {
       "focusout",
       (event) => {
         if (event.target.id === "cardText")
-          moves.out ??= performance.now();
+          globalThis.moves.out ??= performance.now();
       },
       true,
     );
-    new MutationObserver(() => {
-      if (!document.getElementById("cover").hidden) moves.shown ??= performance.now();
+    new globalThis.MutationObserver(() => {
+      if (!document.getElementById("cover").hidden) globalThis.moves.shown ??= performance.now();
     }).observe(document.getElementById("cover"), { attributes: true, attributeFilter: ["hidden"] });
   });
   const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
@@ -389,7 +389,9 @@ async function unloadRound(page, lab, engine, round) {
     );
   }
   const probe = await keysSettle(keys, `${engine} round ${round}: the probe key reports to settle`);
-  const ms = Math.round(await page.evaluate(() => moves.shown - moves.out));
+  const ms = Math.round(
+    await page.evaluate(() => globalThis.moves.shown - globalThis.moves.out),
+  );
   console.log(
     `${engine} round ${round}: probe key events reaching the page ${probe} of 4 (2 keys); move to unloaded ${ms} ms`,
   );
