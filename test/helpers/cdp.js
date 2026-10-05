@@ -204,9 +204,10 @@ function removeProfile(profile) {
 
 export async function launchBrowser(executable, { width = 1200, height = 800 } = {}) {
   const deadline = Date.now() + LAUNCH_MS;
-  // Windows only, the one platform it was measured on; the macOS executable's own directory holds
-  // none of the browser's code.
-  if (process.platform === "win32") await readInstall(executable, deadline);
+  // Windows, and only a browser this repository knows by path: a BROWSER that is a bare name or sits in
+  // a large folder would otherwise read that whole folder, and the deadline would blame the disk for it.
+  if (process.platform === "win32" && KNOWN_BROWSERS.includes(executable))
+    await readInstall(executable, deadline);
   const profile = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-browser-"));
   const child = spawn(
     executable,
