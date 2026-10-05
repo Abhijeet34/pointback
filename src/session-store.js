@@ -444,11 +444,7 @@ export class SessionStore {
     const session = this.#sessions.get(key);
     if (!session) return 0;
     if (!existsSync(session.file)) {
-      try {
-        this.#gone(session);
-      } catch (error) {
-        if (!(error instanceof HttpError)) throw error;
-      }
+      this.#gone(session);
       return session.revision;
     }
     session.revision += 1;
@@ -624,7 +620,11 @@ export class SessionStore {
 
   /** Tells every open tab the file is gone, and returns the answer the CLI prints for it. */
   #gone(session) {
-    this.#events.emit(session.key, { type: "gone" });
+    try {
+      this.#events.emit(session.key, { type: "gone" });
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+    }
     // Nothing the page can do waits on the agent any more, so it no longer shows it working.
     this.#clearWorking(session.key);
     return { status: "gone", file: session.file };
@@ -641,13 +641,7 @@ export class SessionStore {
       // An answer inside a grace ends it, going straight from listening to what the answer means.
       if (this.#takeLingering(key)) this.#release(key, immediate.status === "feedback");
       else if (immediate.status === "feedback") this.#setWorking(key);
-      if (immediate.status === "gone") {
-        try {
-          this.#gone(this.get(key));
-        } catch (error) {
-          if (!(error instanceof HttpError)) throw error;
-        }
-      }
+      if (immediate.status === "gone") this.#gone(this.get(key));
       return Promise.resolve(immediate);
     }
     if (this.#activePolls >= limits.concurrentPolls)
