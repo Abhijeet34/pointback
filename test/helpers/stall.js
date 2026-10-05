@@ -47,8 +47,9 @@ export function stallNextTick(ms) {
 /**
  * As stallNextTick, for a probe that is not issued yet when the stall is armed, such as one that
  * follows a response the test's own server sends. The stall lands on the next client socket's connect,
- * which must be the probe's. Returns a check that the stall landed, to assert after the operation.
+ * which must be the probe's. Returns { attempted, disarm }: attempted() says the stall landed, and disarm()
+ * releases the subscription when no connect came, so it cannot outlive its test.
  */
 export function stallOnConnect(ms) {
-  return armStall(ms).attempted;
+  return armStall(ms);
 }

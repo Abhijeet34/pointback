@@ -47,8 +47,12 @@ test("a stop whose refusal is read after a stall past its deadline reports the d
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const info = { port: server.address().port, token: "c".repeat(64), pid: process.pid };
-  assert.equal(await stopServer(dir, info, { proven: true, pid: process.pid }), true);
-  assert.equal(stalled(), true, "the stall landed on the stop probe's connect");
+  try {
+    assert.equal(await stopServer(dir, info, { proven: true, pid: process.pid }), true);
+    assert.equal(stalled.attempted(), true, "the stall landed on the stop probe's connect");
+  } finally {
+    stalled?.disarm();
+  }
 });
 
 test("a stop whose daemon never goes is given up at its wall backstop, though starvation spends no running time", async () => {
