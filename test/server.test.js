@@ -28,6 +28,19 @@ import { watchAvailable } from "./helpers/watch.js";
 
 let dir, srv, base, headers, key, artifactUrl;
 
+const sendOn = (agent, url, { method, headers, body, onSocket }) =>
+  new Promise((resolve, reject) => {
+    const req = request(url, { method, agent, headers });
+    if (onSocket) req.on("socket", onSocket);
+    req.on("error", reject);
+    req.on("response", (res) => {
+      let text = "";
+      res.on("data", (d) => (text += d));
+      res.on("end", () => resolve({ status: res.statusCode, reused: req.reusedSocket, text }));
+    });
+    req.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+
 before(async () => {
   dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-server-"));
   srv = await serve({ stateDir: dir, port: 0, idleMs: 60_000 });
@@ -697,16 +710,7 @@ test("the reviewer ends the review with the queue attached, and only a reopen re
 test("an idle connection is still open past the 5 s Node closes one at by default, so an add reuses it", async () => {
   const agent = new Agent({ keepAlive: true, maxSockets: 1 });
   const send = (method, path, body) =>
-    new Promise((resolve, reject) => {
-      const req = request(base + path, { method, agent, headers: { ...headers, origin: base } });
-      req.on("error", reject);
-      req.on("response", (res) => {
-        let text = "";
-        res.on("data", (d) => (text += d));
-        res.on("end", () => resolve({ status: res.statusCode, reused: req.reusedSocket, text }));
-      });
-      req.end(body === undefined ? undefined : JSON.stringify(body));
-    });
+    sendOn(agent, base + path, { method, headers: { ...headers, origin: base }, body });
   let added;
   try {
     assert.equal((await send("GET", "/health")).status, 200);
@@ -903,22 +907,20 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
   const agent = new Agent({ keepAlive: true, maxSockets: 1 });
   let tabConnectionClosed = false;
   const watchedSockets = new WeakSet();
-  const tab = (method, path, body) =>
-    new Promise((resolve, reject) => {
-      const req = request(`http://127.0.0.1:${held.port}${path}`, { method, agent, headers: info });
-      req.on("socket", (socket) => {
-        if (watchedSockets.has(socket)) return;
-        watchedSockets.add(socket);
-        socket.once("close", () => (tabConnectionClosed = true));
-      });
-      req.on("error", reject);
-      req.on("response", (res) => {
-        let text = "";
-        res.on("data", (d) => (text += d));
-        res.on("end", () => resolve({ status: res.statusCode, json: () => JSON.parse(text) }));
-      });
-      req.end(body === undefined ? undefined : JSON.stringify(body));
+  const onSocket = (socket) => {
+    if (watchedSockets.has(socket)) return;
+    watchedSockets.add(socket);
+    socket.once("close", () => (tabConnectionClosed = true));
+  };
+  const tab = async (method, path, body) => {
+    const res = await sendOn(agent, `http://127.0.0.1:${held.port}${path}`, {
+      method,
+      headers: info,
+      body,
+      onSocket,
     });
+    return { status: res.status, json: () => JSON.parse(res.text) };
+  };
   const session = (await tab("POST", "/api/sessions", { file: fixture })).json();
   const watching = new WebSocket(`ws://127.0.0.1:${held.port}/api/${session.key}/events`, [
     "events",
