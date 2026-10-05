@@ -56,7 +56,7 @@ In scope:
   The residual, for a word typed at once before the unload lands, was 0 of 15 WebKit 26.6 rounds and 1 key event in 1 of 15 Firefox 155.0 rounds (run 1, round 2).
   The time from the page's move to the unloaded line was 0 to 2 ms in WebKit 26.6 and 4 to 7 ms in Firefox 155.0.
   On the same head the Chromium browser suite (`test/browser.test.js`) passed 77 of 77 (label "browser suite on fix head 5c66d57").
-  The same step's control, with no note open, reported the page's own 4 key events in each engine in each of those three runs.
+  The smoke's control step (`keysReachThePage` in `test/engine-smoke.js`), with no note open, reported the page's own 4 key events in each engine in each of those three runs.
   A move of the focus from a note to a chrome control leaves the page alone in the same step, and in Chromium the window losing focus does too (`test/browser.test.js`).
   A press over the page while a note has the focus is not taken for the page's own move (`test/browser.test.js`, in Chromium).
   The engine smoke's press-over-the-page step (`pressOverThePage` in `test/engine-smoke.js`) checks this on every scheduled run.
