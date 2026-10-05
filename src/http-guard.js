@@ -117,8 +117,8 @@ export function chromeHeaders(host) {
 }
 
 /**
- * The wrapper frame runs only its own script, which sets its few styles itself, frames only the page under review, which is
- * served under the chrome's name, and only the chrome may frame it.
+ * The wrapper frame runs only its own script, which sets its few styles itself, frames only the
+ * page under review, which is served under the chrome's name, and only the chrome may frame it.
  */
 export function wrapperHeaders(host) {
   const chrome = `http://${pairedHost(host)}`;

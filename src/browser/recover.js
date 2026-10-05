@@ -13,7 +13,9 @@
   try {
     started = sessionStorage.getItem(key) !== null;
     sessionStorage.removeItem(key);
-  } catch {}
+  } catch {
+    // Storage that cannot be read stays "started", so a file that fails here is never reloaded.
+  }
   let held = () => false;
   let reloading = false;
   let waiting = false;
