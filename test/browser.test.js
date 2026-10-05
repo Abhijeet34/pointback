@@ -2362,6 +2362,59 @@ test(
   },
 );
 
+for (const late of [false, true]) {
+  test(
+    late
+      ? "a page that hears the card close late while the window is away leaves the focus in a note being edited in the margin, when the chrome checks late"
+      : "a page that hears the card close late while the window is away leaves the focus in a note being edited in the margin",
+    { skip: !executable && "no browser found" },
+    async () => {
+      const { file } = copyOfFixture();
+      const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+      const held = await holdCardClose(artifact);
+      await countCloseAcks(page);
+      let targetId;
+      try {
+        await noteOn(page, artifact, "#title", "Shorter title");
+        await held.reached();
+        await clickOn(page, "document.querySelector('.mark-edit')");
+        await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+        await page.type(", four words at most");
+        if (late) await lateWhileAway(page);
+        await page.eval(`globalThis.handoffs = [];
+          new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
+            attributes: true,
+            attributeFilter: ["data-handoff"],
+          })`);
+        ({ targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" }));
+        await page.browser.send("Target.activateTarget", { targetId });
+        await until(async () => !(await page.eval("document.hasFocus()")), {
+          what: "the review window to lose focus",
+        });
+      } finally {
+        await held.release();
+      }
+      await page.waitFor("window.closeAcks === 1");
+      await page.waitFor("handoffs.length >= 2");
+      assert.deepEqual(
+        JSON.parse(await page.eval("JSON.stringify(handoffs.slice(0, 2))")),
+        ["returning", "settled"],
+        "the late refocus was taken back while the window was away",
+      );
+      await page.front();
+      await page.eval("new Promise((resolve) => setTimeout(resolve))");
+      await page.browser.send("Target.closeTarget", { targetId });
+      assert.deepEqual(
+        await page.eval("[document.activeElement.className, document.activeElement.value]"),
+        ["hw-textarea mark-edit-text", "Shorter title, four words at most"],
+        "the editor kept the focus and its words",
+      );
+      await assertPageStays(page);
+      await page.close();
+    },
+  );
+}
+
 test(
   "a late pull after an Answer card opens is taken back to the card text",
   { skip: !executable && "no browser found" },
