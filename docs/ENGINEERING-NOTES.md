@@ -184,7 +184,7 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   That deadline is sized over the slowest measured read (82.5 s in run 37342047661 and 86.2 s in hunt 37344599638) and the slowest measured unread launch (about 100 s, run 37341154101).
   There is one attempt, not two, because a slow launch was still coming up, and two 45 s attempts never fit the 60 s test timeout.
   `LAUNCH_BOUND_MS` is 223 s: `LAUNCH_MS` plus the 10 s connect, 30 s first command, 3 s terminate and 30 s profile removal, the launcher's worst case including its failure path, where a failure quotes the end of Chrome's log.
-  `before` in `test/browser.test.js` launches the browser before it opens the shared review, with a hook timeout of `LAUNCH_BOUND_MS` plus 30 s (253 s) for opening it, so the launcher reports a failure itself and kills the browser it spawned.
+  `before` in `test/browser.test.js` launches the browser before it opens the shared review, with a hook timeout of `LAUNCH_BOUND_MS` plus 30 s for opening it plus a 10 s margin (263 s), so the launcher reports a failure itself and kills the browser it spawned.
 - A flake is proved absent by a count, never by a green tick.
   `.github/workflows/windows-flake-hunt.yml` is the instrument: dispatch it and read twenty independent verdicts off the job list.
   The bar this repository has used and should keep using is the whole suite, twenty Windows runs, before and after: 17/20 on `main` (run 33874545761), then 18/20, 20/20 and 19/20 across the passes that followed (runs 33875622583, 33876393712, 33877405478) - each red attempt naming something the pass before it could not see - and 40/40 over the two runs that closed it (33878156179, 33878425638).

@@ -122,13 +122,16 @@ test("a launch that runs out of budget says so when its browser wrote no log", a
 // before that idles its daemon out (POINTBACK_IDLE_MS) before any tab has reached it. The hook's own
 // timeout outlasts both bounded waits, so a failed launch reports itself and kills its browser.
 const OPEN_MS = 30_000;
+// Slack for spawning, creating the profile, the 250 ms cleanup poll and the wait after SIGKILL, so the
+// hook never cuts its own launch short.
+const MARGIN_MS = 10_000;
 before(
   async () => {
     if (!executable) return;
     browser = await launchBrowser(executable, { width: 800, height: 600 });
     opened = (await cli([fixture], lab.env, { timeoutMs: OPEN_MS })).json();
   },
-  { timeout: LAUNCH_BOUND_MS + OPEN_MS },
+  { timeout: LAUNCH_BOUND_MS + OPEN_MS + MARGIN_MS },
 );
 after(async () => {
   await browser?.close();

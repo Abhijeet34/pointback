@@ -141,7 +141,12 @@ export async function devToolsUrl(child, executable, profile, deadline = Date.no
     if (/^\d+$/.test(port ?? "") && path?.startsWith("/")) return `ws://127.0.0.1:${port}${path}`;
     await sleep(STARTUP_POLL_MS);
   }
-  const log = read(join(profile, LOG_FILE)).trim();
+  let log;
+  try {
+    log = readFileSync(join(profile, LOG_FILE), "utf8").trim();
+  } catch {
+    log = "";
+  }
   throw new Error(
     `${executable} started but was not detected: it is still running and wrote no readable ` +
       `DevTools port to ${portFile} within its ${LAUNCH_MS} ms launch.${unreadable} ` +
