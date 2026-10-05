@@ -82,8 +82,8 @@ test("a DevTools port file that cannot be read yet is waited for, not thrown out
   rmSync(profile, { recursive: true, force: true });
 });
 
-// A browser that never writes its port inside the budget is reported with the end of its own log, or
-// with the fact that it wrote none. A near deadline makes the budget run out here, not 150 s later.
+// A browser that never writes its port inside the budget is reported with the end of its own log,
+// or with the fact that it wrote none. A near deadline makes the budget run out here, not 150 s later.
 async function outOfBudget(profile) {
   const child = { exitCode: null, signalCode: null, stderr: { on() {} } };
   return devToolsUrl(child, "a browser that is slow", profile, Date.now() + 300).then(
@@ -118,12 +118,13 @@ test("a launch that runs out of budget says so when its browser wrote no log", a
   }
 });
 
-// The browser first: a cold windows-2025 runner can take minutes to launch one, and a review opened
-// before that idles its daemon out (POINTBACK_IDLE_MS) before any tab has reached it. The hook's own
-// timeout outlasts both bounded waits, so a failed launch reports itself and kills its browser.
+// The browser first: a cold windows-2025 runner can take minutes to launch one, and a review
+// opened before that idles its daemon out (POINTBACK_IDLE_MS) before any tab has reached it. The
+// hook's own timeout outlasts both bounded waits, so a failed launch reports itself and kills its
+// browser.
 const OPEN_MS = 30_000;
-// Slack for spawning, creating the profile, the 250 ms cleanup poll and the wait after SIGKILL, so the
-// hook never cuts its own launch short.
+// Slack for spawning, creating the profile, the 250 ms cleanup poll and the wait after SIGKILL, so
+// the hook never cuts its own launch short.
 const MARGIN_MS = 10_000;
 before(
   async () => {

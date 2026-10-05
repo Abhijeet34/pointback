@@ -44,7 +44,7 @@ const DESCRIBE_MS = 5000;
  * exiting is not the same fact.
  */
 const PROFILE_REMOVE_MS = 30_000;
-/** Where in its profile the browser logs, so a launch that never comes up can say how far it got. */
+/** Where in its profile the browser logs, so a launch that never starts can say how far it got. */
 const LOG_FILE = "chrome_debug.log";
 /** Enough of that log to show where a launch stopped. */
 const LOG_LINES_KEPT = 10;
@@ -209,8 +209,9 @@ function removeProfile(profile) {
 
 export async function launchBrowser(executable, { width = 1200, height = 800 } = {}) {
   const deadline = Date.now() + LAUNCH_MS;
-  // Windows, and only a browser this repository knows by path: a BROWSER that is a bare name or sits in
-  // a large folder would otherwise read that whole folder, and the deadline would blame the disk for it.
+  // Windows, and only a browser this repository knows by path: a BROWSER that is a bare name or
+  // sits in a large folder would otherwise read that whole folder, and the deadline would blame
+  // the disk for it.
   if (process.platform === "win32" && KNOWN_BROWSERS.includes(executable))
     await readInstall(executable, deadline);
   const profile = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-browser-"));
