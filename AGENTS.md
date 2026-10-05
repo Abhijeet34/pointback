@@ -18,6 +18,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   Never import Playwright into `test/*.test.js`; WebKit and Firefox are `npm run smoke` only.
   The smoke gates the release pull request, so it opens a review with `open` (the chrome's `ready`), never `page.goto` (`docs/ENGINEERING-NOTES.md`).
   Drive Annotate with the CDP harness, never chrome-devtools-axi, which never moves focus into the out-of-process frame.
+  The harness's launch keeps the browser out of the system keychain (`--use-mock-keychain`, `--password-store=basic` in `startBrowser`); without them macOS asks the developer for their login password mid-suite.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
   The browser suite shares one daemon, which never evicts a review holding notes and refuses an open past `limits.sessions`; its `afterEach` releases what each test leaves.
 - A test that mocks `setTimeout` makes its HTTP requests with `node:http`, never `fetch`, which stalls on a reused connection under the mock on Node 24.20.0 (`docs/ENGINEERING-NOTES.md`).
@@ -30,6 +31,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - A test driving a tab it sent to the background calls `page.front()` first, and an animation assertion emulates `prefers-reduced-motion: no-preference` first.
 - A key the chrome acts on is `preventDefault`ed, or headless Chromium on macOS freezes.
 - The browser suite prints `browser suite: running against <path>` or `browser suite: SKIPPED`; a skip needs an explicit `<PREFIX>BROWSER=none`.
+- The browser suite launches Chrome once, before it opens its shared review, against one `LAUNCH_MS` deadline that its `before` hook outlasts (`LAUNCH_BOUND_MS` in `test/helpers/cdp.js`); a slow first launch on `windows-2025` is a cold disk, not a reason for a second attempt (`docs/ENGINEERING-NOTES.md`).
 - `README.md` is a browser-suite fixture: its Install paragraph opens with `` `parse5` ``.
 - The vendored house files under `src/browser/house/` are never edited; move the pin with `node scripts/sync-house.js`.
   The chrome uses `--hw-*` roles and rem sizes only (`src/browser/chrome.css`).
