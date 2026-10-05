@@ -214,7 +214,7 @@ No credential was stored to do that, and none is stored anywhere on this path.
 The first is on the release pull request, and it keeps `main` releasable.
 The `cross-platform` job in `ci.yml` calls the reusable workflow, guarded on `startsWith(github.head_ref, 'release-please--')` and on the head repository matching this one, and reaches branch protection through `checks` like every other job.
 Every other pull request skips it and pays nothing.
-The same call runs the reusable workflow's `engines` job, the WebKit and Firefox smoke (`test/engine-smoke.js`), whose `if:` admits the release pull request and the weekly run but not `release.yml`'s push, so a browser that breaks the core act holds the release at its merge and never strands a tag.
+The same call runs the reusable workflow's `engines` job, the WebKit and Firefox smoke (`test/engine-smoke.js`), whose `if:` admits the release pull request, the weekly run and dispatch, but not `release.yml`'s push, so a browser that breaks the core act holds the release at its merge and never strands a tag.
 That the guard fires was measured on a throwaway pull request from a `release-please--` branch: run `33853207426` reported seven jobs green - `check`, `secret scan`, `dependency review`, all three `cross-platform` legs, and `checks` - where the same tree on an ordinary branch reports four and skips the matrix.
 
 The second is on the tag, and it is the one that took two empty releases to get right.
