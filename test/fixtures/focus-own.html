@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Search settings</title>
+  </head>
+  <body>
+    <main>
+      <h1 id="t">Search settings</h1>
+      <p id="p1">Results are ranked by how recently a page changed.</p>
+      <input id="q" aria-label="Search" autofocus />
+      <button id="go" type="button">Search</button>
+    </main>
+    <script>
+      // An ordinary page: it focuses its own field when it loads and when its button is clicked.
+      addEventListener("load", () => document.getElementById("q").focus());
+      document.getElementById("go").addEventListener("click", () => {
+        globalThis.clicked = true;
+        document.getElementById("q").focus();
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Incident review</title>
+    <script>
+      // While `calling` is set, the page moves the focus to its own field every 20 ms. Every key event
+      // the page receives is reported to the console as it arrives, in the capture phase, so the test
+      // process hears it even after the frame is removed. A focus() on an element already focused does
+      // nothing, so it lets go first; it keeps the page where the reviewer scrolled it.
+      globalThis.calling = false;
+      for (const type of ["keydown", "keyup"]) {
+        addEventListener(
+          type,
+          (event) => console.log("focus-calls key", event.type, event.key),
+          true,
+        );
+      }
+      setInterval(() => {
+        if (!globalThis.calling) return;
+        const field = document.getElementById("field");
+        field.blur();
+        field.focus({ preventScroll: true });
+      }, 20);
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1 id="t">Incident review</h1>
+      <p id="p1">The cache was cold for an hour after the deploy.</p>
+      <p id="p2">Alerts fired late because the threshold was too high.</p>
+      <input id="field" aria-label="Search" />
+      <p id="p3" style="margin: 150vh 0">Follow-ups are tracked in the incident log.</p>
+    </main>
+  </body>
+</html>

@@ -5,15 +5,20 @@
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
-/* global document, location, parent, nonce */
+/* global document, location, parent, nonce, getComputedStyle */
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { firefox, webkit } from "playwright-core";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
+import { until } from "./helpers/wait.js";
 
 const HOSTILE = new URL("./fixtures/hostile-after-gesture.html", import.meta.url);
+const FOCUS_CALLS = new URL("./fixtures/focus-calls.html", import.meta.url);
+const UNLOAD_ROUNDS = 5;
+const UNLOADED_LINE =
+  "This page was unloaded because it took the keyboard from your note. It comes back when you finish the note.";
 
 const ENGINES = { webkit, firefox };
 /** The longest any one Playwright wait may take; nothing in the act is slow, so a miss is a hang. */
@@ -32,7 +37,17 @@ async function smoke(engine) {
     await act(browser, (page) => enterIsNotThePages(page, lab));
     await act(browser, (page) => endKeepsTheCard(page, lab));
     await act(browser, (page) => readingPlace(page, lab, engine));
-    return `${named} passed`;
+    await act(browser, (page) => pressOverThePage(page, lab));
+    const control = await act(browser, (page) => keysReachThePage(page, lab, engine));
+    const probes = [];
+    const ms = [];
+    for (let round = 1; round <= UNLOAD_ROUNDS; round += 1) {
+      const result = await act(browser, (page) => unloadRound(page, lab, engine, round));
+      probes.push(result.probe);
+      ms.push(result.ms);
+    }
+    await act(browser, (page) => focusLeavesNoteAlone(page, lab, engine));
+    return `${named} passed; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds; probe keys reaching the page per round ${probes.join(", ")}; move to unloaded ms per round ${ms.join(", ")}; the key channel reported ${control} keys of the page's own`;
   } catch (error) {
     throw Object.assign(error, { named });
   } finally {
@@ -50,7 +65,7 @@ async function act(browser, fn) {
   const page = await browser.newPage();
   page.setDefaultTimeout(STEP_MS);
   try {
-    await fn(page);
+    return await fn(page);
   } catch (error) {
     const shown = await page
       .evaluate(() => ({
@@ -226,6 +241,199 @@ async function readingPlace(page, lab, engine) {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * A press over the page while a note has the focus is the reviewer's own move into the page, so the
+ * engine must name the frame as where the focus went; if it does not, the chrome holds the page as
+ * a steal and the page is not shown.
+ */
+async function pressOverThePage(page, lab) {
+  const { session } = (await cli([fixture], lab.env)).json();
+  await open(page, session.url);
+  await page.waitForFunction(() => document.body.dataset.annotate === "1");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  const spot = await page.evaluate(() => {
+    const frame = document.getElementById("artifact").getBoundingClientRect();
+    const card = document.getElementById("card").getBoundingClientRect();
+    const points = [
+      [0.1, 0.9],
+      [0.9, 0.9],
+      [0.1, 0.1],
+      [0.9, 0.1],
+    ].map(([x, y]) => ({ x: frame.left + frame.width * x, y: frame.top + frame.height * y }));
+    return points.find(
+      ({ x, y }) => x < card.left || x > card.right || y < card.top || y > card.bottom,
+    );
+  });
+  assert.ok(spot, "a point over the page outside the note card");
+  await page.mouse.click(spot.x, spot.y);
+  await page.waitForFunction(() => document.activeElement?.id === "artifact");
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
+      cover: document.getElementById("cover").hidden,
+    })),
+    { shown: true, cover: true },
+    "a press over the page is the reviewer's own move into it, so the page is not held",
+  );
+}
+
+/** Every key the fixture reports, as `keydown o`, in the order the page received it. */
+function listenForKeys(page) {
+  const keys = [];
+  page.on("console", (message) => {
+    const text = message.text();
+    if (text.startsWith("focus-calls key ")) keys.push(text.slice("focus-calls key ".length));
+  });
+  return keys;
+}
+
+/**
+ * Returns the key reports once none has arrived for eight polls in a row (about 200 ms), so a console
+ * message still in flight is counted before the count is read.
+ */
+async function keysSettle(keys, what) {
+  let last = -1;
+  let still = 0;
+  await until(
+    () => {
+      still = keys.length === last ? still + 1 : 0;
+      last = keys.length;
+      return still >= 8;
+    },
+    { what, timeoutMs: STEP_MS },
+  );
+  return keys.length;
+}
+
+/** Opens a private copy of the focus fixture as its own review, in the act's page. */
+async function openFocusFixture(page, lab, dirName) {
+  const dir = join(lab.dir, dirName);
+  mkdirSync(dir);
+  const file = join(dir, "incident.html");
+  copyFileSync(FOCUS_CALLS, file);
+  const { session } = (await cli([file], lab.env)).json();
+  await open(page, session.url);
+  await page.waitForFunction(() => document.body.dataset.annotate === "1");
+}
+
+/**
+ * The page's own keys, with no note open, reach the console channel: the zero-key checks below are
+ * trusted only once this has been seen to report a key in this engine.
+ */
+async function keysReachThePage(page, lab, engine) {
+  await openFocusFixture(page, lab, "keys");
+  const keys = listenForKeys(page);
+  await page.evaluate(() => document.getElementById("annotate").click());
+  await page.waitForFunction(() => document.body.dataset.annotate === "0");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#field").click();
+  await page.keyboard.type("ok");
+  await until(async () => keys.length >= 4, {
+    what: `${engine}: the key channel to report the page's own keys`,
+    timeoutMs: STEP_MS,
+  });
+  assert.deepEqual(keys.slice(0, 4), ["keydown o", "keyup o", "keydown k", "keyup k"], engine);
+  return keys.length;
+}
+
+/**
+ * One fresh review per round: a page that calls focus() out of an open note takes the keyboard in
+ * every engine, so the chrome unloads it there too; the reviewer's words land in the note, the page
+ * is out until the note is done, and no key reaches the page.
+ */
+async function unloadRound(page, lab, engine, round) {
+  await openFocusFixture(page, lab, `focus-${round}`);
+  const keys = listenForKeys(page);
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.evaluate(() => {
+    globalThis.moves = {};
+    document.addEventListener(
+      "focusout",
+      (event) => {
+        if (event.target.id === "cardText") globalThis.moves.out ??= performance.now();
+      },
+      true,
+    );
+    new globalThis.MutationObserver(() => {
+      if (!document.getElementById("cover").hidden) globalThis.moves.shown ??= performance.now();
+    }).observe(document.getElementById("cover"), { attributes: true, attributeFilter: ["hidden"] });
+  });
+  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
+  await artifact.evaluate(() => (globalThis.calling = true));
+  await page.keyboard.type("on");
+  const unloaded = await page
+    .waitForFunction(
+      (line) =>
+        !document.getElementById("cover").hidden &&
+        document.getElementById("coverText").textContent === line,
+      UNLOADED_LINE,
+    )
+    .then(
+      () => true,
+      () => false,
+    );
+  if (!unloaded) {
+    const seen = await page.evaluate(() => ({
+      focus: document.activeElement?.id,
+      cover: document.getElementById("cover").hidden
+        ? "hidden"
+        : document.getElementById("coverText").textContent,
+      frame: getComputedStyle(document.getElementById("artifact")).display,
+    }));
+    assert.fail(
+      `${engine} round ${round}: the page took the focus from the note and was not unloaded; the focus is on #${seen.focus}, the cover is ${seen.cover}, the frame display is ${seen.frame}, and ${keys.length} key event(s) reached the page: ${keys.join("; ")}`,
+    );
+  }
+  const probe = await keysSettle(keys, `${engine} round ${round}: the probe key reports to settle`);
+  const ms = Math.round(await page.evaluate(() => globalThis.moves.shown - globalThis.moves.out));
+  console.log(
+    `${engine} round ${round}: probe key events reaching the page ${probe} of 4 (2 keys); move to unloaded ${ms} ms`,
+  );
+  await page.evaluate(() => (document.getElementById("cardText").value = ""));
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  const quiet = await keysSettle(keys, `${engine} round ${round}: the probe key reports to settle`);
+  await page.keyboard.type("once");
+  const text = await page.evaluate(() => document.getElementById("cardText").value);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(
+    () => document.getElementById("card").hidden && document.getElementById("cover").hidden,
+  );
+  await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
+  assert.deepEqual(
+    keys.slice(quiet),
+    [],
+    `${engine} round ${round}: the page received key events for the asserted word: ${keys.slice(quiet).join("; ")}`,
+  );
+  assert.equal(
+    text,
+    "once",
+    `${engine} round ${round}: the note reads ${JSON.stringify(text)}, not the word typed`,
+  );
+  return { probe, ms };
+}
+
+/** A move of the focus from an open note to a chrome control leaves the page where it is. */
+async function focusLeavesNoteAlone(page, lab, engine) {
+  await openFocusFixture(page, lab, "leaves");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.evaluate(() => document.getElementById("annotate").focus());
+  await page.waitForFunction(() => document.activeElement?.id === "annotate");
+  // Two tasks: the check the focus move starts runs in one, so the second means it has run.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0)));
+  const state = await page.evaluate(() => ({
+    card: !document.getElementById("card").hidden,
+    cover: document.getElementById("cover").hidden,
+    frame: getComputedStyle(document.getElementById("artifact")).display,
+  }));
+  assert.deepEqual(
+    state,
+    { card: true, cover: true, frame: "block" },
+    `${engine}: a move of the focus from the note to a chrome control unloaded the page`,
+  );
 }
 
 const requested = process.argv.slice(2);
