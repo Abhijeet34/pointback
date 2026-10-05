@@ -3704,8 +3704,8 @@ test(
 );
 
 /**
- * Holds each health check `page` makes until `release` lets it through to the daemon, and refuses
- * each API call until then. Lists every request that carries `token`, as `tokenRequests` does.
+ * Holds each health check `page` makes, not its heartbeats, until `release` lets it through to the
+ * daemon, and refuses each API call until then. Lists every request that carries `token`.
  */
 async function holdHealth(page, port, token) {
   const carried = [];
@@ -3721,10 +3721,10 @@ async function holdHealth(page, port, token) {
     }
     if (method !== "Fetch.requestPaused") return;
     const { requestId, request } = params;
-    const { pathname } = new URL(request.url);
+    const { pathname, searchParams } = new URL(request.url);
     if (carries(request)) carried.push(`${request.method} ${pathname}`);
-    if (pathname === "/health") held.push(requestId);
-    else if (refusing)
+    if (pathname === "/health" && searchParams.has("challenge")) held.push(requestId);
+    else if (refusing && pathname.startsWith("/api/"))
       page
         .send("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" })
         .catch(() => {});
