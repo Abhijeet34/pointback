@@ -60,7 +60,7 @@ In scope:
   A move of the focus from a note to a chrome control leaves the page alone in the same step, and in Chromium the window losing focus does too (`test/browser.test.js`).
   A press over the page while a note has the focus is not taken for the page's own move (`test/browser.test.js`, in Chromium).
   The engine smoke's press-over-the-page step (`pressOverThePage` in `test/engine-smoke.js`) checks this on every scheduled run.
-  A window that comes back with the page holding the focus is measured only in Chromium (`test/browser.test.js`): Playwright could not make the review window lose focus in WebKit or Firefox, so that path is unmeasured in those engines.
+  A window that comes back with the page holding the focus is measured only in Chromium (`test/browser.test.js`); the engine smoke has no window-return step, so that path is unmeasured in WebKit and Firefox.
 - State written where another user on the machine can read it: outside the state directory, with a mode other than `0600` in a `0700` directory on POSIX, or on Windows with any ACL entry beyond the current user (`src/state-dir.js`).
 - Any outbound connection opened by the process.
 - Markup in an artifact that changes what the injected review script does (`src/inject.js`).
