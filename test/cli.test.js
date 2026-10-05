@@ -564,6 +564,41 @@ test("a note sent from a tab that outlived its daemon reaches the agent after co
   }
 });
 
+// The interleaving behind the concurrent-restart failures in hunt 37251439894 (attempts 2, 8, 19):
+// an open's first look at the stopped daemon's record finds nothing, a sibling open's daemon then
+// publishes its own record, and the open's second look took that live daemon of this very version
+// for an older one that "did not stop". The stopped daemon's port here publishes the sibling's
+// record at the moment it is probed, so the open meets exactly that order every time.
+test("an open whose first look misses a sibling's daemon starting uses that daemon, never refuses it as older", async () => {
+  const racing = isolatedEnv();
+  let sibling;
+  let probes = 0;
+  const stopped = createServer((req) => {
+    probes += 1;
+    if (probes === 1) writeFileSync(join(racing.dir, "server.json"), JSON.stringify(sibling));
+    req.socket.destroy();
+  });
+  try {
+    assert.equal((await cli([fixture], racing.env)).code, 0);
+    sibling = racing.serverInfo();
+    await new Promise((r) => stopped.listen(0, "127.0.0.1", r));
+    const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+    writeFileSync(
+      join(racing.dir, "server.json"),
+      JSON.stringify({ ...sibling, pid: exited, port: stopped.address().port }),
+    );
+
+    const opened = await cli([copies(1)[0]], racing.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(probes, 1, "the stopped daemon's port was looked at once");
+    assert.equal(new URL(opened.json().session.url).port, String(sibling.port), "on the sibling");
+    assert.equal(racing.serverInfo().pid, sibling.pid, "and no second daemon took the record");
+  } finally {
+    stopped.close();
+    await racing.stop();
+  }
+});
+
 // A start that finds a daemon still holding the directory exits 0 and leaves it to that daemon;
 // when that daemon was on its way out and never answers, the CLI has to start another itself.
 test("an open that meets a daemon on its way out starts the next one", async () => {

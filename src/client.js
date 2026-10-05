@@ -64,16 +64,23 @@ export async function ensureServer(stateDir, environment = process.env) {
     new Error(
       `an older ${name} daemon${Number.isInteger(pid) ? ` (pid ${pid})` : ""} on port ${port} did not stop; end that process and retry`,
     );
+  const serves = (status) => status?.proven && status.version === version;
   const existing = readServerInfo(stateDir);
   if (existing) {
     const status = await health(existing);
-    if (status?.proven && status.version === version) return existing;
+    if (serves(status)) return existing;
     if (status?.proven || (status?.app === name && recordHolds(existing, status)))
       await stopServer(stateDir, existing, status);
   }
   // A second daemon beside one that did not stop would split the directory, so the start refuses.
+  // The record is read afresh there, and a concurrent start's daemon may have published it since
+  // the look above: one that proves the token and runs this version is used, never named as older.
   const holding = await refusingServer(stateDir);
-  if (holding) throw older(holding);
+  if (holding) {
+    const info = readServerInfo(stateDir);
+    if (info && serves(await health(info))) return info;
+    throw older(holding);
+  }
   const log = openSync(join(stateDir, "server.log"), "a", 0o600);
   const start = () => {
     const started = spawn(process.execPath, [bin, "server"], {
@@ -99,8 +106,7 @@ export async function ensureServer(stateDir, environment = process.env) {
   for (;;) {
     probes += 1;
     const info = readServerInfo(stateDir);
-    const status = info && (await health(info));
-    if (status?.proven && status.version === version) return info;
+    if (info && serves(await health(info))) return info;
     if (child.exitCode !== null && child.exitCode !== 0) break;
     if (child.exitCode === 0 && !(await daemonHolds(stateDir))) child = start();
     if (probes >= START_PROBES && Date.now() - startedAt >= START_TIMEOUT_MS) break;
