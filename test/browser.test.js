@@ -1238,9 +1238,16 @@ test(
       what: "the page to take the focus in its own field while the window is inactive",
     });
     await page.front();
-    const result = await writeNote(page, "document.getElementById('cardText')", "document.getElementById('card').hidden");
+    const result = await writeNote(
+      page,
+      "document.getElementById('cardText')",
+      "document.getElementById('card').hidden",
+    );
     await page.browser.send("Target.closeTarget", { targetId });
-    assert.deepEqual({ text: result.text, keys: result.keys, kept: result.kept }, { text: "abc", keys: 0, kept: true });
+    assert.deepEqual(
+      { text: result.text, keys: result.keys, kept: result.kept },
+      { text: "abc", keys: 0, kept: true },
+    );
     await page.close();
   },
 );
@@ -1368,9 +1375,16 @@ test(
       what: "the page to take the focus in its own field as the window leaves",
     });
     await page.front();
-    const result = await writeNote(page, "document.getElementById('cardText')", "document.getElementById('card').hidden");
+    const result = await writeNote(
+      page,
+      "document.getElementById('cardText')",
+      "document.getElementById('card').hidden",
+    );
     await page.browser.send("Target.closeTarget", { targetId });
-    assert.deepEqual({ text: result.text, keys: result.keys, kept: result.kept }, { text: "abc", keys: 0, kept: true });
+    assert.deepEqual(
+      { text: result.text, keys: result.keys, kept: result.kept },
+      { text: "abc", keys: 0, kept: true },
+    );
     await page.close();
   },
 );

@@ -353,8 +353,7 @@ async function unloadRound(page, lab, engine, round) {
     document.addEventListener(
       "focusout",
       (event) => {
-        if (event.target.id === "cardText")
-          globalThis.moves.out ??= performance.now();
+        if (event.target.id === "cardText") globalThis.moves.out ??= performance.now();
       },
       true,
     );
@@ -389,9 +388,7 @@ async function unloadRound(page, lab, engine, round) {
     );
   }
   const probe = await keysSettle(keys, `${engine} round ${round}: the probe key reports to settle`);
-  const ms = Math.round(
-    await page.evaluate(() => globalThis.moves.shown - globalThis.moves.out),
-  );
+  const ms = Math.round(await page.evaluate(() => globalThis.moves.shown - globalThis.moves.out));
   console.log(
     `${engine} round ${round}: probe key events reaching the page ${probe} of 4 (2 keys); move to unloaded ${ms} ms`,
   );
