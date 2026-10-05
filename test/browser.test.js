@@ -34,6 +34,11 @@ const FRAME_BOX = `(() => {
   return JSON.stringify({ left: box.left + frame.clientLeft, top: box.top + frame.clientTop });
 })()`;
 
+// The chrome is following its review once its event stream is open, and refuses Add and Send until
+// then: Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused stream
+// connect is retried after a pause the chrome spends lost (docs/ENGINEERING-NOTES.md).
+const FOLLOWING = "document.body.dataset.stream === 'open'";
+
 const executable = findBrowser();
 const optedOut = process.env[`${envPrefix}BROWSER`] === "none";
 // One line, always printed, saying which of the two happened. A suite that reports green
@@ -110,6 +115,7 @@ test(
     const attaching = page.frame();
     await page.waitFor("document.body.dataset.ready === '1'");
     const readyMs = Date.now() - started;
+    await page.waitFor(FOLLOWING);
     const artifact = await attaching;
     // The chrome is ready as soon as the SDK announces itself, which is earlier than the
     // artifact having laid its stylesheet out; the rects below are measured from it.
@@ -2501,6 +2507,7 @@ test(
     // artifact's own load event, so reading the revision straight after `ready` races those hops.
     // The revision landing implies ready, and this is the idiom the later waits in this test use.
     await page.waitFor("document.body.dataset.revision === '0'");
+    await page.waitFor(FOLLOWING);
     assert.equal(await page.eval("document.getElementById('presence').dataset.state"), "waiting");
     // The normal state between two polls is presented as the agent being away, never as a fault.
     assert.equal(
@@ -2740,10 +2747,15 @@ test(
  * property rather than about that default.
  */
 async function openReview(url, viewport) {
-  const page = await browser.page(url, viewport);
+  return reviewIn(await browser.page(url, viewport));
+}
+
+/** Waits for a tab navigated to a review to be ready and following it, as `openReview` describes. */
+async function reviewIn(page) {
   hearKeys(page);
   const attaching = page.frame();
   await page.waitFor("document.body.dataset.ready === '1'");
+  await page.waitFor(FOLLOWING);
   const artifact = await attaching;
   await artifact.waitFor("document.readyState === 'complete'");
   // Read from what the page acknowledged rather than from the switch's markup.
@@ -2754,6 +2766,123 @@ async function openReview(url, viewport) {
   await page.waitFor("document.body.dataset.annotate === '1'");
   return { page, artifact };
 }
+
+/**
+ * Has the chrome's first `count` event-stream connects fail before they open, as Windows fails about
+ * 5 in 100000 of Chrome's new loopback connects: each goes to a path the daemon refuses, which the
+ * chrome hears exactly as a refused connect, a stream closed without opening. Three keep it lost for
+ * 3 s (`pause` waits 500, 1000 and 1500 ms), longer than a review takes to open, so what a test does
+ * next never races the reconnect.
+ */
+async function refuseStream(page, count) {
+  await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const Real = WebSocket;
+      window.refusedStreams = 0;
+      window.WebSocket = function (url, protocols) {
+        if (window.refusedStreams >= ${count}) return new Real(url, protocols);
+        window.refusedStreams += 1;
+        return new Real(String(url).replace("/events", "/refused"), protocols);
+      };
+      window.WebSocket.prototype = Real.prototype;
+    })()`,
+  });
+}
+
+test(
+  "a tab whose first stream connects fail follows its review once one opens, and a note added then reaches the agent",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const url = (await cli([file], lab.env)).json().session.url;
+    const page = await browser.page("about:blank");
+    await refuseStream(page, 3);
+    await page.navigate(url);
+    const { artifact } = await reviewIn(page);
+    await noteOn(page, artifact, "#title", "Name the queue in the title");
+    await clickOn(page, "document.getElementById('send')");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.deepEqual(
+      polled.prompts.map(({ prompt, selector }) => ({ prompt, selector })),
+      [{ prompt: "Name the queue in the title", selector: "#title" }],
+    );
+    assert.equal(await page.eval("window.refusedStreams"), 3, "three stream connects failed");
+    await page.close();
+  },
+);
+
+/**
+ * Refuses the first `times` loads whose address matches `pattern` as Windows refuses a loopback
+ * connect (docs/ENGINEERING-NOTES.md), and lets the rest through. It intercepts at the browser, so a
+ * frame's load is caught however early its target attaches; `pattern` names a port only the calling
+ * test's daemon holds, so no other tab is touched.
+ */
+async function refuseLoads(page, pattern, times = 1) {
+  const counts = { asked: 0, refused: 0 };
+  const listener = ({ method, params, sessionId }) => {
+    if (method !== "Fetch.requestPaused" || sessionId) return;
+    counts.asked += 1;
+    const refuse = counts.refused < times;
+    if (refuse) counts.refused += 1;
+    page.browser
+      .send(
+        refuse ? "Fetch.failRequest" : "Fetch.continueRequest",
+        refuse
+          ? { requestId: params.requestId, errorReason: "ConnectionRefused" }
+          : { requestId: params.requestId },
+      )
+      .catch(() => {});
+  };
+  page.browser.listeners.push(listener);
+  await page.browser.send("Fetch.enable", { patterns: [{ urlPattern: pattern }] });
+  return {
+    counts,
+    async stop() {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.browser.send("Fetch.disable");
+    },
+  };
+}
+
+test(
+  "a wait that fails on a tab whose frame was refused names the refused load and the error page standing in for it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { port } = own.serverInfo();
+    const page = await browser.page("about:blank");
+    const refusal = await refuseLoads(page, `http://localhost:${port}/wrapper.html*`, Infinity);
+    const frameLine = `    chrome-error://chromewebdata/ in place of http://localhost:${port}/wrapper.html`;
+    const loadLine = `    chrome: net::ERR_CONNECTION_REFUSED Document http://localhost:${port}/wrapper.html`;
+    const section = (text, name) =>
+      text
+        .split(`\n  ${name}:`)[1]
+        .split(/\n(?! {4})/)[0]
+        .split("\n");
+    try {
+      await page.navigate(url);
+      const described = await until(
+        async () => {
+          const text = await page.describe();
+          const held =
+            section(text, "frames").includes(frameLine) &&
+            section(text, "loads failed").includes(loadLine);
+          return held ? text : null;
+        },
+        { what: "the chrome to describe the refused wrapper frame and its failed load" },
+      );
+      assert.ok(section(described, "frames").includes(frameLine));
+      assert.ok(section(described, "loads failed").includes(loadLine));
+    } finally {
+      await refusal.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
 
 let sentinel = 0;
 /**
@@ -3028,6 +3157,7 @@ test(
 
     const reopened = await browser.page((await cli([file], lab.env)).json().session.url);
     await reopened.waitFor("document.body.dataset.ready === '1'");
+    await reopened.waitFor(FOLLOWING);
     assert.deepEqual(
       JSON.parse(await reopened.eval(unsentNotes)),
       ["Name the queue in the title", "Say how long each step takes"],
@@ -4129,6 +4259,7 @@ test(
     const page = await browser.page(session.url, { width: 390, height: 844 });
     const attaching = page.frame();
     await page.waitFor("document.body.dataset.ready === '1'");
+    await page.waitFor(FOLLOWING);
     const artifact = await attaching;
     await artifact.waitFor("document.readyState === 'complete'");
     const usable = async (when, selectors) => {
