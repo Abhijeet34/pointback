@@ -238,7 +238,7 @@ It carries seven things.
 
 When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send turns off until it is back, and a note being written stays in its card with Add note held until then.
 It keeps trying, because a daemon that idled out or was stopped comes back at the agent's next command on the same port with the same token, and the tab picks the review up from there.
-A tab opened while nothing answers waits the same way, including when the request for the review itself goes unanswered; only the daemon's own answer makes it say the link no longer works.
+A tab opened while nothing answers waits the same way, including when the request for the review itself goes unanswered; only an answer makes it say the link no longer works, an HTTP error or a health check that does not prove the token.
 If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection; running the command on the file again opens a fresh tab with the notes in it.
 
 The agent's end, a gone file or another tab taking over never closes a card with words in it.
@@ -247,7 +247,7 @@ Only the reviewer drops them: Cancel, Escape, Annotate off, or Discard and end.
 
 The frame can leave the page under review too: a link followed with Annotate off, or an address with nothing at it, which the server answers inside a review with a short page in the house reading styles rather than JSON.
 Only the page under review announces itself to the chrome, so a page that loads without doing so is covered, where the reviewer is looking, by a notice saying the frame went to a page that is missing or is not the file, with a button back to it.
-A first load that comes back unannounced is asked for once more before that, and so is a first load of the frame the page sits in: Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused load looks exactly like a page that went elsewhere.
+A first load that comes back unannounced is asked for once more before that, and so is a first load of the frame the page sits in, because a load the network refused looks exactly like a page that went elsewhere.
 A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
 The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
 

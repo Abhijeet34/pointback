@@ -69,8 +69,8 @@ let fileGone = false;
 let announced = false;
 let strayed = false;
 // The first load after a show that comes back unannounced is shown once more before it counts as a
-// stray: Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused document
-// or SDK load looks exactly like a page that went elsewhere (docs/ENGINEERING-NOTES.md).
+// stray: Windows refuses some of Chrome's new loopback connects, and a refused document or SDK load
+// looks exactly like a page that went elsewhere (docs/ENGINEERING-NOTES.md).
 let firstLoad = false;
 let shownAgain = false;
 // The page took the focus out of a note being written; for the rest of the review it is hidden
@@ -170,9 +170,9 @@ async function boot() {
       session = await api("GET", `/api/${key}/session`);
     } catch (error) {
       // Only an answer says the link is spent. A load nothing answered is a daemon between an
-      // idle-out and the agent's next command, or one connect Windows refused (about 5 in 100000 of
-      // Chrome's, docs/ENGINEERING-NOTES.md); the review is still there, so the page waits for it,
-      // and the bar and Send say it is not connected rather than offering what cannot work yet.
+      // idle-out and the agent's next command, or one connect Windows refused
+      // (docs/ENGINEERING-NOTES.md); the review is still there, so the page waits for it, and the
+      // bar and Send say it is not connected rather than offering what cannot work yet.
       if (error.answered) {
         statusLine.textContent =
           "This link no longer works. Run the command on the file again to get a fresh one.";
