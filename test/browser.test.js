@@ -2255,14 +2255,19 @@ test(
     }
     await pointAt(page, artifact, "#p1");
     await page.waitFor("document.body.dataset.handoff === 'settled'");
-    await page.eval("document.getElementById('artifact').focus()");
-    await page.waitFor("document.activeElement === document.getElementById('artifact')");
-    // A timer queued by a take-back would run before this one, so one tick passes it.
+    // A timer queued by the stale close would run before this one, so one tick passes it.
     await page.eval("new Promise((resolve) => setTimeout(resolve))");
     assert.equal(
-      await page.eval("document.activeElement === document.getElementById('artifact')"),
-      true,
-      "the focus stays in the page, not taken back to the note card",
+      await page.eval("document.activeElement.id"),
+      "cardText",
+      "the new note keeps the focus after the stale close",
+    );
+    await page.eval("document.getElementById('artifact').focus()");
+    await page.waitFor(kept("document.getElementById('cardText')", UNLOADED_LINE));
+    assert.equal(
+      await pageAddress(page),
+      "about:blank",
+      "the page the reviewer's note took the focus from is unloaded",
     );
     await page.close();
   },
