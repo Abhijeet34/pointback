@@ -76,6 +76,12 @@ function permissionsOf(jobBlock) {
   );
 }
 
+// A workflow `if:` evaluated as the JavaScript it means, its context names bound to `context`.
+function evaluates(condition, context) {
+  const js = condition.replace(/ == /g, " === ").replace(/ != /g, " !== ");
+  return Function(...Object.keys(context), `return ${js};`)(...Object.values(context));
+}
+
 // Executes an extracted step body with bash, the same interpreter every runner this
 // repository uses hands a `run: |` block to.
 function runStepBody(body, { env = {} } = {}) {
@@ -414,10 +420,7 @@ test("the engine smoke gates the release pull request, never the tag", () => {
   const condition = jobs.engines.match(/^ {4}if: (.*)$/m)[1];
   const cross = workflows["cross-platform.yml"].match(/^name: (.*)$/m)[1];
   const runs = (workflow, event) =>
-    Function(
-      "github",
-      `return ${condition.replace(/ == /g, " === ").replace(/ != /g, " !== ")};`,
-    )({ workflow, event_name: event });
+    evaluates(condition, { github: { workflow, event_name: event } });
   assert.equal(runs("CI", "pull_request"), true, "the release pull request skips the smoke");
   assert.equal(runs(cross, "schedule"), true, "the weekly run skips the smoke");
   assert.equal(runs(cross, "workflow_dispatch"), true);
@@ -618,9 +621,23 @@ test("release-tag refuses to tag or release a tree its own run did not test", ()
   assert.ok(guardAt >= 0 && guardAt < tagAt && tagAt < checkAt, "the steps run out of order");
   assert.equal(steps[guardAt].id, "guard");
   assert.equal(steps[tagAt].id, "rp");
-  assert.equal(steps[tagAt].if, "steps.guard.outputs.in_flight != 'true'");
-  assert.equal(steps[checkAt].if, "steps.rp.outputs.release_created == 'true'");
-  assert.equal(permissionsOf(releaseTag).actions, "read");
+  const tagRuns = (inFlight) =>
+    evaluates(steps[tagAt].if, { steps: { guard: { outputs: inFlight } } });
+  assert.equal(
+    tagRuns({ in_flight: "true" }),
+    false,
+    "release-please ran over a release in flight",
+  );
+  assert.equal(tagRuns({}), true, "release-please was skipped with nothing in flight");
+  const checkRuns = (released) =>
+    evaluates(steps[checkAt].if, { steps: { rp: { outputs: released } } });
+  assert.equal(checkRuns({ release_created: "true" }), true);
+  assert.equal(checkRuns({}), false, "the release check ran with release-please skipped");
+  assert.deepEqual(permissionsOf(releaseTag), {
+    contents: "write",
+    "pull-requests": "write",
+    actions: "read",
+  });
 });
 
 // The one ref taken at a branch: gates' shared workflows are the fleet's single
