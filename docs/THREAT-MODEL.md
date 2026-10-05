@@ -38,12 +38,13 @@ In scope:
   `test/browser.test.js` holds that no key typed into the note reaches the page, typed straight after the move and again once the frame holds about:blank, with the frame in view and out of it, on the note the page took the focus from and on a later one.
   The residual is the time from the page's move to the wrapper taking it out, in which a key typed can still reach the page: 5 to 47 ms, median 11 ms, over 126 rounds on Linux, macOS and Windows runners (runs 37247034749, 37247040827, 37247047306 and 37247053785).
   Locally, with six suites running at once, the frame removal failed 0 of 18 runs, with the page out 6 to 68 ms after the move, where navigating the frame instead failed 6 of 12 runs with the note empty and about:blank loading about 300 ms after the first put-back.
-  On this head, the two hidden-state tests printed the page out 4 ms and 5 ms after the move with the frame moved out of view, and 7 ms and 8 ms with the frame in view, in two full local runs of `test/browser.test.js`.
+  On fix head c66c928, the two hidden-state tests printed the page out 4 ms after the move in each of 10 local rounds (5 with the frame out of view, 5 in view), with no key recorded (transcript "window: the two hidden-state tests on fix head c66c928, 5 local rounds").
   Still open: a page's late refocus can undo a Tab the reviewer pressed in the page (issue 57), and a page can take the focus from anywhere in the chrome other than a note field, such as the Annotate switch or the page body after a press on a non-focusable part of the card or margin, where the page's focus() is not seen as taken from a note, so the page is not hidden and keys typed afterwards can reach it.
-  This focus handling is measured in Chromium only; in Firefox and WebKit it is unmeasured.
+  The engine smoke's unload step (`unloadOnPageFocus` in `test/engine-smoke.js`) passed in WebKit 26.6 on 2026-10-05: the page's focus() unloaded it, the note read the word typed, and no key reached the page.
+  In Firefox 155.0 the same step failed on 2026-10-05: the page took the focus, the chrome did not unload it, and the page stayed shown with the focus on the frame.
   A press over the page while a note has the focus was not taken for the page's own move: it passed in 6 of 6 local runs each in WebKit 26.6 and Firefox 155.0 on 2026-10-05.
   The engine smoke's press-over-the-page step (`pressOverThePage` in `test/engine-smoke.js`) checks this on every scheduled run.
-  Detecting the page's own move in those engines is still unmeasured.
+  So in Firefox the chrome does not yet tell the page's own move out of a note from a move the chrome made, and a page that takes the focus there keeps it and the keys after it.
 - State written where another user on the machine can read it: outside the state directory, with a mode other than `0600` in a `0700` directory on POSIX, or on Windows with any ACL entry beyond the current user (`src/state-dir.js`).
 - Any outbound connection opened by the process.
 - Markup in an artifact that changes what the injected review script does (`src/inject.js`).

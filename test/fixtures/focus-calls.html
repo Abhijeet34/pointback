@@ -10,7 +10,11 @@
       // nothing, so it lets go first; it keeps the page where the reviewer scrolled it.
       globalThis.calling = false;
       for (const type of ["keydown", "keyup"]) {
-        addEventListener(type, (event) => console.log("focus-calls key", event.type, event.key), true);
+        addEventListener(
+          type,
+          (event) => console.log("focus-calls key", event.type, event.key),
+          true,
+        );
       }
       setInterval(() => {
         if (!globalThis.calling) return;

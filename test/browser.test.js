@@ -1256,7 +1256,10 @@ test(
     await clickOn(page, "document.querySelector('.mark-edit')");
     await page.waitFor(kept(edit, EARLIER_LINE));
     const before = await page.eval("document.body.dataset.revision");
-    writeFileSync(file, readFileSync(file, "utf8").replace("Incident review", "Incident review, revised"));
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8").replace("Incident review", "Incident review, revised"),
+    );
     await page.waitFor(
       `document.getElementById("status").textContent === "The file changed. This page updates as soon as you finish this note."`,
     );
@@ -1269,7 +1272,10 @@ test(
     await page.waitFor(`document.body.dataset.revision === '${Number(before) + 1}'`);
     const after = await page.eval("document.body.dataset.revision");
     await page.close();
-    assert.deepEqual({ before, held, text, after }, { before: "0", held: "0", text: "abc", after: "1" });
+    assert.deepEqual(
+      { before, held, text, after },
+      { before: "0", held: "0", text: "abc", after: "1" },
+    );
   },
 );
 

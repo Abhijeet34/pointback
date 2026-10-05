@@ -12,8 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { firefox, webkit } from "playwright-core";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
+import { until } from "./helpers/wait.js";
 
 const HOSTILE = new URL("./fixtures/hostile-after-gesture.html", import.meta.url);
+const FOCUS_CALLS = new URL("./fixtures/focus-calls.html", import.meta.url);
+const UNLOADED_LINE =
+  "This page was unloaded because it took the keyboard from your note. It comes back when you finish the note.";
 
 const ENGINES = { webkit, firefox };
 /** The longest any one Playwright wait may take; nothing in the act is slow, so a miss is a hang. */
@@ -33,6 +37,7 @@ async function smoke(engine) {
     await act(browser, (page) => endKeepsTheCard(page, lab));
     await act(browser, (page) => readingPlace(page, lab, engine));
     await act(browser, (page) => pressOverThePage(page, lab));
+    await act(browser, (page) => unloadOnPageFocus(page, lab, engine));
     return `${named} passed`;
   } catch (error) {
     throw Object.assign(error, { named });
@@ -264,6 +269,72 @@ async function pressOverThePage(page, lab) {
     { shown: true, cover: true },
     "a press over the page is the reviewer's own move into it, so the page is not held",
   );
+}
+
+/**
+ * A page that calls focus() out of an open note takes the keyboard in every engine, so the chrome
+ * unloads it there too: the reviewer's words land in the note, the page is out until the note is done,
+ * and no key reaches the page. The fixture reports each key it receives to the console, which
+ * Playwright hears from every frame of the page.
+ */
+async function unloadOnPageFocus(page, lab, engine) {
+  const dir = join(lab.dir, "focus");
+  mkdirSync(dir);
+  const file = join(dir, "incident.html");
+  copyFileSync(FOCUS_CALLS, file);
+  const reported = [];
+  page.on("console", (message) => {
+    if (message.text().startsWith("focus-calls key")) reported.push(message.text());
+  });
+  const { session } = (await cli([file], lab.env)).json();
+  await open(page, session.url);
+  await page.waitForFunction(() => document.body.dataset.annotate === "1");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
+  await artifact.evaluate(() => (globalThis.calling = true));
+  const unloaded = await page
+    .waitForFunction(
+      (line) =>
+        !document.getElementById("cover").hidden &&
+        document.getElementById("coverText").textContent === line,
+      UNLOADED_LINE,
+    )
+    .then(
+      () => true,
+      () => false,
+    );
+  if (!unloaded) {
+    const seen = await page.evaluate(() => ({
+      focus: document.activeElement?.id,
+      cover: document.getElementById("cover").hidden
+        ? "hidden"
+        : document.getElementById("coverText").textContent,
+      frame: getComputedStyle(document.getElementById("artifact")).display,
+    }));
+    assert.fail(
+      `${engine}: the page took the focus from the note and was not unloaded; the focus is on #${seen.focus}, the cover is ${seen.cover}, the frame display is ${seen.frame}`,
+    );
+  }
+  await page.keyboard.type("on");
+  await until(async () => page.frames().some((frame) => frame.url() === "about:blank"), {
+    what: `${engine}: the page's frame to hold about:blank`,
+    timeoutMs: STEP_MS,
+  });
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.keyboard.type("ce");
+  const text = await page.evaluate(() => document.getElementById("cardText").value);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(
+    () => document.getElementById("card").hidden && document.getElementById("cover").hidden,
+  );
+  await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
+  assert.equal(
+    text,
+    "once",
+    `${engine}: the note reads ${JSON.stringify(text)}, not the word typed`,
+  );
+  assert.deepEqual(reported, [], `${engine}: the page received key events: ${reported.join("; ")}`);
 }
 
 const requested = process.argv.slice(2);
