@@ -48,12 +48,13 @@ export function pidAlive(pid) {
 
 /**
  * The timeout of a loopback probe whose expiry reads as a busy server. The verdict comes from the time
- * this process was running: a stall charges its peer nothing, because the peer cannot answer while this
- * process is blocked. A gap longer than a slice counts as one slice, and the abort waits one turn of the
- * event loop, so a refusal or an answer that arrived during the stall is read first. Under sustained
- * starvation that running time accrues slowly, so the wall ceiling bounds the probe as well. It sits
- * above the longest stall measured, 11670 ms (windows-2025 hunt 37349003233, job 111894797244), so a
- * stall alone never reaches it; only starvation that outlasts it does.
+ * this process was running. A peer in another process keeps answering while this process is stalled;
+ * what the stall prevents is this process reading that answer, so the expired timer must not count the
+ * stall. A gap longer than a slice counts as one slice, and the abort waits one turn of the event loop,
+ * so an answer or refusal read during the stall is read first. Under sustained starvation that running
+ * time accrues slowly, so PROBE_CEILING_MS of wall time bounds the probe as well. It sits above the
+ * longest stall measured, 11670 ms (windows-2025 hunt 37349003233, job 111894797244), so a stall alone
+ * never reaches it; only starvation that outlasts it does.
  */
 const PROBE_SLICE_MS = 50;
 const PROBE_CEILING_MS = 20_000;
