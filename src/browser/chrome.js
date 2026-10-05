@@ -234,6 +234,7 @@ function show() {
 function holdsReload() {
   return editing || unloaded || (tookFocus && editingNote !== null);
 }
+globalThis.recover?.hold(holdsReload);
 
 function showPage() {
   if (holdsReload()) {
@@ -414,6 +415,7 @@ async function changeDrafts(what, method, path, body) {
 
 /** Every state change lands here; the notes list is rebuilt only when the notes changed. */
 function render() {
+  globalThis.recover?.release();
   if (marksDirty) renderMarks();
   renderPresence();
   renderNotice();
@@ -664,6 +666,7 @@ function renderCover() {
     unloaded = false;
     show();
   }
+  globalThis.recover?.release();
   frame.hidden = kept;
   cover.hidden = !strayed && !kept;
   backButton.hidden = !strayed;
