@@ -1404,15 +1404,16 @@ function takenFrom(field) {
     unload();
   });
 }
-// Undefined while the window has the focus; once it is left, the note that held the focus, read a task
-// later so a move the reviewer made into the page at the same moment (a Tab, a press) is not taken for
-// the page's own. A later blur, from the page taking the focus while away, does not change the record.
+// Undefined while the window has the focus; once it is left, the note that held the focus at that moment.
+// The task after the loss drops the record if the window has the focus again, which is a reviewer's own
+// move into the page (a press, a Tab) that moved the focus and the window together. A later blur, from
+// the page taking the focus while away, does not change the record.
 let away;
 function leftWindow() {
+  if (away !== undefined) return;
+  away = writing(document.activeElement) ? document.activeElement : null;
   setTimeout(() => {
-    if (away === undefined && (!document.hasFocus() || document.hidden)) {
-      away = writing(document.activeElement) ? document.activeElement : null;
-    }
+    if (document.hasFocus() && !document.hidden) away = undefined;
   });
 }
 // A window that comes back with the page holding the focus took it from that note while it was away.

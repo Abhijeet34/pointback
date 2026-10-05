@@ -1296,6 +1296,7 @@ test(
     const { page, artifact } = await openReview(session.url);
     await pointAt(page, artifact, "#p1");
     await pressOverPage(page);
+    assert.equal(await page.eval("document.hasFocus()"), true);
     await windowAwayAndBack(page);
     await assertPageHeld(page);
     await page.close();
@@ -1344,6 +1345,32 @@ test(
     await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
     await windowAwayAndBack(page);
     await assertPageHeld(page);
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus as the window leaves is unloaded when the window comes back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await artifact.eval(
+      `document.addEventListener("visibilitychange", () => { if (document.hidden) document.getElementById("field").focus(); })`,
+    );
+    const { targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" });
+    await page.browser.send("Target.activateTarget", { targetId });
+    await until(async () => !(await page.eval("document.hasFocus()")), {
+      what: "the review window to lose focus",
+    });
+    await until(async () => (await artifact.eval("document.activeElement?.id")) === "field", {
+      what: "the page to take the focus in its own field as the window leaves",
+    });
+    await page.front();
+    const result = await writeNote(page, "document.getElementById('cardText')", "document.getElementById('card').hidden");
+    await page.browser.send("Target.closeTarget", { targetId });
+    assert.deepEqual({ text: result.text, keys: result.keys, kept: result.kept }, { text: "abc", keys: 0, kept: true });
     await page.close();
   },
 );
