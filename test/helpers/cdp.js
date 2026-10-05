@@ -191,6 +191,11 @@ async function startBrowser(executable, { width = 1200, height = 800 } = {}) {
       "--disable-background-networking",
       "--disable-component-update",
       "--disable-sync",
+      // A throwaway profile still reads its cookie key from the login keychain on macOS, and a
+      // binary the keychain does not know asks the developer for their password mid-suite.
+      // These keep that key in memory on macOS and out of gnome-keyring or KWallet on Linux.
+      "--use-mock-keychain",
+      "--password-store=basic",
       // A CI runner gives /dev/shm 64 MB where a desktop gives it half of RAM, and
       // Chromium's default shared-memory backing store takes a renderer down when it
       // runs out. On a machine with a real /dev/shm this only moves those pages to
