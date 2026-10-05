@@ -1633,12 +1633,23 @@ test(
     const { page, artifact } = await openReview(session.url);
     await page.eval("document.getElementById('annotate').click()");
     await page.waitFor("document.body.dataset.annotate === '0'");
+    // The field takes the focus 300 ms after the press, so a key typed at once is one the page leaves
+    // unhandled, as when the focus lands late on a loaded runner.
+    await artifact.eval(`document.getElementById("field").addEventListener("focus", (event) => {
+      event.target.blur();
+      setTimeout(() => event.target.focus(), 300);
+    }, { once: true })`);
     await clickIn(page, artifact, "#field");
+    // Headless Chromium on macOS sends a key the page leaves unhandled to it again, and again (macos-15,
+    // hunt 37308882779), so the keys go only once the field holds them, as the page and the chrome see it.
+    await artifact.waitFor("document.activeElement?.id === 'field'");
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
     await press(page, "ok");
     await until(async () => keyReports.length >= 4, {
       what: "the key channel to report the page's own keys",
     });
     assert.deepEqual(keyReports.slice(0, 4), ["keydown o", "keyup o", "keydown k", "keyup k"]);
+    assert.equal(await artifact.eval("document.getElementById('field').value"), "ok");
     await page.close();
   },
 );
