@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { claimDaemon } from "../src/daemon-lock.js";
+import { claimDaemon, probeTimeout } from "../src/daemon-lock.js";
 import { name } from "../src/identity.js";
 import { closedPort, stallNextTick } from "./helpers/stall.js";
 
@@ -119,6 +119,16 @@ test("a daemon too busy to answer within a second still holds the state director
   } finally {
     server.close();
   }
+});
+
+test("a probe starved past its wall ceiling aborts there, though its running time barely accrued", async () => {
+  const probe = probeTimeout(60_000, 300);
+  for (let turn = 0; !probe.signal.aborted && turn < 100; turn += 1) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  probe.done();
+  assert.equal(probe.signal.reason?.name, "TimeoutError");
 });
 
 test("a start that died before it wrote its lock is waited on only for a bounded time", async () => {

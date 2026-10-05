@@ -11,44 +11,42 @@ export async function closedPort() {
 }
 
 /**
- * Holds this process off its event loop for `ms` from the next tick, as a runner that deschedules it
- * does (windows-2025 hunt 37344599638, attempt 12: 9 s). Call it before the probe: the probe's socket
- * is seen on `net.client.socket`, and the stall throws unless that socket's connect is still in flight
- * when the loop blocks, so the refusal and the expired timer are both waiting at once.
+ * Blocks the loop for `ms` on the tick after the next client socket's `connectionAttempt`, which Node
+ * emits in `internalConnect` just before `connect(2)`. So the connect has gone out when the loop
+ * blocks, and the refusal or answer is waiting behind the stall with the probe's expired timer.
  */
-export function stallNextTick(ms) {
-  let socket;
-  const onSocket = (message) => {
-    socket = message.socket;
+function armStall(ms) {
+  let attempted = false;
+  const onSocket = ({ socket }) => {
+    unsubscribe("net.client.socket", onSocket);
+    socket.once("connectionAttempt", () => {
+      attempted = true;
+      process.nextTick(() => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
+    });
   };
   subscribe("net.client.socket", onSocket);
-  process.nextTick(() => {
-    unsubscribe("net.client.socket", onSocket);
-    if (!socket?.connecting) {
-      throw new Error("stallNextTick: no connect was in flight when the loop blocked");
+  return () => attempted;
+}
+
+/**
+ * Holds this process off its event loop for `ms` as a runner that deschedules it does (windows-2025
+ * hunt 37344599638, attempt 12: 9 s). Call it before the probe is issued: the stall throws at the
+ * next turn unless the probe's connect was attempted, so a probe that never connects cannot pass.
+ */
+export function stallNextTick(ms) {
+  const attempted = armStall(ms);
+  setImmediate(() => {
+    if (!attempted()) {
+      throw new Error("stallNextTick: no connect was attempted, so the loop never blocked");
     }
-    block(ms);
   });
 }
 
 /**
  * As stallNextTick, for a probe that is not issued yet when the stall is armed, such as one that
- * follows a response the test's own server sends: the stall lands on the tick after the next client
- * socket's connect, which is the probe's.
+ * follows a response the test's own server sends. The stall lands on the next client socket's connect,
+ * which must be the probe's.
  */
 export function stallOnConnect(ms) {
-  const onSocket = ({ socket }) => {
-    unsubscribe("net.client.socket", onSocket);
-    process.nextTick(() => {
-      if (!socket.connecting) {
-        throw new Error("stallOnConnect: the connect had already settled when the loop blocked");
-      }
-      block(ms);
-    });
-  };
-  subscribe("net.client.socket", onSocket);
-}
-
-function block(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  armStall(ms);
 }
