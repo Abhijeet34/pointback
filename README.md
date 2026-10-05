@@ -52,7 +52,7 @@ pointback reply plan.html 2 --done  # tells the reviewer what became of note 2
 pointback end plan.html             # ends the review from the agent's side
 pointback plan.html --reopen        # opens a review the reviewer ended
 pointback components/sheets/actions.html --root .   # lets the page load assets from anywhere under .
-pointback stop                      # stops the background server
+pointback stop                      # stops the background server, or reports `refused` for one it cannot stop
 ```
 
 `poll` waits 60000 ms unless `--timeout-ms` says otherwise, and at most 600000.
