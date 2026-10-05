@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -47,12 +47,31 @@ function namedStepBody(text, stepName) {
   const escaped = stepName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = text.match(
     new RegExp(
-      `^ {6}- name: ${escaped}\\n(?: {8}if: .*\\n)? {8}run: \\|\\n((?: {10}.*\\n|\\n)+)`,
+      `^ {6}- name: ${escaped}\\n(?: {8}(?:id|if): .*\\n)* {8}run: \\|\\n((?: {10}.*\\n|\\n)+)`,
       "m",
     ),
   );
   assert.ok(match, `no step named "${stepName}" with a run: | body`);
   return match[1].replace(/^ {10}/gm, "").replace(/\n+$/, "");
+}
+
+// The steps of one job in order, each as the keys it sets; a step opens with `- ` at 6 spaces
+// and its keys sit at 8, or at 6 on the opening line itself.
+function stepsOf(jobBlock) {
+  return jobBlock
+    .split(/^ {6}- /m)
+    .slice(1)
+    .map((step) =>
+      Object.fromEntries(
+        [...step.matchAll(/^(?: {8})?(id|name|if|uses): (.*)$/gm)].map((m) => [m[1], m[2]]),
+      ),
+    );
+}
+
+// A workflow `if:` evaluated as the JavaScript it means, its context names bound to `context`.
+function evaluates(condition, context) {
+  const js = condition.replace(/ == /g, " === ").replace(/ != /g, " !== ");
+  return Function(...Object.keys(context), `return ${js};`)(...Object.values(context));
 }
 
 // Executes an extracted step body with bash, the same interpreter every runner this
@@ -62,17 +81,12 @@ function runStepBody(body, { env = {} } = {}) {
   try {
     const script = join(dir, "step.sh");
     writeFileSync(script, body);
-    try {
-      const stdout = execFileSync("bash", [script], {
-        cwd: root,
-        env: { ...process.env, ...env },
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      return { status: 0, stdout, stderr: "" };
-    } catch (error) {
-      return { status: error.status, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
-    }
+    const { status, stdout, stderr } = spawnSync("bash", [script], {
+      cwd: root,
+      env: { ...process.env, ...env },
+      encoding: "utf8",
+    });
+    return { status, stdout, stderr };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -388,13 +402,22 @@ test("a leaked handle cannot turn a finished suite into a hung job", () => {
   assert.match(pkg.scripts.test, /--test-timeout=\d+/);
 });
 
-// The WebKit and Firefox smoke reports a browser release, not a change on main, so it
-// runs only when cross-platform.yml is the top-level workflow. Called from ci.yml or
-// release.yml, `github.workflow` names the caller and the job skips, so no tag waits on it.
-test("the engine smoke never gates a release", () => {
+// WebKit and Firefox shipped A3 because they never gated anything. The smoke now gates the
+// release pull request (maintainer decision): it runs when cross-platform.yml is called from
+// ci.yml, which calls it for that pull request alone, and stays off release.yml's push to
+// main, where the platform matrix alone gates the tag. A called workflow sees its caller's
+// `github` context, so the job's own `if:` is evaluated here against each caller's.
+test("the engine smoke gates the release pull request, never the tag", () => {
   const jobs = jobsByName(workflows["cross-platform.yml"]);
-  assert.match(jobs.engines, /^ {4}if: github\.workflow == 'cross-platform'$/m);
-  assert.match(workflows["cross-platform.yml"], /^name: cross-platform$/m);
+  const condition = jobs.engines.match(/^ {4}if: (.*)$/m)[1];
+  const cross = workflows["cross-platform.yml"].match(/^name: (.*)$/m)[1];
+  const runs = (workflow, event) =>
+    evaluates(condition, { github: { workflow, event_name: event } });
+  assert.equal(runs("CI", "pull_request"), true, "the release pull request skips the smoke");
+  assert.equal(runs(cross, "schedule"), true, "the weekly run skips the smoke");
+  assert.equal(runs(cross, "workflow_dispatch"), true);
+  assert.equal(runs("release", "push"), false, "the tag waits on a browser release");
+  assert.equal(runs("release", "workflow_dispatch"), false);
   assert.doesNotMatch(jobs.test, /^ {4}if:/m, "the platform matrix itself stays unconditional");
 });
 
@@ -497,6 +520,131 @@ test("no release can attach to a tag that already existed", () => {
     /release-preflight\.js --tag "\$TAG" --commit "\$RELEASE_SHA"/,
   );
   assert.match(workflows["release.yml"], /sha: \$\{\{ steps\.rp\.outputs\.sha \}\}/);
+});
+
+// Inferred in the deep review, never yet observed: the release merge's own run goes red on a
+// flake, `release-tag` skips, and the next push's run tags that older merge commit behind a
+// matrix that tested a newer tree. Both steps run for real; `gh` is a shell function standing
+// in for the API answer, which keeps the case runnable on every platform's bash.
+test("release-tag refuses to tag or release a tree its own run did not test", () => {
+  const tested = "a".repeat(40);
+  const older = "b".repeat(40);
+  const guard = namedStepBody(
+    workflows["release.yml"],
+    "Refuse to tag a tree this run did not test",
+  );
+  // `pr list` and `run list` answer separately, as the API does; `run list` gets the status
+  // lines `--jq '.[].status'` would have printed.
+  const fakeGh = (pending, statuses, labels) =>
+    `gh() { echo "$*" >> "$GH_CALLS"; case "$1 $2" in "pr list") printf '%s' '${pending}' ;; "pr view") printf '%s' '${labels}' ;; "run list") printf '%s' '${statuses}' ;; esac; }\n${guard}`;
+  const env = { GITHUB_SHA: tested, GITHUB_REPOSITORY: "o/r", GITHUB_REF_NAME: "main" };
+
+  const dir = mkdtempSync(join(tmpdir(), "pipeline-test-"));
+  try {
+    const calls = join(dir, "calls");
+    const output = join(dir, "output");
+    const run = (pending, statuses = "", labels = "autorelease: pending") => {
+      rmSync(calls, { force: true });
+      rmSync(output, { force: true });
+      const result = runStepBody(fakeGh(pending, statuses, labels), {
+        env: { ...env, GH_CALLS: calls, GITHUB_OUTPUT: output },
+      });
+      return {
+        ...result,
+        calls: existsSync(calls) ? readFileSync(calls, "utf8") : "",
+        output: existsSync(output) ? readFileSync(output, "utf8") : "",
+      };
+    };
+
+    const inFlight = run(`59 ${older}`, "in_progress");
+    assert.equal(inFlight.status, 0, "a release whose run is still going was refused");
+    assert.match(
+      inFlight.stderr,
+      new RegExp(`::notice::release pull request #59 merged as ${older}.*still going`),
+    );
+    assert.equal(inFlight.output, "in_flight=true\n", "release-please would tag it from here");
+    assert.match(
+      inFlight.calls,
+      new RegExp(
+        `^run list --repo o/r --workflow release.yml --commit ${older} --json status --jq`,
+        "m",
+      ),
+    );
+    assert.match(
+      inFlight.calls,
+      /^pr list --repo o\/r --base main --state merged --label autorelease: pending /m,
+    );
+
+    const finished = run(`59 ${older}`, "completed");
+    assert.equal(finished.status, 1, "a release merged as a commit whose run finished was tagged");
+    assert.match(
+      finished.stderr,
+      new RegExp(
+        `::error::release pull request #59 merged as ${older}, but this run tested ${tested}`,
+      ),
+    );
+    assert.equal(finished.output, "", "a finished run left release-please to run");
+
+    const swapped = run(`59 ${older}`, "completed", "autorelease: tagged");
+    assert.equal(swapped.status, 0, "a merge its own finished run tagged was refused");
+    assert.match(
+      swapped.stderr,
+      new RegExp(`::notice::release pull request #59 merged as ${older} was tagged`),
+    );
+    assert.equal(swapped.output, "", "a tagged merge left release-please to run");
+
+    const noRun = run(`59 ${older}`);
+    assert.equal(noRun.status, 1, "a merge with no run for its commit was tagged");
+    assert.match(
+      noRun.stderr,
+      new RegExp(
+        `::error::release pull request #59 merged as ${older}, but no release.yml run exists`,
+      ),
+    );
+    assert.equal(noRun.output, "", "a merge with no run left release-please to run");
+    const noRunSwapped = run(`59 ${older}`, "", "autorelease: tagged");
+    assert.equal(noRunSwapped.status, 0, "a tagged merge with no run was refused");
+    assert.match(
+      noRunSwapped.stderr,
+      new RegExp(`::notice::release pull request #59 merged as ${older} was tagged`),
+    );
+    const matching = run(`59 ${tested}`);
+    assert.equal(matching.status, 0, "the run the release merge started may tag it");
+    assert.doesNotMatch(matching.calls, /^run list/m);
+    assert.equal(run("").status, 0, "an ordinary push, with no release pending, goes on");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const after = namedStepBody(
+    workflows["release.yml"],
+    "Refuse to release a tree this run did not test",
+  );
+  const released = (sha) => runStepBody(after, { env: { ...env, RELEASED_SHA: sha } });
+  const mismatch = released(older);
+  assert.equal(mismatch.status, 1, "a release of an untested tree went on to artifacts");
+  assert.match(mismatch.stderr, new RegExp(`released ${older}, but this run tested ${tested}`));
+  assert.equal(released(tested).status, 0);
+
+  const releaseTag = jobsByName(workflows["release.yml"])["release-tag"];
+  const steps = stepsOf(releaseTag);
+  const at = (predicate) => steps.findIndex(predicate);
+  const guardAt = at((step) => step.name === "Refuse to tag a tree this run did not test");
+  const tagAt = at((step) => step.uses?.startsWith("googleapis/release-please-action@"));
+  const checkAt = at((step) => step.name === "Refuse to release a tree this run did not test");
+  assert.ok(guardAt >= 0 && guardAt < tagAt && tagAt < checkAt, "the steps run out of order");
+  const tagRuns = (inFlight) =>
+    evaluates(steps[tagAt].if, { steps: { guard: { outputs: inFlight } } });
+  assert.equal(
+    tagRuns({ in_flight: "true" }),
+    false,
+    "release-please ran over a release in flight",
+  );
+  assert.equal(tagRuns({}), true, "release-please was skipped with nothing in flight");
+  const checkRuns = (released) =>
+    evaluates(steps[checkAt].if, { steps: { rp: { outputs: released } } });
+  assert.equal(checkRuns({ release_created: "true" }), true);
+  assert.equal(checkRuns({}), false, "the release check ran with release-please skipped");
 });
 
 // The one ref taken at a branch: gates' shared workflows are the fleet's single

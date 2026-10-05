@@ -113,17 +113,76 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # For the run lookup of a merged release pull request's commit, which the guard below makes.
+      actions: read
     outputs:
       created: ${{ steps.rp.outputs.release_created }}
       tag: ${{ steps.rp.outputs.tag_name }}
       sha: ${{ steps.rp.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      # release-please tags the release pull request's merge commit, which is this run's tree
+      # only when that merge started this run. A merge whose own run is still going is left to
+      # that run, which tags it behind its own matrix, so release-please is skipped here and this
+      # run cannot tag it first. A merge whose run has finished still labelled pending, or has no
+      # run, fails before any tag exists, because a tag cannot be taken back. A finished run whose
+      # label has been swapped has tagged it, so it passes. `autorelease: pending` is the label
+      # release-please finds a merged release pull request by, and swaps once it has tagged.
+      - name: Refuse to tag a tree this run did not test
+        id: guard
+        run: |
+          set -euo pipefail
+          merged=$(gh pr list --repo "$GITHUB_REPOSITORY" --base "$GITHUB_REF_NAME" --state merged \
+            --label "autorelease: pending" --json number,mergeCommit \
+            --jq '.[] | "\(.number) \(.mergeCommit.oid)"')
+          rc=0
+          while read -r number sha; do
+            [ -n "$number" ] || continue
+            if [ "$sha" != "$GITHUB_SHA" ]; then
+              statuses=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --commit "$sha" \
+                --json status --jq '.[].status')
+              if [ -n "$statuses" ] && grep -qv '^completed$' <<< "$statuses"; then
+                echo "::notice::release pull request #$number merged as $sha; the run for $sha is still going and will tag it behind its own matrix" >&2
+                echo "in_flight=true" >> "$GITHUB_OUTPUT"
+              else
+                labels=$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
+                if ! grep -qx "autorelease: pending" <<< "$labels"; then
+                  echo "::notice::release pull request #$number merged as $sha was tagged already" >&2
+                elif [ -n "$statuses" ]; then
+                  echo "::error::release pull request #$number merged as $sha, but this run tested $GITHUB_SHA; re-run the failed jobs of the run for $sha, so the matrix that gates its tag is its own" >&2
+                  rc=1
+                else
+                  echo "::error::release pull request #$number merged as $sha, but no release.yml run exists for $sha; remove the autorelease: pending label from #$number to abandon that release, or tag it by hand" >&2
+                  rc=1
+                fi
+              fi
+            fi
+          done <<< "$merged"
+          exit $rc
+
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: rp
+        if: steps.guard.outputs.in_flight != 'true'
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           skip-github-pull-request: true
+
+      # The same invariant read from what release-please reports, so `artifacts` and `publish`
+      # never attach to an untested tree even if its search for the pull request and the one
+      # above ever disagree.
+      - name: Refuse to release a tree this run did not test
+        if: steps.rp.outputs.release_created == 'true'
+        run: |
+          set -euo pipefail
+          if [ "$RELEASED_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::release-please released $RELEASED_SHA, but this run tested $GITHUB_SHA" >&2
+            exit 1
+          fi
+          echo "released $RELEASED_SHA, the tree this run tested"
+        env:
+          RELEASED_SHA: ${{ steps.rp.outputs.sha }}
 
   artifacts:
     name: artifacts

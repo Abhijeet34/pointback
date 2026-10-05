@@ -214,6 +214,7 @@ No credential was stored to do that, and none is stored anywhere on this path.
 The first is on the release pull request, and it keeps `main` releasable.
 The `cross-platform` job in `ci.yml` calls the reusable workflow, guarded on `startsWith(github.head_ref, 'release-please--')` and on the head repository matching this one, and reaches branch protection through `checks` like every other job.
 Every other pull request skips it and pays nothing.
+The same call runs the reusable workflow's `engines` job, the WebKit and Firefox smoke (`test/engine-smoke.js`), whose `if:` admits the release pull request, the weekly run and dispatch, but not `release.yml`'s push, so a browser that breaks the core act holds the release at its merge and never strands a tag.
 That the guard fires was measured on a throwaway pull request from a `release-please--` branch: run `33853207426` reported seven jobs green - `check`, `secret scan`, `dependency review`, all three `cross-platform` legs, and `checks` - where the same tree on an ordinary branch reports four and skips the matrix.
 
 The second is on the tag, and it is the one that took two empty releases to get right.
@@ -237,6 +238,18 @@ With all three green, run `33864417184`: `release-tag` success, `artifacts` succ
 The real path is proven only by the next real release, and what that would show is `release-tag` starting after three green legs and `artifacts` attaching a tarball and an SBOM to the tag it made.
 
 A gate that runs after the thing it was meant to prevent is decoration.
+
+**The tag goes only on the tree this run tested.**
+release-please tags the release pull request's merge commit, not `github.sha`, and the two are the same commit only on the run that merge started.
+If that run goes red on a flake, `release-tag` skips, and the next push to `main` would tag the older merge commit behind a matrix that tested the newer head.
+So `release-tag` first lists merged pull requests labelled `autorelease: pending`, the label release-please finds them by, before any tag exists.
+For one merged as a commit other than `github.sha`, it asks for that commit's `release.yml` runs.
+While one of them is still going, the step passes with a notice and `release-please` is skipped, so that run tags the commit behind its own matrix and this run cannot tag it first.
+When those runs have all finished and the pull request still carries `autorelease: pending`, the step fails and names the commit, and re-running the failed jobs of its own run releases it behind its own matrix.
+When no `release.yml` run exists for the commit, the step fails and names it without asking for a re-run, because there is nothing to re-run: the release is abandoned by removing `autorelease: pending` from that pull request, or tagged by hand.
+If the label is already swapped, the commit is tagged, so the step passes with a notice.
+After release-please answers, a second step compares the `sha` it released with `github.sha` and fails `release-tag` on a difference, so `artifacts` and `publish` never attach to an untested tree even if the two searches ever disagree.
+`test/pipeline.test.js` runs both step bodies against a fake `gh` that answers `pr list` and `run list` separately, covering an in-flight run, a finished one, no run, a matching sha and nothing pending.
 
 The `artifacts` job checks the tag out rather than `main`, so the tarball is packed from the tagged tree, and the `cross-platform` job upstream of it ran on the release commit, which the preflight proves is the commit the tag names.
 The SBOM comes from GitHub's dependency-graph export (`gh api repos/OWNER/REPO/dependency-graph/sbom`), which describes the manifests from the same data the pull request dependency review reads.

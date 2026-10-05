@@ -15,6 +15,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -2568,59 +2569,100 @@ test(
 
 /**
  * A stand-in for the platform's opener, first on PATH, writing down every URL it is asked to open.
- * Windows opens through cmd.exe's `start`, which PATH cannot shadow, so there the test reads only
- * what the command reports and keeps the real opener off.
+ * Windows opens through `cmd /c start "" <url>`, and libuv looks `cmd` up on PATH rather than in
+ * System32 first, so there a copy of node named cmd.exe stands in: a preload that acts only under
+ * that name writes the URL and exits before node would read `/c` as a script.
  */
 function fakeOpener() {
-  if (process.platform === "win32") return null;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-opener-"));
   const log = join(dir, "opened.log");
   writeFileSync(log, "");
-  for (const command of ["open", "xdg-open"]) {
-    writeFileSync(join(dir, command), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\n`);
-    chmodSync(join(dir, command), 0o755);
+  const env = {
+    ...lab.env,
+    [`${envPrefix}NO_OPEN`]: undefined,
+    PATH: `${dir}${delimiter}${process.env.PATH}`,
+  };
+  // How long a negative waits for an opener that would have fired: a shell printf is done well
+  // inside 1000 ms, and the Windows stand-in is timed below, after its first launch is paid for.
+  let settleMs = 1000;
+  const remove = () =>
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  if (process.platform === "win32") {
+    try {
+      const preload = join(dir, "opener.cjs");
+      writeFileSync(
+        preload,
+        `if (require("node:path").basename(process.execPath).toLowerCase() === "cmd.exe") {
+  const args = process.argv.slice(2);
+  const line = args.length === 3 && args[0] === "start" && args[1] === ""
+    ? args[2] : "unexpected cmd arguments " + JSON.stringify(args);
+  require("node:fs").appendFileSync(${JSON.stringify(log)}, line + "\\n");
+  process.exit(0);
+}
+`,
+      );
+      const cmd = join(dir, "cmd.exe");
+      copyFileSync(process.execPath, cmd);
+      env.NODE_OPTIONS = `--require "${preload.replaceAll("\\", "/")}"`;
+      const launch = () => {
+        const started = Date.now();
+        execFileSync(cmd, ["/c", "start", "", "about:blank"], { env });
+        return Date.now() - started;
+      };
+      // The first launch of a freshly written executable also pays for its scan; the second is timed.
+      launch();
+      settleMs = Math.max(1000, 3 * launch());
+      assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
+        "about:blank",
+        "about:blank",
+      ]);
+      writeFileSync(log, "");
+    } catch (error) {
+      remove();
+      throw error;
+    }
+  } else {
+    for (const command of ["open", "xdg-open"]) {
+      writeFileSync(join(dir, command), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\n`);
+      chmodSync(join(dir, command), 0o755);
+    }
   }
   return {
-    env: {
-      ...lab.env,
-      [`${envPrefix}NO_OPEN`]: undefined,
-      PATH: `${dir}${delimiter}${process.env.PATH}`,
-    },
+    env,
+    settleMs,
     opened: () => readFileSync(log, "utf8").split("\n").filter(Boolean),
+    remove,
   };
 }
 
 test(
   "opening the file again while a tab shows the review opens no second tab",
   { skip: !executable && "no browser found" },
-  async () => {
+  async (t) => {
     const { file } = copyOfFixture();
     const session = (await cli([file], lab.env)).json().session;
     const page = await browser.page(session.url);
     await page.waitFor("document.body.dataset.ready === '1'");
     const opener = fakeOpener();
-    const env = opener?.env ?? lab.env;
+    t.after(opener.remove);
 
-    const again = (await cli([file], env)).json();
+    const again = (await cli([file], opener.env)).json();
     assert.match(again.next_step, /already open in the reviewer's browser, so no new tab/);
-    if (opener) {
-      // A negative with no event to wait on: the CLI spawns the opener before it returns, and this
-      // one is a shell printf, so 1000 ms outlasts its write; the half below measures that launch.
-      await new Promise((r) => setTimeout(r, 1000));
-      assert.deepEqual(opener.opened(), [], "no browser was asked to open anything");
-    }
+    // A negative with no event to wait on: the CLI spawns the opener before it returns, and
+    // `settleMs` outlasts that opener's own launch and write.
+    await new Promise((r) => setTimeout(r, opener.settleMs));
+    assert.deepEqual(opener.opened(), [], "no browser was asked to open anything");
 
     // Not vacuous: with the tab gone, the same command opens one.
     await page.close();
     await until(async () => !/already open/.test((await cli([file], lab.env)).json().next_step), {
       what: "the server to see the tab close",
     });
-    const third = (await cli([file], env)).json();
+    const third = (await cli([file], opener.env)).json();
     assert.doesNotMatch(third.next_step, /already open/);
-    if (opener) {
-      await until(() => opener.opened().length === 1, { what: "the opener to be asked once" });
-      assert.deepEqual(opener.opened(), [third.session.url]);
-    }
+    await until(() => opener.opened().length === 1, { what: "the opener to be asked once" });
+    t.diagnostic(`the ${process.platform} opener was asked to open ${opener.opened()[0]}`);
+    assert.deepEqual(opener.opened(), [third.session.url]);
   },
 );
 
