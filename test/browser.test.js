@@ -2851,9 +2851,11 @@ for (const [what, path, navigation, fixture] of [
       const { asked, ...rest } = await openWithOneRefused(path, fixture, navigation);
       const { seen, look } = await healthyReview(fixture);
       assert.deepEqual(rest, { seen, look, navigation, refused: 1 });
-      // The chrome asks for each face twice a load (measured on a review whose loads all answer), so
-      // a refused face is bounded by the one reload, not by one ask more; every other file is.
-      if (!what.endsWith("face")) assert.equal(asked, 2, "one ask more than the one refused");
+      // A refused face is asked for again on the reloaded chrome: measured as 3 asks (the refused one,
+      // then two on the reloaded chrome) in 1200 of 1200 windows-2025 samples for Plex Mono. Not pinned
+      // at 3, since how often Chrome requests a face can change with its version, not with this code.
+      if (what.endsWith("face")) assert.ok(asked >= 2, "the refused face asked for again");
+      else assert.equal(asked, 2, "one ask more than the one refused");
     },
   );
 }
@@ -2870,6 +2872,42 @@ test(
       asked: 1,
       refused: 1,
     });
+  },
+);
+
+test(
+  "a chrome file refused after the reviewer's own reload is recovered once, as a first load's is",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    let refused;
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      await page.navigate(url);
+      await reviewIn(page);
+      refused = await refuseLoads(page, `http://127.0.0.1:${port}/chrome.css*`);
+      await page.send("Page.reload");
+      // The recovered load is the second ask for the sheet; the reviewer's reload alone is the first.
+      await until(() => refused.counts.asked === 2, {
+        what: "the recovered chrome to ask for its sheet",
+      });
+      await page.waitFor("document.body?.dataset.ready === '1'");
+      const { artifact } = await reviewIn(page);
+      await noteOn(page, artifact, "#title", "Name the queue in the title");
+      // Counted before the look is read: DevTools fetches the chrome's sheets again for the CSS domain.
+      const counts = { ...refused.counts };
+      assert.deepEqual(
+        { look: await lookOf(page, artifact), counts },
+        { look: (await healthyReview()).look, counts: { asked: 2, refused: 1 } },
+      );
+    } finally {
+      await refused?.stop();
+      await page.close();
+      await own.stop();
+    }
   },
 );
 
