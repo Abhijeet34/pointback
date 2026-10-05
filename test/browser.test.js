@@ -2562,6 +2562,7 @@ test(
       if (held.length === 0) held.push(params.requestId);
       else page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
     };
+    page.browser.listeners.push(listener);
     try {
       const { file, html } = copyOfFixture();
       const url = (await cli([file], own.env)).json().session.url;
@@ -2574,7 +2575,6 @@ test(
       const { uid } = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().prompts[0];
       await cli(["reply", file, String(uid), "--question", "--message", "Which queue?"], own.env);
       await page.waitFor("document.querySelector('.mark-answer') !== null");
-      page.browser.listeners.push(listener);
       await page.browser.send("Fetch.enable", {
         patterns: [{ urlPattern: `http://127.0.0.1:${port}/artifact/*/plan.html*` }],
       });
