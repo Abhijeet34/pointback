@@ -5,7 +5,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { daemonHolds, pidAlive } from "./daemon-lock.js";
+import { daemonHolds, pidAlive, probeTimeout } from "./daemon-lock.js";
 import { tokenProof } from "./http-guard.js";
 import { env, name, version } from "./identity.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
@@ -191,7 +191,7 @@ export async function refusingServer(stateDir) {
   try {
     const challenge = randomBytes(16).toString("hex");
     const res = await fetch(`http://127.0.0.1:${record.port}/health?challenge=${challenge}`, {
-      signal: AbortSignal.timeout(1500),
+      signal: probeTimeout(1500),
     });
     const status = /** @type {any} */ (await res.json());
     return status?.app === name && recordHolds(record, status) ? record : null;

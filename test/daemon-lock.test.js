@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { claimDaemon } from "../src/daemon-lock.js";
 import { name } from "../src/identity.js";
+import { closedPort, stallNextTick } from "./helpers/stall.js";
 
 const stateDir = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-lock-"));
 const locks = (dir) => readdirSync(dir).filter((name) => name.endsWith(".lock"));
@@ -21,12 +22,6 @@ async function listening() {
   const server = createServer().listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   return { server, port: /** @type {import("node:net").AddressInfo} */ (server.address()).port };
-}
-
-async function closedPort() {
-  const { server, port } = await listening();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
 }
 
 /** A listener whose `/health` answers with `body`, and nothing else. */
@@ -63,6 +58,16 @@ test("a lock whose pid came back but whose port is closed is taken over", async 
   const dir = stateDir();
   record(dir, 1, { pid: process.pid, port: await closedPort() });
   assert.ok(await claimDaemon(dir));
+});
+
+// A start the machine descheduled for longer than the probe's 1 s timeout comes back to the port's
+// refusal and an expired timer at once. The refusal is the answer, or the dead holder reads as busy.
+test("a start stalled past the probe's timeout still takes over a lock whose port is closed", async () => {
+  const dir = stateDir();
+  record(dir, 1, { pid: process.pid, port: await closedPort() });
+  const claiming = claimDaemon(dir);
+  stallNextTick(1_500);
+  assert.ok(await claiming);
 });
 
 // A reboot can hand a crashed daemon's pid to a process and its sticky port to another listener; a
