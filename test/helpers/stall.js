@@ -27,6 +27,28 @@ export function stallNextTick(ms) {
     if (!socket?.connecting) {
       throw new Error("stallNextTick: no connect was in flight when the loop blocked");
     }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    block(ms);
   });
+}
+
+/**
+ * As stallNextTick, for a probe that is not issued yet when the stall is armed, such as one that
+ * follows a response the test's own server sends: the stall lands on the tick after the next client
+ * socket's connect, which is the probe's.
+ */
+export function stallOnConnect(ms) {
+  const onSocket = ({ socket }) => {
+    unsubscribe("net.client.socket", onSocket);
+    process.nextTick(() => {
+      if (!socket.connecting) {
+        throw new Error("stallOnConnect: the connect had already settled when the loop blocked");
+      }
+      block(ms);
+    });
+  };
+  subscribe("net.client.socket", onSocket);
+}
+
+function block(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

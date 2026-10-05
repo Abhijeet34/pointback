@@ -25,15 +25,18 @@ export function readServerInfo(stateDir) {
  */
 export async function health(info) {
   const challenge = randomBytes(16).toString("hex");
+  const probe = probeTimeout(1500);
   try {
     const res = await fetch(`http://127.0.0.1:${info.port}/health?challenge=${challenge}`, {
-      signal: AbortSignal.timeout(1500),
+      signal: probe.signal,
     });
     if (!res.ok) return null;
     const status = /** @type {any} */ (await res.json());
     return { ...status, proven: status.proof === tokenProof(info.token, challenge) };
   } catch {
     return null;
+  } finally {
+    probe.done();
   }
 }
 
@@ -154,17 +157,17 @@ const STOP_TIMEOUT_MS = 5_000;
  */
 function listening(port, ms) {
   return new Promise((resolve) => {
+    const probe = probeTimeout(Math.max(1, ms));
     const socket = connect(port, "127.0.0.1");
-    socket.setTimeout(Math.max(1, ms), () => {
+    const settle = (answer) => {
+      probe.done();
       socket.destroy();
-      resolve(true);
-    });
-    socket.once("connect", () => {
-      socket.destroy();
-      resolve(true);
-    });
+      resolve(answer);
+    };
+    probe.signal.addEventListener("abort", () => settle(true));
+    socket.once("connect", () => settle(true));
     socket.once("error", (/** @type {NodeJS.ErrnoException} */ error) =>
-      resolve(error.code !== "ECONNREFUSED"),
+      settle(error.code !== "ECONNREFUSED"),
     );
   });
 }
@@ -188,16 +191,19 @@ export function recordHolds(record, status) {
 export async function refusingServer(stateDir) {
   const record = readJson(join(stateDir, "server.json"));
   if (!Number.isInteger(record?.port) || !recordHolds(record, null)) return null;
+  const probe = probeTimeout(1500);
   try {
     const challenge = randomBytes(16).toString("hex");
     const res = await fetch(`http://127.0.0.1:${record.port}/health?challenge=${challenge}`, {
-      signal: probeTimeout(1500),
+      signal: probe.signal,
     });
     const status = /** @type {any} */ (await res.json());
     return status?.app === name && recordHolds(record, status) ? record : null;
   } catch (error) {
     const busy = error.name === "TimeoutError" || error.name === "AbortError";
     return busy ? record : null;
+  } finally {
+    probe.done();
   }
 }
 
