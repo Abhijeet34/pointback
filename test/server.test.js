@@ -897,11 +897,24 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
     onIdle: () => (released = true),
   });
   const info = { authorization: `Bearer ${held.token}`, "content-type": "application/json" };
-  const session = await fetch(`http://127.0.0.1:${held.port}/api/sessions`, {
-    method: "POST",
-    headers: info,
-    body: JSON.stringify({ file: fixture }),
-  }).then((r) => r.json());
+  // The tab's requests share one kept-alive connection, as a browser's do, through node:http: on
+  // Node 24.20.0 (undici 7.29.0) a fetch reusing a connection under a mocked setTimeout stalls
+  // until the server closes it, and this daemon never closes an idle one (docs/ENGINEERING-NOTES.md).
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  let tabConnectionClosed = false;
+  const tab = (method, path, body) =>
+    new Promise((resolve, reject) => {
+      const req = request(`http://127.0.0.1:${held.port}${path}`, { method, agent, headers: info });
+      req.on("socket", (socket) => socket.once("close", () => (tabConnectionClosed = true)));
+      req.on("error", reject);
+      req.on("response", (res) => {
+        let text = "";
+        res.on("data", (d) => (text += d));
+        res.on("end", () => resolve({ status: res.statusCode, json: () => JSON.parse(text) }));
+      });
+      req.end(body === undefined ? undefined : JSON.stringify(body));
+    });
+  const session = (await tab("POST", "/api/sessions", { file: fixture })).json();
   const watching = new WebSocket(`ws://127.0.0.1:${held.port}/api/${session.key}/events`, [
     "events",
     `bearer.${held.token}`,
@@ -912,7 +925,7 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
   for (let beat = 1; beat <= 10; beat += 1) {
     t.mock.timers.tick(idleMs - 1);
     assert.ok(held.server.listening, `heartbeat ${beat} came inside the window and kept it alive`);
-    assert.equal((await fetch(`http://127.0.0.1:${held.port}/health`)).status, 200);
+    assert.equal((await tab("GET", "/health")).status, 200);
   }
 
   // And with the heartbeat stopped, the daemon releases a whole window later, stream still open.
@@ -925,6 +938,12 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
     what: "an open but no-longer-heartbeating tab to let the daemon idle out",
     timeoutMs: 10_000,
   });
+  // The idle-out closes the tab's idle kept-alive connection too, so a silent tab holds nothing.
+  await until(() => tabConnectionClosed, {
+    what: "the idle-out to close the tab's idle connection",
+    timeoutMs: 10_000,
+  });
+  agent.destroy();
   watching.close();
   await held.close();
 });
