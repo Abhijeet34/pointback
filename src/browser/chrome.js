@@ -82,7 +82,9 @@ let unloaded = false;
 let taken = /** @type {HTMLElement | null} */ (null);
 let current = true;
 let liveReload = true;
-let connection = "live";
+// Live only once a health answer proves the server holds this page's token (`health`), since `api`
+// sends the token only while live.
+let connection = "lost";
 let editing = false;
 let deferredReload = false;
 // The ids of the notes a send has in flight: Send stays shut until the stream reports them sent,
@@ -97,7 +99,8 @@ let problem = null;
 let cardProblem = null;
 let marksDirty = true;
 let shownMarks = 0;
-let appName = "";
+// Named by the first proven health answer; a notice drawn before one says "the command".
+let appName = "the command";
 // The reviewer's unsent notes, as the server holds them: every change goes through it first.
 let pending = [];
 // How many times the stream has set `pending`, so a change's own answer can tell it is stale.
@@ -165,8 +168,8 @@ async function boot() {
   for (let failures = 1; !session; failures += 1) {
     try {
       app = await health();
-      connection = "live";
       if (!app.proven) throw Object.assign(new Error("unproven"), { answered: true });
+      connection = "live";
       session = await api("GET", `/api/${key}/session`);
     } catch (error) {
       // Only an answer says the link is spent. A load nothing answered is a daemon between an
@@ -174,6 +177,8 @@ async function boot() {
       // (docs/ENGINEERING-NOTES.md); the review is still there, so the page waits for it, and the
       // bar and Send say it is not connected rather than offering what cannot work yet.
       if (error.answered) {
+        connection = "gone";
+        renderPresence();
         statusLine.textContent =
           "This link no longer works. Run the command on the file again to get a fresh one.";
         return;
