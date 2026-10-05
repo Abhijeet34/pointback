@@ -7,8 +7,11 @@
       // While `calling` is set, the page moves the focus to its own field every 20 ms. Every key event
       // the page receives is reported to the console as it arrives, in the capture phase, so the test
       // process hears it even after the frame is removed. A focus() on an element already focused does
-      // nothing, so it lets go first; it keeps the page where the reviewer scrolled it.
+      // nothing, so it lets go first; it keeps the page where the reviewer scrolled it. The element the
+      // page holds after its call is reported each time it changes: a page whose window is away gets
+      // no focus event, and the chrome can unload it for that call before a test could ask it.
       globalThis.calling = false;
+      let holding = null;
       for (const type of ["keydown", "keyup"]) {
         addEventListener(
           type,
@@ -21,6 +24,8 @@
         const field = document.getElementById("field");
         field.blur();
         field.focus({ preventScroll: true });
+        if (document.activeElement.id !== holding)
+          console.log("focus-calls focus", (holding = document.activeElement.id));
       }, 20);
     </script>
   </head>

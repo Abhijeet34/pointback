@@ -912,22 +912,31 @@ async function pageAddress(page) {
 }
 
 /**
- * The key events the focus fixture reports to this process, in the order they arrive. A page the
- * wrapper removes takes its own window and its own state with it, so the record lives here, and is
- * reset for each review opened.
+ * The key events the focus fixture reports to this process, in the order they arrive, and the ids of
+ * the elements it holds after its focus calls. A page the wrapper removes takes its own window and its
+ * own state with it, so the record lives here, and is reset for each review opened.
  */
 let keyReports = [];
+let focusReports = [];
 let hearing = false;
 function hearKeys(page) {
   keyReports = [];
+  focusReports = [];
   if (hearing) return;
   hearing = true;
   page.browser.listeners.push((message) => {
     if (message.method !== "Runtime.consoleAPICalled") return;
     const [marker, type, key] = message.params.args.map((arg) => arg.value);
     if (marker === "focus-calls key") keyReports.push(`${type} ${key}`);
+    else if (marker === "focus-calls focus") focusReports.push(type);
   });
 }
+
+/**
+ * Waits for the page to report that its own field holds the focus. The chrome can unload the page for
+ * that move before the window comes back, which removes the page's target, so the page is never asked.
+ */
+const pageTookFocus = (what) => until(() => focusReports.at(-1) === "field", { what });
 
 /** Real key presses, which go wherever the browser has the focus. */
 async function press(page, word) {
@@ -1251,9 +1260,7 @@ test(
       what: "the review window to lose focus",
     });
     await artifact.eval("globalThis.calling = true");
-    await until(async () => (await artifact.eval("document.activeElement?.id")) === "field", {
-      what: "the page to take the focus in its own field while the window is inactive",
-    });
+    await pageTookFocus("the page to take the focus in its own field while the window is inactive");
     await page.front();
     const result = await writeNote(
       page,
@@ -1373,38 +1380,63 @@ test(
   },
 );
 
-test(
-  "a page that takes the focus as the window leaves is unloaded when the window comes back",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const { session } = await focusCallsReview();
-    const { page, artifact } = await openReview(session.url);
-    await pointAt(page, artifact, "#p1");
-    await artifact.eval(
-      `document.addEventListener("visibilitychange", () => { if (document.hidden) document.getElementById("field").focus(); })`,
-    );
-    const { targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" });
-    await page.browser.send("Target.activateTarget", { targetId });
-    await until(async () => !(await page.eval("document.hasFocus()")), {
-      what: "the review window to lose focus",
-    });
-    await until(async () => (await artifact.eval("document.activeElement?.id")) === "field", {
-      what: "the page to take the focus in its own field as the window leaves",
-    });
-    await page.front();
-    const result = await writeNote(
-      page,
-      "document.getElementById('cardText')",
-      "document.getElementById('card').hidden",
-    );
-    await page.browser.send("Target.closeTarget", { targetId });
-    assert.deepEqual(
-      { text: result.text, keys: result.keys, kept: result.kept },
-      { text: "abc", keys: 0, kept: true },
-    );
-    await page.close();
-  },
-);
+/**
+ * Has the chrome's deferred tasks run 200 ms late while its window is away, as a loaded runner or a
+ * hidden tab's throttled timers can, so its check of the focus-out the window's leaving gives the note
+ * runs after the page has taken the focus, and the page is unloaded before the window comes back
+ * (macos-15, run 37279709792: the page's target was gone before a wait on it saw the move).
+ */
+const lateWhileAway = (page) =>
+  page.eval(`(() => {
+    const real = window.setTimeout;
+    window.setTimeout = (run, ms, ...rest) =>
+      real(run, document.hasFocus() ? ms : Math.max(ms ?? 0, 200), ...rest);
+  })()`);
+
+for (const late of [false, true]) {
+  test(
+    late
+      ? "a page that takes the focus as the window leaves is unloaded while the window is away when the chrome checks late"
+      : "a page that takes the focus as the window leaves is unloaded when the window comes back",
+    { skip: !executable && "no browser found" },
+    async () => {
+      const { session } = await focusCallsReview();
+      const { page, artifact } = await openReview(session.url);
+      await pointAt(page, artifact, "#p1");
+      if (late) await lateWhileAway(page);
+      await artifact.eval(
+        `document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) return;
+          document.getElementById("field").focus();
+          console.log("focus-calls focus", document.activeElement.id);
+        })`,
+      );
+      const { targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" });
+      await page.browser.send("Target.activateTarget", { targetId });
+      await until(async () => !(await page.eval("document.hasFocus()")), {
+        what: "the review window to lose focus",
+      });
+      if (late) {
+        await until(async () => (await pageAddress(page)) === "about:blank", {
+          what: "the page's frame to hold about:blank while the window is away",
+        });
+      }
+      await pageTookFocus("the page to take the focus in its own field as the window leaves");
+      await page.front();
+      const result = await writeNote(
+        page,
+        "document.getElementById('cardText')",
+        "document.getElementById('card').hidden",
+      );
+      await page.browser.send("Target.closeTarget", { targetId });
+      assert.deepEqual(
+        { text: result.text, keys: result.keys, kept: result.kept },
+        { text: "abc", keys: 0, kept: true },
+      );
+      await page.close();
+    },
+  );
+}
 
 test(
   "a press over the page as the window comes back keeps the page loaded",
