@@ -290,7 +290,9 @@ async function listen() {
     // review no longer holds, so this page's link is spent.
     if (code === 4401 || code === 4404) break;
     if (retaking) {
+      // Not live again until the next proven answer.
       retaking = false;
+      connection = "lost";
       continue;
     }
     failures += 1;

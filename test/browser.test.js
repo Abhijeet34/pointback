@@ -3703,6 +3703,103 @@ test(
   },
 );
 
+/**
+ * Holds each health check `page` makes until `release` lets it through to the daemon, and refuses
+ * each API call until then. Lists every request that carries `token`, as `tokenRequests` does.
+ */
+async function holdHealth(page, port, token) {
+  const carried = [];
+  const held = [];
+  let refusing = true;
+  const carries = ({ url, headers }) =>
+    url.includes(token) || Object.values(headers).some((value) => value.includes(token));
+  const listener = ({ method, params, sessionId }) => {
+    if (sessionId !== page.sessionId) return;
+    if (method === "Network.webSocketWillSendHandshakeRequest") {
+      if (carries({ url: "", headers: params.request.headers })) carried.push("WebSocket events");
+      return;
+    }
+    if (method !== "Fetch.requestPaused") return;
+    const { requestId, request } = params;
+    const { pathname } = new URL(request.url);
+    if (carries(request)) carried.push(`${request.method} ${pathname}`);
+    if (pathname === "/health") held.push(requestId);
+    else if (refusing)
+      page
+        .send("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" })
+        .catch(() => {});
+    else page.send("Fetch.continueRequest", { requestId }).catch(() => {});
+  };
+  page.browser.listeners.push(listener);
+  await page.send("Fetch.enable", {
+    patterns: [
+      { urlPattern: `http://127.0.0.1:${port}/health*` },
+      { urlPattern: `http://127.0.0.1:${port}/api/*` },
+    ],
+  });
+  return {
+    carried,
+    held,
+    async release() {
+      refusing = false;
+      for (const requestId of held.splice(0))
+        await page.send("Fetch.continueRequest", { requestId });
+    },
+    async stop() {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.send("Fetch.disable");
+    },
+  };
+}
+
+test(
+  "a tab taken over whose health check is held sends nothing carrying its token, and ends its review once proven",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { port, token } = own.serverInfo();
+    const { page } = await openReview(url);
+    const second = await browser.page(url);
+    let watched;
+    try {
+      await second.waitFor("document.body.dataset.ready === '1'");
+      await page.waitFor(
+        noticeSays("Another tab took over this review, so this page has stopped updating."),
+      );
+      // The second tab opened after this one, so this one is in the background until it is brought forward.
+      await page.front();
+      watched = await holdHealth(page, port, token);
+      await clickOn(page, "document.getElementById('takeOver')");
+      await until(() => watched.held.length === 1, {
+        what: "the take over's health check to be held",
+      });
+      await clickOn(page, "document.getElementById('end')");
+      await page.waitFor("document.getElementById('endDialog').open");
+      await clickOn(page, "document.getElementById('endGo')");
+      // The barrier: End review has been handled, whether its request was refused or never sent.
+      await page.waitFor(
+        "document.getElementById('status').textContent.startsWith('Could not end the review')",
+      );
+      assert.deepEqual(watched.carried, []);
+      await watched.release();
+      await page.waitFor(FOLLOWING);
+      await clickOn(page, "document.getElementById('end')");
+      await page.waitFor("document.getElementById('endDialog').open");
+      await clickOn(page, "document.getElementById('endGo')");
+      await page.waitFor(noticeSays("You ended this review."));
+      const polled = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json();
+      assert.equal(polled.status, "ended");
+    } finally {
+      await watched?.stop();
+      await second.close();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
 // A tab that could not reach the daemon while its review was evicted (a laptop asleep, a dropped
 // network) comes back to a review that no longer exists: the server refuses its stream with 4404,
 // and the tab must say so and how to get a fresh page, and the agent's next open must give one.
