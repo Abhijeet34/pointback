@@ -1410,7 +1410,9 @@ function takenFrom(field) {
 let away;
 function leftWindow() {
   setTimeout(() => {
-    if (away === undefined) away = writing(document.activeElement) ? document.activeElement : null;
+    if (away === undefined && (!document.hasFocus() || document.hidden)) {
+      away = writing(document.activeElement) ? document.activeElement : null;
+    }
   });
 }
 // A window that comes back with the page holding the focus took it from that note while it was away.
