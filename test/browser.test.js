@@ -169,6 +169,20 @@ afterEach(async () => {
   }
 });
 
+// A throwaway profile that reaches the login keychain makes macOS ask the developer for their
+// password mid-suite, so the switches are read back from the running browser's own command line.
+test(
+  "the test browser keeps its cookie key out of the system keychain",
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
+  async () => {
+    const page = await browser.page("chrome://version");
+    const commandLine = await page.eval("document.getElementById('command_line').textContent");
+    await page.close();
+    assert.match(commandLine, /--use-mock-keychain\b/);
+    assert.match(commandLine, /--password-store=basic\b/);
+  },
+);
+
 /** The reference implementation's snapshot: every element to depth 6 with 80 characters of text. */
 const REFERENCE_SNAPSHOT = `(() => {
   const lines = [];

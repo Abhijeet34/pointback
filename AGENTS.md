@@ -18,6 +18,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   Never import Playwright into `test/*.test.js`; WebKit and Firefox are `npm run smoke` only.
   The smoke gates the release pull request, so it opens a review with `open` (the chrome's `ready`), never `page.goto` (`docs/ENGINEERING-NOTES.md`).
   Drive Annotate with the CDP harness, never chrome-devtools-axi, which never moves focus into the out-of-process frame.
+  The harness's launch keeps the browser out of the system keychain (`--use-mock-keychain`, `--password-store=basic` in `startBrowser`); without them macOS asks the developer for their login password mid-suite.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
   The browser suite shares one daemon, which never evicts a review holding notes and refuses an open past `limits.sessions`; its `afterEach` releases what each test leaves.
 - A test that mocks `setTimeout` makes its HTTP requests with `node:http`, never `fetch`, which stalls on a reused connection under the mock on Node 24.20.0 (`docs/ENGINEERING-NOTES.md`).
