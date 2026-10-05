@@ -19,7 +19,7 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { after, before, test } from "node:test";
+import { after, afterEach, before, test } from "node:test";
 import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { devToolsUrl, findBrowser, launchBrowser } from "./helpers/cdp.js";
@@ -90,6 +90,36 @@ before(async () => {
 after(async () => {
   await browser?.close();
   await lab.stop();
+});
+
+// The suite shares one daemon, which holds at most `limits.sessions` reviews and never makes room by
+// dropping one still holding notes, unsent or not yet acknowledged. Most tests leave one so, and the
+// 64th refused every open after it. So what each test leaves is released after it, as a reviewer and
+// an agent would: its drafts discarded, and its review polled until a poll brings nothing new.
+afterEach(async () => {
+  if (!executable) return;
+  const { port, token } = lab.serverInfo();
+  const dir = join(lab.dir, "sessions");
+  for (const name of readdirSync(dir).filter((entry) => entry.endsWith(".json"))) {
+    let session;
+    try {
+      session = JSON.parse(readFileSync(join(dir, name), "utf8"));
+    } catch {
+      continue; // being written; the next test's release reads it whole
+    }
+    const { key, file, drafts = [], pending = [], unacked } = session;
+    for (const { id } of drafts) {
+      await fetch(`http://127.0.0.1:${port}/api/${key}/drafts/${id}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${token}` },
+      });
+    }
+    if (pending.length === 0 && !unacked) continue;
+    for (let polls = 0; polls < 3; polls += 1) {
+      const polled = await cli(["poll", file, "--timeout-ms", "0"], lab.env);
+      if (polled.json().status !== "feedback") break;
+    }
+  }
 });
 
 /** The reference implementation's snapshot: every element to depth 6 with 80 characters of text. */
