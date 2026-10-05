@@ -405,21 +405,7 @@ function render() {
   annotateSwitch.disabled = ended !== null || fileGone;
   // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
   cardAdd.disabled = offline;
-  const reason =
-    connection === "gone"
-      ? "This page can no longer add notes. Copy your words before you leave it."
-      : offline
-        ? `${cardAdd.textContent} opens again when this page reconnects. Your words stay here.`
-        : (cardProblem ??
-          (fileGone
-            ? `The file was moved or deleted. ${cardAdd.textContent} keeps this with your other notes, and Send opens again if the file comes back.`
-            : ended
-              ? `This review ended. ${cardAdd.textContent} keeps this, and Send can still send it.`
-              : !current
-                ? `Another tab took over this review. ${cardAdd.textContent} keeps this, and that tab shows it too.`
-                : null));
-  cardReason.hidden = !reason;
-  setText(cardReason, reason ?? "");
+  renderReason();
   endButton.disabled = ended !== null || fileGone;
   // A failure the reviewer needs to see outlives the render that would otherwise write over it.
   setText(
@@ -605,6 +591,29 @@ function renderNotice() {
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
   takeOverButton.hidden = !action;
+}
+
+/** Says why a card a forced close kept open is still there, while it holds words. */
+function renderReason() {
+  const offline = connection !== "live";
+  const forced = held && cardText.value.trim() !== "";
+  const reason =
+    connection === "gone"
+      ? "This page can no longer add notes. Copy your words before you leave it."
+      : offline
+        ? `${cardAdd.textContent} opens again when this page reconnects. Your words stay here.`
+        : (cardProblem ??
+          (!forced
+            ? null
+            : fileGone
+              ? `The file was moved or deleted. ${cardAdd.textContent} keeps this with your other notes, and Send opens again if the file comes back.`
+              : ended
+                ? `This review ended. ${cardAdd.textContent} keeps this, and Send can still send it.`
+                : !current
+                  ? `Another tab took over this review. ${cardAdd.textContent} keeps this, and that tab shows it too.`
+                  : null));
+  cardReason.hidden = !reason;
+  setText(cardReason, reason ?? "");
 }
 
 /** A frame that strayed is covered where the reviewer is looking, with the way back on top. */
@@ -913,6 +922,7 @@ function followAnnotate() {
  */
 function letCardGo() {
   if (cardText.value.trim() === "") closeCompose(false);
+  else held = !card.hidden;
 }
 
 // A page under review can post at any moment. What it proposes is acted on only straight after the
@@ -936,11 +946,14 @@ const gesture = (active) =>
 // sends the fields that describe what the reviewer pointed at, and never the note text, so a
 // hostile page cannot put words in the reviewer's mouth. `composing` holds the pending note.
 let composing = null;
+// Set when a forced close kept the card open, so the card can say why it is still there.
+let held = false;
 
 function openCompose(note, label, outline, rects, from) {
   composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
   // A refusal belongs only to the words it refused; a fresh card gets a clean reason line.
   cardProblem = null;
+  held = false;
   // A half-typed note is worth more than a live reload; the reload lands when the card closes.
   editing = true;
   cardTarget.textContent = label;
@@ -963,6 +976,7 @@ function closeCompose(refocus) {
   card.hidden = true;
   const from = composing?.from;
   composing = null;
+  held = false;
   editing = false;
   if (deferredReload && !fileGone) show();
   // Tell the artifact the target is done so it drops the highlight; hand keyboard focus back to
@@ -1226,6 +1240,7 @@ async function addNote() {
   }
   return kept;
 }
+cardText.addEventListener("input", renderReason);
 cardText.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();

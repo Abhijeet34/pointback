@@ -1206,6 +1206,46 @@ test(
 );
 
 test(
+  "a card opened empty in a tab another tab took over shows no reason line",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    const second = await browser.page(session.url);
+    await second.waitFor("document.body.dataset.ready === '1'");
+    await page.front();
+    await page.waitFor(
+      noticeSays("Another tab took over this review, so this page has stopped updating."),
+    );
+    await pointAt(page, artifact, "#title");
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: "", reason: null });
+    await second.close();
+    await page.close();
+  },
+);
+
+test(
+  "a card the agent's end held open loses its reason when the reviewer deletes its words, and gets it back on typing",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#title");
+    await page.type("Cut");
+    assert.equal((await cli(["end", file], lab.env)).json().ended_by, "agent");
+    await page.waitFor(noticeSays("Your agent ended this review."));
+    assert.equal(JSON.parse(await page.eval(CARD_SEEN)).words, "Cut");
+    for (let deleted = 0; deleted < 3; deleted += 1) await page.key("Backspace", { keyCode: 8 });
+    await page.waitFor("!document.getElementById('cardReason').checkVisibility()");
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: "", reason: null });
+    await page.type("x");
+    await page.waitFor("document.getElementById('cardReason').checkVisibility()");
+    await page.close();
+  },
+);
+
+test(
   "a note half-typed when the file goes stays in its card until the reviewer's own Cancel drops it",
   { skip: !executable && "no browser found" },
   async () => {
