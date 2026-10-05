@@ -1144,6 +1144,64 @@ test(
 );
 
 test(
+  "keys the page takes with no note open reach the key channel",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    await clickIn(page, artifact, "#field");
+    await press(page, "ok");
+    await until(async () => keyReports.length >= 4, {
+      what: "the key channel to report the page's own keys",
+    });
+    assert.deepEqual(keyReports.slice(0, 4), ["keydown o", "keyup o", "keydown k", "keyup k"]);
+    await page.close();
+  },
+);
+
+test(
+  "a move of the focus from a note to a chrome control, or out of the window, leaves the page alone",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await page.eval(`globalThis.blurs = 0; addEventListener("blur", () => (blurs += 1))`);
+    await page.eval("document.getElementById('annotate').focus()");
+    await page.waitFor("document.activeElement.id === 'annotate'");
+    // Two tasks: the check a focus move starts runs in one, so the second means it has run.
+    await page.eval("new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0))");
+    const moved = JSON.parse(
+      await page.eval(
+        `JSON.stringify({ card: !document.getElementById("card").hidden, cover: document.getElementById("cover").hidden })`,
+      ),
+    );
+    assert.deepEqual(moved, { card: true, cover: true });
+
+    await page.eval(`${card}.focus()`);
+    await page.waitFor(`${card} === document.activeElement`);
+    const blursBefore = await page.eval("blurs");
+    const other = await browser.page("about:blank");
+    await page.browser.send("Target.activateTarget", { targetId: other.targetId });
+    await page.waitFor("!document.hasFocus()");
+    await page.eval("new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0))");
+    const away = JSON.parse(
+      await page.eval(
+        `JSON.stringify({ card: !document.getElementById("card").hidden, cover: document.getElementById("cover").hidden, focus: document.activeElement.id, blurred: blurs > ${blursBefore} })`,
+      ),
+    );
+    assert.deepEqual(away, { card: true, cover: true, focus: "cardText", blurred: true });
+    await page.front();
+    await page.waitFor("document.hasFocus()");
+    await other.close();
+    await page.close();
+  },
+);
+
+test(
   "focus handling keeps the focus on Back while a held note defers the reload of a page that strayed",
   { skip: !executable && "no browser found" },
   async () => {

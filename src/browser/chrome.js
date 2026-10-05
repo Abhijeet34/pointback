@@ -1362,9 +1362,12 @@ function guard() {
   renderCover();
 }
 document.addEventListener("focusin", guard);
+let handing = false;
 shield.addEventListener("mousedown", (event) => {
   event.preventDefault();
+  handing = true;
   frame.focus();
+  handing = false;
   guard();
 });
 // The page cannot see the wheel over the shield, so its scroll is handed on.
@@ -1376,21 +1379,24 @@ shield.addEventListener(
   },
   { passive: true },
 );
-// A move the chrome or the reviewer's Tab makes names the frame as where the focus went; one the page
-// makes names nothing, and the window's blur that follows at once has the focus still in this tab.
-let left = /** @type {HTMLElement | null} */ (null);
+// A move the chrome or the reviewer's Tab makes names the frame as where the focus went, and one the page
+// makes names nothing. Engines differ in what else they report for the page's move, so the one trigger is
+// where the focus is a task later: still in the frame, the note gets it back through the unload.
+let leaving = /** @type {HTMLElement | null} */ (null);
 document.addEventListener("focusout", (event) => {
   const field = /** @type {HTMLElement} */ (event.target);
-  left = event.relatedTarget === null && writing(field) ? field : null;
+  if (handing || event.relatedTarget !== null || !writing(field)) return;
+  leaving = field;
+  setTimeout(() => {
+    if (leaving !== field) return;
+    leaving = null;
+    if (document.activeElement !== frame || unloaded || !writing(field)) return;
+    taken = field;
+    unload();
+  });
 });
-document.addEventListener("pointerup", () => (left = null), true);
-document.addEventListener("focusin", () => (left = null));
-window.addEventListener("blur", () => {
-  const field = left;
-  left = null;
-  if (!field || !document.hasFocus() || unloaded) return;
-  taken = field;
-  unload();
+document.addEventListener("focusin", (event) => {
+  if (event.target === frame) leaving = null;
 });
 
 /**
