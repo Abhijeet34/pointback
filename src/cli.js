@@ -92,12 +92,19 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     if (held && (await stopServer(dir, info, status)))
       return print(stdout, JSON.stringify({ status: "stopped" }));
     // Whatever holds the recorded port and does not even answer as this app is sent nothing.
+    // The record is read afresh there, and a concurrent start's daemon may have published it since
+    // the look above: one that proves the token is stopped like any other, never named as refusing.
     const holding = await refusingServer(dir);
-    if (holding)
+    if (holding) {
+      const fresh = readServerInfo(dir);
+      const now = fresh && fresh.pid !== info?.pid && (await health(fresh));
+      if (now?.proven && (await stopServer(dir, fresh, now)))
+        return print(stdout, JSON.stringify({ status: "stopped" }));
       return print(
         stdout,
         JSON.stringify({ status: "refused", pid: holding.pid, port: holding.port }),
       );
+    }
     return print(stdout, JSON.stringify({ status: "not-running" }));
   }
 

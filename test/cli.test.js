@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, test } from "node:test";
+import { pidAlive } from "../src/daemon-lock.js";
 import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
@@ -593,6 +594,37 @@ test("an open whose first look misses a sibling's daemon starting uses that daem
     assert.equal(probes, 1, "the stopped daemon's port was looked at once");
     assert.equal(new URL(opened.json().session.url).port, String(sibling.port), "on the sibling");
     assert.equal(racing.serverInfo().pid, sibling.pid, "and no second daemon took the record");
+  } finally {
+    stopped.close();
+    await racing.stop();
+  }
+});
+
+// The same interleaving met by `stop`: its first look at the exited daemon's record finds nothing,
+// a concurrent start's daemon then publishes its own record, and the second look named that live
+// daemon of this very version as one that refused. The probe publishes it, as in the test above.
+test("a stop whose first look misses a just-started daemon stops it, never names it as refusing", async () => {
+  const racing = isolatedEnv();
+  let sibling;
+  let probes = 0;
+  const stopped = createServer((req) => {
+    probes += 1;
+    if (probes === 1) writeFileSync(join(racing.dir, "server.json"), JSON.stringify(sibling));
+    req.socket.destroy();
+  });
+  try {
+    assert.equal((await cli([fixture], racing.env)).code, 0);
+    sibling = racing.serverInfo();
+    await new Promise((r) => stopped.listen(0, "127.0.0.1", r));
+    const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+    writeFileSync(
+      join(racing.dir, "server.json"),
+      JSON.stringify({ ...sibling, pid: exited, port: stopped.address().port }),
+    );
+
+    assert.deepEqual((await cli(["stop"], racing.env)).json(), { status: "stopped" });
+    assert.equal(probes, 1, "the exited daemon's port was looked at once");
+    await until(() => !pidAlive(sibling.pid), { what: "the just-started daemon to exit" });
   } finally {
     stopped.close();
     await racing.stop();
