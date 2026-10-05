@@ -12,7 +12,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createServer, request } from "node:http";
+import { Agent, createServer, request } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -27,6 +27,28 @@ import { assertPrivate } from "./helpers/private.js";
 import { watchAvailable } from "./helpers/watch.js";
 
 let dir, srv, base, headers, key, artifactUrl;
+
+const sendOn = (agent, url, { method, headers, body, onSocket }) =>
+  new Promise((resolve, reject) => {
+    const req = request(url, { method, agent, headers });
+    req.setTimeout(10_000, () =>
+      req.destroy(new Error(`no answer to ${method} ${new URL(url).pathname} within 10 s`)),
+    );
+    if (onSocket) req.on("socket", onSocket);
+    req.on("error", reject);
+    req.on("response", (res) => {
+      const chunks = [];
+      res.on("data", (d) => chunks.push(d));
+      res.on("end", () =>
+        resolve({
+          status: res.statusCode,
+          reused: req.reusedSocket,
+          text: Buffer.concat(chunks).toString(),
+        }),
+      );
+    });
+    req.end(body === undefined ? undefined : JSON.stringify(body));
+  });
 
 before(async () => {
   dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-server-"));
@@ -694,6 +716,33 @@ test("the reviewer ends the review with the queue attached, and only a reopen re
   );
 });
 
+test("an idle connection is still open past the 5 s Node closes one at by default, so an add reuses it", async () => {
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  const send = (method, path, body) =>
+    sendOn(agent, base + path, { method, headers: { ...headers, origin: base }, body });
+  let added;
+  try {
+    assert.equal((await send("GET", "/health")).status, 200);
+    // The idle is the case itself: past Node's default 5 s keep-alive close and its 1 s buffer.
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    const prompt = "after an idle";
+    const draft = { prompt, selector: "#title", tag: "h1", text: "" };
+    const { status: code, reused, text } = await send("POST", `/api/${key}/drafts`, { draft });
+    added = JSON.parse(text).drafts?.find((entry) => entry.prompt === prompt);
+    assert.deepEqual(
+      { code, reused, kept: Boolean(added) },
+      { code: 200, reused: true, kept: true },
+    );
+  } finally {
+    agent.destroy();
+    if (added)
+      await fetch(`${base}/api/${key}/drafts/${added.id}`, {
+        method: "DELETE",
+        headers: { ...headers, origin: base },
+      });
+  }
+});
+
 test("unsent notes live on the server: added, removed, sent as one batch, and kept across a restart", async () => {
   const stateDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-drafts-"));
   const file = join(stateDir, "drafted.html");
@@ -861,11 +910,27 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
     onIdle: () => (released = true),
   });
   const info = { authorization: `Bearer ${held.token}`, "content-type": "application/json" };
-  const session = await fetch(`http://127.0.0.1:${held.port}/api/sessions`, {
-    method: "POST",
-    headers: info,
-    body: JSON.stringify({ file: fixture }),
-  }).then((r) => r.json());
+  // The tab's requests share one kept-alive connection, as a browser's do, through node:http: on
+  // Node 24.20.0 (undici 7.29.0) a fetch reusing a connection under a mocked setTimeout stalls
+  // until the server closes it, and this daemon never closes an idle one (docs/ENGINEERING-NOTES.md).
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  let tabConnectionClosed = false;
+  const watchedSockets = new WeakSet();
+  const onSocket = (socket) => {
+    if (watchedSockets.has(socket)) return;
+    watchedSockets.add(socket);
+    socket.once("close", () => (tabConnectionClosed = true));
+  };
+  const tab = async (method, path, body) => {
+    const res = await sendOn(agent, `http://127.0.0.1:${held.port}${path}`, {
+      method,
+      headers: info,
+      body,
+      onSocket,
+    });
+    return { status: res.status, json: () => JSON.parse(res.text) };
+  };
+  const session = (await tab("POST", "/api/sessions", { file: fixture })).json();
   const watching = new WebSocket(`ws://127.0.0.1:${held.port}/api/${session.key}/events`, [
     "events",
     `bearer.${held.token}`,
@@ -876,7 +941,7 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
   for (let beat = 1; beat <= 10; beat += 1) {
     t.mock.timers.tick(idleMs - 1);
     assert.ok(held.server.listening, `heartbeat ${beat} came inside the window and kept it alive`);
-    assert.equal((await fetch(`http://127.0.0.1:${held.port}/health`)).status, 200);
+    assert.equal((await tab("GET", "/health")).status, 200);
   }
 
   // And with the heartbeat stopped, the daemon releases a whole window later, stream still open.
@@ -889,6 +954,12 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
     what: "an open but no-longer-heartbeating tab to let the daemon idle out",
     timeoutMs: 10_000,
   });
+  // The idle-out closes the tab's idle kept-alive connection too, so a silent tab holds nothing.
+  await until(() => tabConnectionClosed, {
+    what: "the idle-out to close the tab's idle connection",
+    timeoutMs: 10_000,
+  });
+  agent.destroy();
   watching.close();
   await held.close();
 });

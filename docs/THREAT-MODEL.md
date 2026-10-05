@@ -42,7 +42,7 @@ In scope:
   A page focus() that lands in the same task as the reviewer's Tab is taken as part of that handoff, since the two cannot be told apart in that task.
   A Tab that leaves the document marks nothing, but the test harness does not drive a Tab out of the document, so no test covers that case.
   A reload that a save would bring waits while a margin edit is open after the page took the focus, and lands once the edit is saved or cancelled.
-  It acts on the move itself, not on a report that the hide landed: on the hide design PR 64 shipped, with the frame moved out of the chrome's view first, 144 of 400 out-of-view rounds across runs 37241529478 and 37241527001 never got the drawn report the hide waited for, and in 124 of those 400 a key reached the hidden page (transcript "tally: out-of-view probe rounds on the hide design, and the page-out window in CI at 0c5b837").
+  It acts on the move itself, not on a report that the hide landed: on the hide design PR 64 shipped, with the frame moved out of the chrome's view first, 144 of 400 out-of-view rounds across runs 37241529478 (macos-15) and 37241527001 (ubuntu-24.04) never got the drawn report the hide waited for, and in 124 of those 400 a key reached the hidden page (transcript "tally: out-of-view probe rounds on the hide design, and the page-out window in CI at 0c5b837").
   `test/browser.test.js` holds that no key typed into the note reaches the page, typed straight after the move and again once the frame holds about:blank, with the frame in view and out of it, on the note the page took the focus from and on a later one.
   The residual is the time from the page's move to the wrapper taking it out, in which a key typed can still reach the page: 5 to 47 ms, median 11 ms, over 126 rounds on Linux, macOS and Windows runners (runs 37247034749, 37247040827, 37247047306 and 37247053785).
   Those runs were on fix head 0c5b837, before the window-return check and the later changes to which moves count as the page's own; the wrapper's `unload` in `src/browser/wrapper.js` is byte-identical since that head, and the chrome's `unload` in `src/browser/chrome.js` has only gained `announced = false;`, a synchronous reset before the same `postMessage`, so the time to the wrapper taking the page out is not changed by it.
@@ -65,6 +65,10 @@ In scope:
 - Any outbound connection opened by the process.
 - Markup in an artifact that changes what the injected review script does (`src/inject.js`).
 - Resource exhaustion that gets past the caps in `src/limits.js` rather than merely reaching them.
+
+Idle keep-alive connections have no count cap: `server.maxConnections` is unset on purpose, because any local user who can reach the loopback port could fill a count and lock the reviewer out.
+They are bounded only by the process's file-descriptor limit and the daemon's idle-out, which closes every connection after 30 minutes with no request (`idleShutdownMs` in `src/limits.js`, overridden by `POINTBACK_IDLE_MS`), and a visible review tab's heartbeat defers that idle-out.
+A local user could already hold a connection open without sending a byte: on main such a connection was still open after 45 s on Node 24.20.0, 24.11.1 and 26.10.0, and with this change it stays open after 45 s on Node 26.10.0 and 24.11.1 (`docs/ENGINEERING-NOTES.md`).
 
 Out of scope:
 

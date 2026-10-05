@@ -12,12 +12,14 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - Delivery is at-least-once, by an `ack` cursor and a session `epoch` (`#answer` in `src/session-store.js`, `poll-cursor.json`).
   A tab learns of sent notes only from the event stream, so Send and End never refetch the session (`changeDrafts` and `sending` in `src/browser/chrome.js`).
 - One daemon per state directory: a start claims `daemon.<n>.lock` before it loads a session or binds (`claimDaemon` in `src/daemon-lock.js`), and `#persist` refuses a write only when the session file holds a readable session written more times than this process's copy.
+- The daemon never closes an idle keep-alive connection on Node's timer (`keepAliveTimeout = 0` in `src/server.js`), so the browser always closes first; only the 30 min idle-out closes one (`docs/ENGINEERING-NOTES.md`, `test/server.test.js`).
 - A review shows HTML or Markdown only (`artifactKind` in `src/markdown.js`); the daemon idles out and evicts at `limits.sessions`, never a review with a tab open (`touch` in `src/server.js`, `#evict` in `src/session-store.js`).
 - `src/browser/` is static, excluded from coverage, and tested only by `test/browser.test.js` over the CDP harness in `test/helpers/cdp.js`.
   Never import Playwright into `test/*.test.js`; WebKit and Firefox are `npm run smoke` only.
   The smoke gates the release pull request, so it opens a review with `open` (the chrome's `ready`), never `page.goto` (`docs/ENGINEERING-NOTES.md`).
   Drive Annotate with the CDP harness, never chrome-devtools-axi, which never moves focus into the out-of-process frame.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
+- A test that mocks `setTimeout` makes its HTTP requests with `node:http`, never `fetch`, which stalls on a reused connection under the mock on Node 24.20.0 (`docs/ENGINEERING-NOTES.md`).
 - Every wait goes through `until` in `test/helpers/wait.js` and carries its own deadline; a failed wait on a tab or the page in it reports what the chrome showed, failed loads included (`describe` in `test/helpers/cdp.js`).
   A positive expectation waits for its condition; a negative one waits on the barrier proving the thing it rules out was handled (`handled` and `TRACK_API_ANSWERS` in `test/browser.test.js`), sleeping only where nothing would have fired and saying in a comment what the duration bounds; a latency is printed, never asserted.
 - Never assert on the next line of an event stream: a failed watch arrives as `reload-off` on the same stream (`src/events.js`).
