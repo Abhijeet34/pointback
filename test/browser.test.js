@@ -2757,10 +2757,34 @@ async function lookOf(
 }
 
 /**
+ * Waits for the chrome to have reloaded itself. A look that lands as the reload replaces the document
+ * is answered "Inspected target navigated or closed", which is that reload under way (macos-15, run
+ * 37387213092), so it looks again.
+ */
+function reloadOf(page) {
+  return page.explained(
+    until(
+      () =>
+        page
+          .eval("performance.getEntriesByType('navigation')[0]?.type === 'reload'")
+          .catch((error) => {
+            if (error.message === "Inspected target navigated or closed") return false;
+            throw error;
+          }),
+      { what: "the chrome to reload itself" },
+    ),
+  );
+}
+
+/**
  * Opens a review in its own daemon with the first load matching `path` refused, or none when `path`
  * is null, and has the reviewer note the heading once it opens; answers what the reviewer saw, how
- * the review paints and answers then, how the tab's document was last loaded, and how many loads
- * were asked and refused.
+ * the review paints and answers then, how many times the chrome asked to reload itself, and how many
+ * loads were asked and refused.
+ *
+ * A reload is counted where the chrome asks for it, never read off the document's navigation entry:
+ * the browser's own reload of the error page a refused top-level load leaves is labelled `reload`
+ * there by Chrome on macos-15 (20 of 20 attempts on run 37380416654) and `navigate` elsewhere.
  */
 async function openWithOneRefused(
   path,
@@ -2769,6 +2793,12 @@ async function openWithOneRefused(
 ) {
   const own = isolatedEnv();
   const page = await browser.page("about:blank");
+  let reloads = 0;
+  const asksToReload = ({ method, params, sessionId }) => {
+    if (sessionId !== page.sessionId || method !== "Page.frameRequestedNavigation") return;
+    if (params.frameId === page.targetId && params.reason === "reload") reloads += 1;
+  };
+  page.browser.listeners.push(asksToReload);
   let refused;
   try {
     const { file } = copy();
@@ -2783,20 +2813,15 @@ async function openWithOneRefused(
     await page.navigate(url);
     // A face the chrome first sets once the review is shown fails after it is ready, so the review
     // is driven only once the chrome has reloaded for it.
-    if (navigation === "reload")
-      await page.waitFor("performance.getEntriesByType('navigation')[0]?.type === 'reload'");
+    if (navigation === "reload") await reloadOf(page);
     const { artifact } = await reviewIn(page);
     const seen = JSON.parse(await page.eval(OPENED_SEEN));
     await noteOn(page, artifact, heading, "Name the queue in the title");
     // Counted before the look is read: DevTools fetches the chrome's sheets again for the CSS domain.
     const counts = { ...(refused?.counts ?? { asked: 0, refused: 0 }) };
-    return {
-      seen,
-      look: await lookOf(page, artifact),
-      navigation: await page.eval("performance.getEntriesByType('navigation')[0].type"),
-      ...counts,
-    };
+    return { seen, look: await lookOf(page, artifact), reloads, ...counts };
   } finally {
+    page.browser.listeners.splice(page.browser.listeners.indexOf(asksToReload), 1);
     await refused?.stop();
     await page.close();
     await own.stop();
@@ -2819,12 +2844,12 @@ test(
       [undefined, "plan.html"],
       [MARKDOWN, "README.md"],
     ]) {
-      const { seen, navigation, asked, refused } = await healthyReview(fixture);
+      const { seen, reloads, asked, refused } = await healthyReview(fixture);
       assert.deepEqual(
-        { seen, navigation, asked, refused },
+        { seen, reloads, asked, refused },
         {
           seen: { cover: null, status: HELP_LINE, file },
-          navigation: "navigate",
+          reloads: 0,
           asked: 0,
           refused: 0,
         },
@@ -2860,7 +2885,7 @@ for (const [what, path, navigation, fixture] of [
     async () => {
       const { asked, ...rest } = await openWithOneRefused(path, fixture, navigation);
       const { seen, look } = await healthyReview(fixture);
-      assert.deepEqual(rest, { seen, look, navigation, refused: 1 });
+      assert.deepEqual(rest, { seen, look, reloads: navigation === "reload" ? 1 : 0, refused: 1 });
       // A refused face is asked for again on the reloaded chrome: measured as 3 asks (the refused one,
       // then two on the reloaded chrome) in 1200 of 1200 windows-2025 samples for Plex Mono. Not pinned
       // at 3, since how often Chrome requests a face can change with its version, not with this code.
@@ -2878,7 +2903,7 @@ test(
     assert.deepEqual(await openWithOneRefused("http://127.0.0.1:<port>/recover.js*"), {
       seen,
       look,
-      navigation: "navigate",
+      reloads: 0,
       asked: 1,
       refused: 1,
     });
@@ -3007,7 +3032,7 @@ test(
         { text: "Shorter title", open: true, navigation: "navigate" },
       );
       await page.enter();
-      await page.waitFor("performance.getEntriesByType('navigation')[0]?.type === 'reload'");
+      await reloadOf(page);
       const reloaded = await reviewIn(page);
       await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
       assert.deepEqual(
@@ -3076,7 +3101,7 @@ test(
         { text: "Shorter titleagain", navigation: "navigate" },
       );
       await page.enter();
-      await page.waitFor("performance.getEntriesByType('navigation')[0]?.type === 'reload'");
+      await reloadOf(page);
       const reloaded = await reviewIn(page);
       await page.waitFor(
         "document.querySelectorAll('.mark:not(.sent)').length === 1 && document.querySelector('.mark:not(.sent)').textContent.includes('Shorter titleagain')",
