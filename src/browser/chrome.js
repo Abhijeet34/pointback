@@ -983,9 +983,43 @@ function closeCompose(refocus) {
   // the frame and, for the keyboard path, ask it to refocus the element the reviewer came from.
   // An answer came from the margin, so focus goes back there, or on to Send once it is added.
   post({ type: "compose", on: false, refocus: refocus && !from });
+  if (refocus && !from) handOff();
   if (refocus) (from ? (from.isConnected ? from : sendButton) : frame).focus();
   render();
 }
+
+// Only the page can put the focus on one of its own elements, and it does so when it hears the card
+// closed, which a busy page hears late: on macOS, hunt 37251442770, after the reviewer had gone on to
+// edit a note in the margin. Until the page says it heard, a pull into the frame that follows the
+// reviewer moving on in the chrome is that late one, and the focus goes back to where they moved.
+// This acts on the chrome's own focus events alone; the page's word only ends the wait.
+let handoff = null;
+
+function handOff() {
+  handoff = { movedOn: null, returning: false };
+  delete document.body.dataset.handoff;
+}
+
+function settleHandoff() {
+  handoff = null;
+  document.body.dataset.handoff = "settled";
+}
+
+document.addEventListener("focusin", (event) => {
+  if (handoff && event.target !== frame) handoff.movedOn = event.target;
+});
+
+window.addEventListener("blur", () => {
+  const back = handoff?.movedOn;
+  if (!back || handoff.returning || document.activeElement !== frame) return;
+  handoff.returning = true;
+  document.body.dataset.handoff = "returning";
+  // Not from inside this blur: a focus asked for while the frame is still taking it stays there.
+  setTimeout(() => {
+    if (back.isConnected) back.focus();
+    settleHandoff();
+  });
+});
 
 /** Places the card over the artifact at the spot the reviewer pointed at, clamped to the mount. */
 function placeCard(rects) {
@@ -1025,6 +1059,8 @@ window.addEventListener("message", (event) => {
     });
     document.body.dataset.ready = "1";
     announced = true;
+    // A page loaded since the card closed has no focus of its own to bring back.
+    if (handoff && !handoff.returning) settleHandoff();
     if (strayed) {
       // Back is about to be hidden under the reviewer, so the focus goes where Back led.
       if (document.activeElement === backButton) frame.focus();
@@ -1036,6 +1072,9 @@ window.addEventListener("message", (event) => {
   if (data?.nonce !== nonce) return;
   if (data.type === "annotate-ok") {
     document.body.dataset.annotate = data.on ? "1" : "0";
+  } else if (data.type === "closed") {
+    // A focus the page took after the reviewer moved on is still to reach this page as a blur.
+    if (handoff && !handoff.returning && !(data.took === true && handoff.movedOn)) settleHandoff();
   } else if (data.type === "shown") {
     document.body.dataset.revision = String(shownRevision);
   } else if (data.type === "target" && data.note && typeof data.note === "object") {

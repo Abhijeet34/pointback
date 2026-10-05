@@ -1339,6 +1339,44 @@ test(
   },
 );
 
+// The page puts the focus back on what was noted when the chrome says the card closed. On macOS, hunt
+// 37251442770 attempt 20, a busy page heard that only after the reviewer had opened a margin note to
+// edit it, and took the focus out of the editor. The page is held at that message until they type.
+test(
+  "a page that hears the card close late leaves the focus in a note being edited in the margin",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const late = await holdCardClose(artifact);
+    try {
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await late.reached();
+      await clickOn(page, "document.querySelector('.mark-edit')");
+      await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+      await page.type(", four words at most");
+    } finally {
+      await late.release();
+    }
+    // Until the chrome says the page has had the focus it was handed, or has had it taken back. A
+    // focus gone from the editor with nothing bringing it back ends the wait too, and fails below.
+    await page.waitFor(`document.body.dataset.handoff === "settled" ||
+      (document.body.dataset.handoff !== "returning" &&
+        !document.activeElement.classList.contains("mark-edit-text"))`);
+    assert.deepEqual(
+      await page.eval("[document.activeElement.className, document.activeElement.value]"),
+      ["hw-textarea mark-edit-text", "Shorter title, four words at most"],
+      "the editor kept the focus and its words",
+    );
+    await page.type(" please");
+    await page.enter();
+    await page.waitFor(
+      "document.querySelector('.mark:not(.sent) .mark-note')?.textContent === 'Shorter title, four words at most please'",
+    );
+    await page.close();
+  },
+);
+
 test(
   "Discard and end drops the note in the card along with the queued ones",
   { skip: !executable && "no browser found" },
@@ -1822,6 +1860,38 @@ async function clickIn(page, artifact, selector, at) {
   };
   await page.pointerInto(artifact, point);
   await page.click(point.x, point.y);
+}
+
+/**
+ * Holds the page at the moment it hears that the note card closed, as a busy page is held, with a
+ * breakpoint on the SDK's own line for that message: listeners on a window run in the order they were
+ * added, so one a test adds runs after the SDK's and cannot hold the message back from it.
+ */
+async function holdCardClose(artifact) {
+  const lineNumber = readFileSync(new URL("../src/browser/sdk.js", import.meta.url), "utf8")
+    .split("\n")
+    .findIndex((line) => line.includes("closeTarget(data.refocus === true)"));
+  assert.ok(lineNumber >= 0, "the SDK still closes its target on the chrome's message");
+  let paused = false;
+  const onPause = (message) => {
+    if (message.sessionId === artifact.sessionId && message.method === "Debugger.paused")
+      paused = true;
+  };
+  artifact.browser.listeners.push(onPause);
+  await artifact.send("Debugger.enable");
+  const { breakpointId } = await artifact.send("Debugger.setBreakpointByUrl", {
+    urlRegex: "/sdk\\.js$",
+    lineNumber,
+  });
+  return {
+    reached: () => until(() => paused, { what: "the page to hear that the card closed" }),
+    async release() {
+      artifact.browser.listeners.splice(artifact.browser.listeners.indexOf(onPause), 1);
+      await artifact.send("Debugger.removeBreakpoint", { breakpointId });
+      // Disabling the debugger resumes a page paused in it.
+      await artifact.send("Debugger.disable");
+    },
+  };
 }
 
 /** A real click in the middle of a chrome element, scrolled into view first as a reviewer would. */
