@@ -499,6 +499,60 @@ test("no release can attach to a tag that already existed", () => {
   assert.match(workflows["release.yml"], /sha: \$\{\{ steps\.rp\.outputs\.sha \}\}/);
 });
 
+// Inferred in the deep review, never yet observed: the release merge's own run goes red on a
+// flake, `release-tag` skips, and the next push's run tags that older merge commit behind a
+// matrix that tested a newer tree. Both steps run for real; `gh` is a shell function standing
+// in for the API answer, which keeps the case runnable on every platform's bash.
+test("release-tag refuses to tag or release a tree its own run did not test", () => {
+  const tested = "a".repeat(40);
+  const older = "b".repeat(40);
+  const guard = namedStepBody(
+    workflows["release.yml"],
+    "Refuse to tag a tree this run did not test",
+  );
+  const withPending = (lines) =>
+    `gh() { echo "$*" >> "$GH_CALLS"; printf '%s' '${lines}'; }\n${guard}`;
+  const env = { GITHUB_SHA: tested, GITHUB_REPOSITORY: "o/r", GITHUB_REF_NAME: "main" };
+
+  const dir = mkdtempSync(join(tmpdir(), "pipeline-test-"));
+  try {
+    const calls = join(dir, "calls");
+    const run = (lines) => runStepBody(withPending(lines), { env: { ...env, GH_CALLS: calls } });
+
+    const stale = run(`59 ${older}`);
+    assert.equal(stale.status, 1, "a release pull request merged as another commit was tagged");
+    assert.match(
+      stale.stderr,
+      new RegExp(
+        `::error::release pull request #59 merged as ${older}, but this run tested ${tested}`,
+      ),
+    );
+    assert.match(
+      readFileSync(calls, "utf8"),
+      /^pr list --repo o\/r --base main --state merged --label autorelease: pending /m,
+    );
+    assert.equal(run(`59 ${tested}`).status, 0, "the run the release merge started may tag it");
+    assert.equal(run("").status, 0, "an ordinary push, with no release pending, goes on");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const after = namedStepBody(
+    workflows["release.yml"],
+    "Refuse to release a tree this run did not test",
+  );
+  const released = (sha) => runStepBody(after, { env: { ...env, RELEASED_SHA: sha } });
+  const mismatch = released(older);
+  assert.equal(mismatch.status, 1, "a release of an untested tree went on to artifacts");
+  assert.match(mismatch.stderr, new RegExp(`released ${older}, but this run tested ${tested}`));
+  assert.equal(released(tested).status, 0);
+  assert.match(
+    jobsByName(workflows["release.yml"])["release-tag"],
+    /- name: Refuse to tag a tree this run did not test\n[\s\S]*uses: googleapis\/release-please-action@[\s\S]*- name: Refuse to release a tree this run did not test\n {8}if: steps\.rp\.outputs\.release_created == 'true'\n/,
+    "the guard runs before release-please tags, and the check after it reads what it released",
+  );
+});
+
 // The one ref taken at a branch: gates' shared workflows are the fleet's single
 // copy of the scanner rules and digests, and following @main is how a repin
 // reaches every caller without an edit here.

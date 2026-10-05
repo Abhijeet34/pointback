@@ -117,13 +117,51 @@ jobs:
       created: ${{ steps.rp.outputs.release_created }}
       tag: ${{ steps.rp.outputs.tag_name }}
       sha: ${{ steps.rp.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      # release-please tags the release pull request's merge commit, which is this run's tree
+      # only when that merge started this run. When the merge's own run goes red, a later push
+      # would tag the older commit behind a matrix that tested a newer one; refused before the
+      # tag exists, because a tag cannot be taken back. `autorelease: pending` is the label
+      # release-please finds a merged release pull request by, and swaps once it has tagged.
+      - name: Refuse to tag a tree this run did not test
+        run: |
+          set -euo pipefail
+          merged=$(gh pr list --repo "$GITHUB_REPOSITORY" --base "$GITHUB_REF_NAME" --state merged \
+            --label "autorelease: pending" --json number,mergeCommit \
+            --jq '.[] | "\(.number) \(.mergeCommit.oid)"')
+          rc=0
+          while read -r number sha; do
+            [ -n "$number" ] || continue
+            if [ "$sha" != "$GITHUB_SHA" ]; then
+              echo "::error::release pull request #$number merged as $sha, but this run tested $GITHUB_SHA; re-run the failed jobs of the run for $sha, so the matrix that gates its tag is its own" >&2
+              rc=1
+            fi
+          done <<< "$merged"
+          exit $rc
+
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: rp
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           skip-github-pull-request: true
+
+      # The same invariant read from what release-please reports, so `artifacts` and `publish`
+      # never attach to an untested tree even if its search for the pull request and the one
+      # above ever disagree.
+      - name: Refuse to release a tree this run did not test
+        if: steps.rp.outputs.release_created == 'true'
+        run: |
+          set -euo pipefail
+          if [ "$RELEASED_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::release-please released $RELEASED_SHA, but this run tested $GITHUB_SHA" >&2
+            exit 1
+          fi
+          echo "released $RELEASED_SHA, the tree this run tested"
+        env:
+          RELEASED_SHA: ${{ steps.rp.outputs.sha }}
 
   artifacts:
     name: artifacts
