@@ -2,7 +2,8 @@
 // browser, which is Safari on an unconfigured Mac, while test/browser.test.js drives Chromium
 // only. Open a file, point at an element, write a note, send, and a poll returns it. Then the gate
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
-// `npm run smoke -- webkit firefox`; weekly in .github/workflows/cross-platform.yml.
+// `npm run smoke -- webkit firefox`; weekly and on the release pull request in
+// .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
 /* global document, parent, nonce */
 import assert from "node:assert/strict";
@@ -22,8 +23,11 @@ const NOTE = "Make the title shorter";
 async function smoke(engine) {
   const lab = isolatedEnv();
   let browser;
+  // The summary names the version that failed as well as the one that passed.
+  let named = `${engine} (did not launch)`;
   try {
     browser = await ENGINES[engine].launch({ timeout: STEP_MS * 2 });
+    named = `${engine} ${browser.version()}`;
     const page = await browser.newPage();
     page.setDefaultTimeout(STEP_MS);
     const { session } = (await cli([fixture], lab.env)).json();
@@ -50,7 +54,9 @@ async function smoke(engine) {
     await enterIsNotThePages(browser, lab);
     await endKeepsTheCard(browser, lab);
     await readingPlace(browser, lab, engine);
-    return `${engine} ${browser.version()} passed`;
+    return `${named} passed`;
+  } catch (error) {
+    throw Object.assign(error, { named });
   } finally {
     await browser?.close();
     await lab.stop();
@@ -180,7 +186,7 @@ for (const engine of requested.length ? requested : Object.keys(ENGINES)) {
   // One line per engine, always, which the workflow lifts into the job summary.
   const verdict = await smoke(engine).catch((error) => {
     failed = true;
-    return `${engine} FAILED: ${error.stack ?? error}`;
+    return `${error.named ?? engine} FAILED: ${error.stack ?? error}`;
   });
   console.log(`engine smoke: ${verdict}`);
 }
