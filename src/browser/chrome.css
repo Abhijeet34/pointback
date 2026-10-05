@@ -181,11 +181,6 @@ body {
   background: var(--paper);
 }
 
-/* Held out of view while the page has taken the focus from a note being written. */
-#artifact[hidden] {
-  display: none;
-}
-
 /* Laid over the page while the focus is in a note being written, so a press there lands in the chrome
    and only the page's own script can move the focus into it (`shield` in chrome.js). */
 .shield {

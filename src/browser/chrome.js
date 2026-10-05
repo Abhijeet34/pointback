@@ -1382,15 +1382,35 @@ shield.addEventListener(
 // A move from the note to a control of the chrome names that control and is left alone. A move into the
 // frame names the frame, or nothing when the page makes it, and unloads unless the shield's press handed
 // it over (`handing`). Engines differ in what they name for the page's move, so the one trigger is where
-// the focus is a task later: still in the frame, the note gets it back through the unload.
+// the focus is a task later: still in the frame, the note gets it back through the unload. A Tab the
+// reviewer presses in the note is the keyboard way into the page, so the move it makes is left alone.
+let tabbing = false;
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab" || !event.isTrusted || !writing(event.target)) return;
+  tabbing = true;
+  setTimeout(() => (tabbing = false));
+});
 document.addEventListener("focusout", (event) => {
   const field = /** @type {HTMLElement} */ (event.target);
-  if (handing || (event.relatedTarget !== null && event.relatedTarget !== frame) || !writing(field)) return;
+  const named = event.relatedTarget;
+  if (handing || tabbing || (named !== null && named !== frame) || !writing(field)) return;
+  takenFrom(field);
+});
+function takenFrom(field) {
   setTimeout(() => {
     if (document.activeElement !== frame || unloaded || !writing(field)) return;
     taken = field;
     unload();
   });
+}
+// A window that comes back with the page holding the focus took it from the open note while it was away.
+function regained() {
+  const field = composing ? cardText : marks.querySelector(".mark-edit-text");
+  if (field) takenFrom(field);
+}
+window.addEventListener("focus", regained);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") regained();
 });
 
 /**
@@ -1403,6 +1423,7 @@ function unload() {
   tookFocus = true;
   unloaded = true;
   strayed = false;
+  announced = false;
   frame.contentWindow.postMessage({ type: "unload" }, wrapperOrigin);
   render();
 }

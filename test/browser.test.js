@@ -1127,6 +1127,8 @@ test(
     await pointAt(page, artifact, "#p1");
     await clickOn(page, "document.getElementById('appName')");
     await page.waitFor("document.activeElement === document.body");
+    // The press's own focus-out is handled a task later; this waits for that task before the move.
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
     await page.eval("document.getElementById('artifact').focus()");
     await page.waitFor("document.activeElement === document.getElementById('artifact')");
     // The blur's own put-back of a note runs a task later; this waits for that task.
@@ -1191,6 +1193,54 @@ test(
     );
     assert.deepEqual(state, { shown: true, cover: true });
     assert.notEqual(await pageAddress(page), "about:blank");
+    await page.close();
+  },
+);
+
+test(
+  "a reviewer's Shift+Tab from the note into the page keeps the page loaded",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await page.key("Tab", { keyCode: 9, modifiers: 8 });
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    // The chrome's check for a page's move, where it would run, is a task after the move.
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    const state = JSON.parse(
+      await page.eval(`JSON.stringify({
+        shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
+        cover: document.getElementById("cover").hidden,
+        card: !document.getElementById("card").hidden,
+      })`),
+    );
+    assert.deepEqual(state, { shown: true, cover: true, card: true });
+    assert.notEqual(await pageAddress(page), "about:blank");
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus while the window is inactive is unloaded when the window comes back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    const { targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" });
+    await page.browser.send("Target.activateTarget", { targetId });
+    await until(async () => !(await page.eval("document.hasFocus()")), {
+      what: "the review window to lose focus",
+    });
+    await artifact.eval("globalThis.calling = true");
+    await until(async () => (await artifact.eval("document.activeElement?.id")) === "field", {
+      what: "the page to take the focus in its own field while the window is inactive",
+    });
+    await page.front();
+    const result = await writeNote(page, "document.getElementById('cardText')", "document.getElementById('card').hidden");
+    await page.browser.send("Target.closeTarget", { targetId });
+    assert.deepEqual({ text: result.text, keys: result.keys, kept: result.kept }, { text: "abc", keys: 0, kept: true });
     await page.close();
   },
 );
