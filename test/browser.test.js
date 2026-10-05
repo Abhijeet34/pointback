@@ -3024,6 +3024,73 @@ test(
 );
 
 test(
+  "a chrome face refused while a margin note edit holds typed text keeps the text, and the chrome reloads for the face once the edit is saved",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    const held = [];
+    const listener = ({ method, params, sessionId }) => {
+      if (method !== "Fetch.requestPaused" || sessionId) return;
+      if (held.length === 0) held.push(params.requestId);
+      else
+        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
+    };
+    page.browser.listeners.push(listener);
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      await page.browser.send("Fetch.enable", {
+        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
+      });
+      await page.send("Page.navigate", { url });
+      const { artifact } = await reviewIn(page);
+      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await clickOn(page, "document.querySelector('.mark-edit')");
+      await page.waitFor("document.activeElement?.classList.contains('mark-edit-text')");
+      await press(page, "again");
+      await page.browser.send("Fetch.failRequest", {
+        requestId: held[0],
+        errorReason: "ConnectionRefused",
+      });
+      await page.eval(SETTLED);
+      assert.deepEqual(
+        JSON.parse(
+          await page.eval(`JSON.stringify({
+            text: document.querySelector('.mark-edit-text')?.value ?? null,
+            navigation: performance.getEntriesByType('navigation')[0].type,
+          })`),
+        ),
+        { text: "Shorter titleagain", navigation: "navigate" },
+      );
+      await page.enter();
+      await page.waitFor("performance.getEntriesByType('navigation')[0]?.type === 'reload'");
+      const reloaded = await reviewIn(page);
+      await page.waitFor(
+        "document.querySelectorAll('.mark:not(.sent)').length === 1 && document.querySelector('.mark:not(.sent)').textContent.includes('Shorter titleagain')",
+      );
+      assert.deepEqual(
+        {
+          look: await lookOf(page, reloaded.artifact),
+          face: await paintedFace(page, "#fileName"),
+        },
+        {
+          look: (await healthyReview()).look,
+          face: "IBM Plex Mono",
+        },
+      );
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.browser.send("Fetch.disable").catch(() => {});
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
   "a refused first load of a reload held behind an open answer card gets the stray cover and Back, never the file-changed line",
   { skip: !executable && "no browser found" },
   async () => {
