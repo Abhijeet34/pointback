@@ -135,20 +135,30 @@ export async function stopServer(stateDir, info, status) {
   if (!asked) return false;
   const pid = Number.isInteger(info.pid) ? info.pid : status.pid;
   // The pid goes first: once it is gone, the port may rightly belong to a concurrent start's daemon.
-  const gone = async () =>
-    (Number.isInteger(pid) && !pidAlive(pid)) || !(await listening(info.port));
-  for (const deadline = Date.now() + STOP_TIMEOUT_MS; !(await gone()); await sleep(50))
+  const gone = async (ms) =>
+    (Number.isInteger(pid) && !pidAlive(pid)) || !(await listening(info.port, ms));
+  const deadline = Date.now() + STOP_TIMEOUT_MS;
+  while (!(await gone(deadline - Date.now()))) {
     if (Date.now() >= deadline) return false;
+    await sleep(50);
+  }
   return true;
 }
 
 /** How long a daemon that answered "stopping" gets to exit before it is said not to have stopped. */
 const STOP_TIMEOUT_MS = 5_000;
 
-/** Whether anything accepts a connection on the loopback port; only a refusal says nothing does. */
-function listening(port) {
+/**
+ * Whether anything accepts a connection on the loopback port; only a refusal says nothing does. A probe
+ * that gets no answer within `ms` is still listening, so the caller's deadline is never overrun.
+ */
+function listening(port, ms) {
   return new Promise((resolve) => {
     const socket = connect(port, "127.0.0.1");
+    socket.setTimeout(Math.max(1, ms), () => {
+      socket.destroy();
+      resolve(true);
+    });
     socket.once("connect", () => {
       socket.destroy();
       resolve(true);
