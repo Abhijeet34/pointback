@@ -2590,6 +2590,40 @@ test(
 );
 
 test(
+  "a review whose loads all answer asks for the frame the page is shown in once, and never loads it again",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    let refused;
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      refused = await refuseLoads(page, `http://localhost:${port}/wrapper.html*`, 0);
+      await page.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `window.frameLoads = 0;
+        document.addEventListener("load", (event) => {
+          if (event.target.id === "artifact") window.frameLoads += 1;
+        }, true);`,
+      });
+      await page.navigate(url);
+      const { artifact } = await reviewIn(page);
+      // The frame's first counted load is its initial about:blank, which fires before the chrome's script
+      // runs; the second is the wrapper's, and the chrome's listener for it runs in that same dispatch,
+      // so once two are counted the chrome has handled the wrapper's load and asked for nothing more.
+      await page.waitFor("window.frameLoads >= 2");
+      await noteOn(page, artifact, "#title", "Name the queue in the title");
+      assert.equal(refused.counts.asked, 1);
+    } finally {
+      await refused?.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
   "a save reloads the open page, keeps the reviewer's place, and the notes follow the new text",
   { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
   async () => {

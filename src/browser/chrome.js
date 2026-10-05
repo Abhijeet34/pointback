@@ -1487,10 +1487,12 @@ function focusFrame() {
 // A first load that ends without the wrapper announcing itself was refused (an error page stands in
 // its place, and nothing else would ever replace it), so it is loaded once more; the page under
 // review gets the same one chance in `pageLoaded`.
-let wrapperLoads = 0;
-frame.addEventListener("load", () => {
-  wrapperLoads += 1;
-  if (wrapperLoads === 1 && !wrapperReady) frame.src = `${wrapperOrigin}/wrapper.html`;
-});
+frame.addEventListener(
+  "load",
+  () => {
+    if (!wrapperReady) frame.src = `${wrapperOrigin}/wrapper.html`;
+  },
+  { once: true },
+);
 frame.src = `${wrapperOrigin}/wrapper.html`;
 boot();
