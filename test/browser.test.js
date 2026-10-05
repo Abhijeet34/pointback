@@ -1245,6 +1245,79 @@ test(
   },
 );
 
+/** A press on the shield, over a corner of the page the card does not cover, hands the page the focus. */
+async function pressOverPage(page) {
+  const at = JSON.parse(
+    await page.eval(`JSON.stringify((() => {
+      const box = document.getElementById("artifact").getBoundingClientRect();
+      for (const y of [box.top + 8, box.bottom - 8])
+        for (const x of [box.left + 8, box.right - 8])
+          if (document.elementFromPoint(x, y).id === "shield") return { x, y };
+      return null;
+    })())`),
+  );
+  assert.ok(at, "a corner of the page is under the shield");
+  await page.click(at.x, at.y);
+  await page.waitFor("document.activeElement === document.getElementById('artifact')");
+  await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+}
+
+/** Another tab takes the window from the review, and the review tab comes back to the front. */
+async function windowAwayAndBack(page) {
+  const { targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" });
+  await page.browser.send("Target.activateTarget", { targetId });
+  await until(async () => !(await page.eval("document.hasFocus()")), {
+    what: "the review window to lose focus",
+  });
+  await page.front();
+  // The chrome handles the window's return a task after it; this waits for that task.
+  await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+  await page.browser.send("Target.closeTarget", { targetId });
+}
+
+/** The page holds the focus and the keys, is shown, and is still loaded at its address. */
+async function assertPageHeld(page) {
+  const state = JSON.parse(
+    await page.eval(`JSON.stringify({
+      shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
+      cover: document.getElementById("cover").hidden,
+      focus: document.activeElement.id,
+    })`),
+  );
+  assert.deepEqual(state, { shown: true, cover: true, focus: "artifact" });
+  assert.notEqual(await pageAddress(page), "about:blank");
+}
+
+test(
+  "a press over the page keeps the page loaded when the window comes back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await pressOverPage(page);
+    await windowAwayAndBack(page);
+    await assertPageHeld(page);
+    await page.close();
+  },
+);
+
+test(
+  "a reviewer's Shift+Tab into the page keeps the page loaded when the window comes back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await page.key("Tab", { keyCode: 9, modifiers: 8 });
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await windowAwayAndBack(page);
+    await assertPageHeld(page);
+    await page.close();
+  },
+);
+
 test(
   "keys the page takes with no note open reach the key channel",
   { skip: !executable && "no browser found" },

@@ -1011,6 +1011,7 @@ function closeCompose(refocus) {
   const from = composing?.from;
   composing = null;
   held = false;
+  handed = false;
   editing = false;
   if (deferredReload && !fileGone) show();
   // Tell the artifact the target is done so it drops the highlight; hand keyboard focus back to
@@ -1358,16 +1359,19 @@ function writing(element) {
   return (!card.hidden && card.contains(element)) || Boolean(element?.closest?.(".mark-editor"));
 }
 function guard() {
+  if (document.activeElement !== frame) handed = false;
   shield.hidden = !writing(document.activeElement);
   renderCover();
 }
 document.addEventListener("focusin", guard);
 let handing = false;
+let handed = false;
 shield.addEventListener("mousedown", (event) => {
   event.preventDefault();
   handing = true;
   frame.focus();
   handing = false;
+  handed = true;
   guard();
 });
 // The page cannot see the wheel over the shield, so its scroll is handed on.
@@ -1393,6 +1397,7 @@ document.addEventListener("keydown", (event) => {
 document.addEventListener("focusout", (event) => {
   const field = /** @type {HTMLElement} */ (event.target);
   const named = event.relatedTarget;
+  if (tabbing && (named === null || named === frame)) handed = true;
   if (handing || tabbing || (named !== null && named !== frame) || !writing(field)) return;
   takenFrom(field);
 });
@@ -1406,7 +1411,7 @@ function takenFrom(field) {
 // A window that comes back with the page holding the focus took it from the open note while it was away.
 function regained() {
   const field = composing ? cardText : marks.querySelector(".mark-edit-text");
-  if (field) takenFrom(field);
+  if (field && !handed) takenFrom(field);
 }
 window.addEventListener("focus", regained);
 document.addEventListener("visibilitychange", () => {
