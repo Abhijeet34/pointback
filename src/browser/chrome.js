@@ -1011,7 +1011,6 @@ function closeCompose(refocus) {
   const from = composing?.from;
   composing = null;
   held = false;
-  handed = false;
   editing = false;
   if (deferredReload && !fileGone) show();
   // Tell the artifact the target is done so it drops the highlight; hand keyboard focus back to
@@ -1359,19 +1358,16 @@ function writing(element) {
   return (!card.hidden && card.contains(element)) || Boolean(element?.closest?.(".mark-editor"));
 }
 function guard() {
-  if (document.activeElement !== frame) handed = false;
   shield.hidden = !writing(document.activeElement);
   renderCover();
 }
 document.addEventListener("focusin", guard);
 let handing = false;
-let handed = false;
 shield.addEventListener("mousedown", (event) => {
   event.preventDefault();
   handing = true;
   frame.focus();
   handing = false;
-  handed = true;
   guard();
 });
 // The page cannot see the wheel over the shield, so its scroll is handed on.
@@ -1398,11 +1394,6 @@ document.addEventListener("focusout", (event) => {
   const field = /** @type {HTMLElement} */ (event.target);
   const named = event.relatedTarget;
   setTimeout(() => (shield.hidden = !writing(document.activeElement)));
-  if (tabbing && (named === null || named === frame)) {
-    setTimeout(() => {
-      if (document.activeElement === frame) handed = true;
-    });
-  }
   if (handing || tabbing || (named !== null && named !== frame) || !writing(field)) return;
   takenFrom(field);
 });
@@ -1413,14 +1404,26 @@ function takenFrom(field) {
     unload();
   });
 }
-// A window that comes back with the page holding the focus took it from the open note while it was away.
-function regained() {
-  const field = composing ? cardText : marks.querySelector(".mark-edit-text");
-  if (field && !handed) takenFrom(field);
+// Undefined while the window has the focus; once it is left, the note that held the focus, read a task
+// later so a move the reviewer made into the page at the same moment (a Tab, a press) is not taken for
+// the page's own. A later blur, from the page taking the focus while away, does not change the record.
+let away;
+function leftWindow() {
+  setTimeout(() => {
+    if (away === undefined) away = writing(document.activeElement) ? document.activeElement : null;
+  });
 }
+// A window that comes back with the page holding the focus took it from that note while it was away.
+function regained() {
+  const field = away;
+  away = undefined;
+  if (field) takenFrom(field);
+}
+window.addEventListener("blur", leftWindow);
 window.addEventListener("focus", regained);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") regained();
+  else leftWindow();
 });
 
 /**
