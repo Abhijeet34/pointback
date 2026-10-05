@@ -302,7 +302,7 @@ function apply(event) {
     sync(event);
   } else if (event.type === "superseded") {
     current = false;
-    closeCompose(false);
+    letCardGo();
   } else if (event.type === "reload") {
     // A reload means the file is there to read, including one that came back after it was gone.
     fileGone = false;
@@ -405,14 +405,7 @@ function render() {
   annotateSwitch.disabled = ended !== null || fileGone;
   // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
   cardAdd.disabled = offline;
-  const reason =
-    connection === "gone"
-      ? "This page can no longer add notes. Copy your words before you leave it."
-      : offline
-        ? `${cardAdd.textContent} opens again when this page reconnects. Your words stay here.`
-        : cardProblem;
-  cardReason.hidden = !reason;
-  setText(cardReason, reason ?? "");
+  renderReason();
   endButton.disabled = ended !== null || fileGone;
   // A failure the reviewer needs to see outlives the render that would otherwise write over it.
   setText(
@@ -425,9 +418,14 @@ function render() {
             ""
           : `${count} ${count === 1 ? "note stays" : "notes stay"} here, and Send opens again if the file comes back.`
         : ended
-          ? count === 0
-            ? "Nothing more can be sent from this page."
-            : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
+          ? composing && deferredReload
+            ? "The file changed. This page updates as soon as you finish this note."
+            : count === 0
+              ? composing
+                ? // A card the end left open says on itself what Add does now.
+                  ""
+                : "Nothing more can be sent from this page."
+              : `${count} ${count === 1 ? "note was" : "notes were"} never sent. Send queues ${count === 1 ? "it" : "them"} for the agent's next check.`
           : offline
             ? // The notice above says what happens next; a second line would only repeat it.
               ""
@@ -593,6 +591,29 @@ function renderNotice() {
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
   takeOverButton.hidden = !action;
+}
+
+/** Says why a card a forced close kept open is still there, while it holds words. */
+function renderReason() {
+  const offline = connection !== "live";
+  const forced = held && cardText.value.trim() !== "";
+  const reason =
+    connection === "gone"
+      ? "This page can no longer add notes. Copy your words before you leave it."
+      : offline
+        ? `${cardAdd.textContent} opens again when this page reconnects. Your words stay here.`
+        : (cardProblem ??
+          (!forced
+            ? null
+            : fileGone
+              ? `The file was moved or deleted. ${cardAdd.textContent} keeps this with your other notes, and Send opens again if the file comes back.`
+              : ended
+                ? `This review ended. ${cardAdd.textContent} keeps this, and Send can still send it.`
+                : !current
+                  ? `Another tab took over this review. ${cardAdd.textContent} keeps this, and that tab shows it too.`
+                  : null));
+  cardReason.hidden = !reason;
+  setText(cardReason, reason ?? "");
 }
 
 /** A frame that strayed is covered where the reviewer is looking, with the way back on top. */
@@ -882,7 +903,6 @@ function post(message) {
 function setAnnotate(on) {
   annotate = on;
   annotateSwitch.checked = on;
-  if (!on) closeCompose(false);
   post({ type: "annotate", on });
   render();
 }
@@ -890,7 +910,19 @@ function setAnnotate(on) {
 /** Puts Annotate where the reviewer left it, unless a gone file or an ended review rules it out. */
 function followAnnotate() {
   const on = wantAnnotate && !fileGone && ended === null;
-  if (on !== annotate) setAnnotate(on);
+  if (on === annotate) return;
+  if (!on) letCardGo();
+  setAnnotate(on);
+}
+
+/**
+ * Closes the card for a reason that is not the reviewer's: an end, a gone file, another tab. Words in
+ * it are worth more than any of those, so a card holding some stays open, and says why (`render`);
+ * the server takes the note in every one of those states, so Add still keeps it.
+ */
+function letCardGo() {
+  if (cardText.value.trim() === "") closeCompose(false);
+  else held = !card.hidden;
 }
 
 // A page under review can post at any moment. What it proposes is acted on only straight after the
@@ -914,11 +946,14 @@ const gesture = (active) =>
 // sends the fields that describe what the reviewer pointed at, and never the note text, so a
 // hostile page cannot put words in the reviewer's mouth. `composing` holds the pending note.
 let composing = null;
+// Set when a forced close kept the card open, so the card can say why it is still there.
+let held = false;
 
 function openCompose(note, label, outline, rects, from) {
   composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
   // A refusal belongs only to the words it refused; a fresh card gets a clean reason line.
   cardProblem = null;
+  held = false;
   // A half-typed note is worth more than a live reload; the reload lands when the card closes.
   editing = true;
   cardTarget.textContent = label;
@@ -941,8 +976,9 @@ function closeCompose(refocus) {
   card.hidden = true;
   const from = composing?.from;
   composing = null;
+  held = false;
   editing = false;
-  if (deferredReload) show();
+  if (deferredReload && !fileGone) show();
   // Tell the artifact the target is done so it drops the highlight; hand keyboard focus back to
   // the frame and, for the keyboard path, ask it to refocus the element the reviewer came from.
   // An answer came from the margin, so focus goes back there, or on to Send once it is added.
@@ -1043,6 +1079,7 @@ window.addEventListener("message", (event) => {
 
 annotateSwitch.addEventListener("click", () => {
   wantAnnotate = !annotate;
+  if (!wantAnnotate) closeCompose(false);
   setAnnotate(wantAnnotate);
 });
 
@@ -1078,8 +1115,11 @@ endButton.addEventListener("click", () => {
 endDialog.addEventListener("close", async () => {
   const choice = endDialog.returnValue;
   if (choice !== "end" && choice !== "discard") return;
-  // Discarding drops the note being edited along with the rest; nothing is left to save.
-  if (choice === "discard") editingNote = null;
+  // Discarding drops the note being edited and the one in the card along with the rest.
+  if (choice === "discard") {
+    editingNote = null;
+    closeCompose(false);
+  }
   // What the reviewer last typed is what goes, even if they ended mid-edit.
   if (choice === "end" && !(await saveEdit())) return;
   problem = null;
@@ -1200,6 +1240,7 @@ async function addNote() {
   }
   return kept;
 }
+cardText.addEventListener("input", renderReason);
 cardText.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();

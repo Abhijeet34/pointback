@@ -48,6 +48,7 @@ async function smoke(engine) {
       [{ prompt: NOTE, selector: "#title", tag: "h1" }],
     );
     await enterIsNotThePages(browser, lab);
+    await endKeepsTheCard(browser, lab);
     await readingPlace(browser, lab, engine);
     return `${engine} ${browser.version()} passed`;
   } finally {
@@ -92,6 +93,35 @@ async function enterIsNotThePages(browser, lab) {
   );
   const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
   assert.equal(polled.status, "waiting", "the agent receives nothing the reviewer did not send");
+}
+
+/** The agent's end, which closes the card for a reason not the reviewer's, leaves their words in it. */
+async function endKeepsTheCard(browser, lab) {
+  const dir = join(lab.dir, "ending");
+  mkdirSync(dir);
+  const file = join(dir, "plan.html");
+  copyFileSync(fixture, file);
+  const page = await browser.newPage();
+  page.setDefaultTimeout(STEP_MS);
+  const { session } = (await cli([file], lab.env)).json();
+  await page.goto(session.url);
+  await page.waitForFunction(() => document.body.dataset.annotate === "1");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.keyboard.type(NOTE);
+  await cli(["end", file], lab.env);
+  await page.waitForFunction(
+    () => document.getElementById("noticeText").textContent === "Your agent ended this review.",
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      document.getElementById("card").checkVisibility()
+        ? document.getElementById("cardText").value
+        : null,
+    ),
+    NOTE,
+    "the card the end would have closed still shows the reviewer's words",
+  );
 }
 
 /**
