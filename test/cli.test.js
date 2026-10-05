@@ -568,6 +568,31 @@ test("eight opens at once on a cold state directory all succeed, against one dae
   }
 });
 
+// Hunt 37263767133, attempt 9: on windows-2025 three of these opens said "server did not start" after
+// 10.9 s, quoting a server log that ended with the winner listening. Each open timed the start from its
+// own spawn, though the lock gives the winner 10 s from its later claim. Here every daemon is held 6 s
+// before it claims and the winner 5 s more before it binds: 11 s after the opens, 5 s into its claim.
+test("eight cold opens wait for a winning daemon that is slow to come up, while the lock calls it starting", async () => {
+  const slow = isolatedEnv({
+    NODE_OPTIONS:
+      `${process.env.NODE_OPTIONS ?? ""} --import=${new URL("./helpers/slow-start.js", import.meta.url).href}`.trim(),
+    TEST_BOOT_HOLD_MS: "6000",
+    TEST_BIND_HOLD_MS: "5000",
+  });
+  try {
+    const opened = await Promise.all(copies(8).map((file) => cli([file], slow.env)));
+    assert.deepEqual(
+      opened.map((o) => o.code),
+      Array(8).fill(0),
+      opened.map((o) => o.stderr).join(""),
+    );
+    const ports = new Set(opened.map((o) => new URL(o.json().session.url).port));
+    assert.deepEqual([...ports], [String(slow.serverInfo().port)], "every review on one daemon");
+  } finally {
+    await slow.stop();
+  }
+});
+
 // The review's split-brain reproduction. After an idle-out, concurrent starts raced for the old
 // port: a tab reconnected to the daemon that won it while server.json, and so the agent, named
 // another, and the agent's next open wrote that other daemon's stale copy over the sent note.
@@ -718,7 +743,10 @@ test("a daemon that cannot start is reported by what it said, not by where it wr
   try {
     const opened = await cli([fixture], { ...blocked.env, POINTBACK_PORT: String(port) });
     assert.equal(opened.code, 1);
-    assert.match(opened.stderr, /server did not start: it exited \d+ after \d+ ms and \d+ probes/);
+    assert.match(
+      opened.stderr,
+      /server did not start: the daemon it started exited \d+ after \d+ ms and \d+ probes/,
+    );
     assert.match(opened.stderr, /EADDRINUSE/, opened.stderr);
   } finally {
     squatter.close();

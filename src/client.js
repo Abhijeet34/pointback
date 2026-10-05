@@ -5,7 +5,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { daemonHolds, pidAlive } from "./daemon-lock.js";
+import { STARTING_MS, daemonHolds, pidAlive } from "./daemon-lock.js";
 import { tokenProof } from "./http-guard.js";
 import { env, name, version } from "./identity.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
@@ -101,16 +101,29 @@ export async function ensureServer(stateDir, environment = process.env) {
   // however many looks the machine can afford - and a busy windows-2025 runner affords few.
   // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
   // directory; the rest exit 0. A start that stepped aside for a daemon that has since let go,
-  // one caught on its way out, is replaced; only a failed exit means "not coming".
+  // one caught on its way out, is replaced.
+  // The clock runs from the latest start in progress: this CLI's own spawn, or the last write to
+  // the lock by a live holder, which the lock calls starting for STARTING_MS after its claim. Run
+  // from the spawn alone, it gave up on a concurrent open's daemon the lock still called starting
+  // (hunt 37263767133). So a failed start means "not coming" only once no live holder is left.
   const startedAt = Date.now();
+  let since = startedAt;
   let probes = 0;
+  const lapsed = () => probes >= START_PROBES && Date.now() - since >= STARTING_MS;
   for (;;) {
     probes += 1;
     const info = readServerInfo(stateDir);
     if (info && serves(await health(info))) return info;
-    if (child.exitCode !== null && child.exitCode !== 0) break;
-    if (child.exitCode === 0 && !(await daemonHolds(stateDir))) child = start();
-    if (probes >= START_PROBES && Date.now() - startedAt >= START_TIMEOUT_MS) break;
+    if (child.exitCode !== null || lapsed()) {
+      const held = await daemonHolds(stateDir);
+      if (held) {
+        if (held.wroteAt <= Date.now()) since = Math.max(since, held.wroteAt);
+      } else if (child.exitCode === 0) {
+        child = start();
+        since = Date.now();
+      } else if (child.exitCode !== null) break;
+    }
+    if (lapsed()) break;
     await sleep(50);
   }
   throw new Error(startFailure(stateDir, child, Date.now() - startedAt, probes));
@@ -201,8 +214,7 @@ export async function refusingServer(stateDir) {
   }
 }
 
-/** How long, and how many looks, a spawned daemon gets to answer before it is called dead. */
-const START_TIMEOUT_MS = 10_000;
+/** How many looks a start gets to answer, as well as STARTING_MS, before it is called dead. */
 const START_PROBES = 20;
 
 /**
@@ -219,7 +231,13 @@ function startFailure(stateDir, child, elapsedMs, probes) {
   } catch {
     said = "(unreadable)";
   }
-  const state = child.exitCode === null ? "it is still running" : `it exited ${child.exitCode}`;
+  // Named as the daemon, because "it exited 0" was read as the CLI's own exit status.
+  const state =
+    child.exitCode === null
+      ? "the daemon it started is still running"
+      : child.exitCode === 0
+        ? "the daemon it started stepped aside for one that never answered"
+        : `the daemon it started exited ${child.exitCode}`;
   return (
     `server did not start: ${state} after ${elapsedMs} ms and ${probes} probes. ` +
     `${log} says: ${said || "(nothing)"}`
