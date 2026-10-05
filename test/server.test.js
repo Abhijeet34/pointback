@@ -902,10 +902,15 @@ test("the daemon idles on inactivity; a heartbeat keeps it alive, an open but si
   // until the server closes it, and this daemon never closes an idle one (docs/ENGINEERING-NOTES.md).
   const agent = new Agent({ keepAlive: true, maxSockets: 1 });
   let tabConnectionClosed = false;
+  const watchedSockets = new WeakSet();
   const tab = (method, path, body) =>
     new Promise((resolve, reject) => {
       const req = request(`http://127.0.0.1:${held.port}${path}`, { method, agent, headers: info });
-      req.on("socket", (socket) => socket.once("close", () => (tabConnectionClosed = true)));
+      req.on("socket", (socket) => {
+        if (watchedSockets.has(socket)) return;
+        watchedSockets.add(socket);
+        socket.once("close", () => (tabConnectionClosed = true));
+      });
       req.on("error", reject);
       req.on("response", (res) => {
         let text = "";
