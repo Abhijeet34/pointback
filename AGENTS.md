@@ -19,6 +19,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   The smoke gates the release pull request, so it opens a review with `open` (the chrome's `ready`), never `page.goto` (`docs/ENGINEERING-NOTES.md`).
   Drive Annotate with the CDP harness, never chrome-devtools-axi, which never moves focus into the out-of-process frame.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
+  The browser suite shares one daemon, which never evicts a review holding notes and refuses an open past `limits.sessions`; its `afterEach` releases what each test leaves.
 - A test that mocks `setTimeout` makes its HTTP requests with `node:http`, never `fetch`, which stalls on a reused connection under the mock on Node 24.20.0 (`docs/ENGINEERING-NOTES.md`).
 - Every wait goes through `until` in `test/helpers/wait.js` and carries its own deadline; a failed wait on a tab or the page in it reports what the chrome showed, failed loads included (`describe` in `test/helpers/cdp.js`).
   A positive expectation waits for its condition; a negative one waits on the barrier proving the thing it rules out was handled (`handled` and `TRACK_API_ANSWERS` in `test/browser.test.js`), sleeping only where nothing would have fired and saying in a comment what the duration bounds; a latency is printed, never asserted.
@@ -38,7 +39,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - A note is composed in the chrome, never the artifact; the chrome acts on what the frame proposes only under `gesture`, and pins carry no instruction or reply (`src/browser/chrome.js`).
   The page reaches the chrome only through the wrapper frame, served under the other loopback name (`pairedHost` in `src/http-guard.js`), whose own activation is the gesture; outside Chromium a key in the chrome also holds the page off for 5 s (`docs/THREAT-MODEL.md`).
   Read activation in a test through the wrapper's stamp, never a Playwright `evaluate` in a frame, which carries a gesture in Firefox and WebKit.
-- A page that takes the focus from an open note is unloaded (`unload` in `src/browser/chrome.js`, owner `docs/THREAT-MODEL.md`); a test counts its keys through the console channel of `test/fixtures/focus-calls.html`, never a window flag, since the frame's window goes with it.
+- A page that takes the focus from an open note is unloaded (`unload` in `src/browser/chrome.js`, owner `docs/THREAT-MODEL.md`); a test counts its keys and hears where the page put the focus through the console channel of `test/fixtures/focus-calls.html` (`pageTookFocus`), never a window flag or a call on the page's target, since the frame goes with the unload, which can land while the window is away.
 - Replies are set as text, never HTML (`replyLine`).
 - Only fonts under the root and the vendored house faces get `Access-Control-Allow-Origin` (`FONT_HEADERS` in `src/http-guard.js`); never widen it.
 - The token in `server.json` goes only to a server that answered `tokenProof` (`src/http-guard.js`).
