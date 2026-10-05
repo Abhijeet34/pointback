@@ -120,15 +120,29 @@ export async function ensureServer(stateDir, environment = process.env) {
  * but cannot prove it holds the token, and still has to stop, or two would share its sessions; it
  * has then been shown the token, so the token is retired whether or not it stopped, and the next
  * daemon mints a fresh one. The record keeps its port, so a start still finds a daemon that refused.
+ *
+ * "stopping" is only the daemon's promise: it is stopped once its process is gone, which frees its
+ * port, so a start right after comes back on that port and the tabs holding it reconnect. One that
+ * has not gone within STOP_TIMEOUT_MS did not stop.
  */
 export async function stopServer(stateDir, info, status) {
-  const stopped = await api(info, "POST", "/shutdown").then(
+  const asked = await api(info, "POST", "/shutdown").then(
     () => true,
     () => false,
   );
   if (!status.proven) writeJsonAtomic(join(stateDir, "server.json"), { ...info, token: null });
-  return stopped;
+  if (!asked) return false;
+  const pid = Number.isInteger(info.pid) ? info.pid : status.pid;
+  // A record without a pid comes from a daemon that predates it; its port answering is all there is.
+  const gone = async () =>
+    Number.isInteger(pid) ? !pidAlive(pid) : (await health(info))?.app !== name;
+  for (const deadline = Date.now() + STOP_TIMEOUT_MS; !(await gone()); await sleep(50))
+    if (Date.now() >= deadline) return false;
+  return true;
 }
+
+/** How long a daemon that answered "stopping" gets to exit before it is said not to have stopped. */
+const STOP_TIMEOUT_MS = 5_000;
 
 /**
  * Whether a record's server is the one still holding its port. Its process must be alive, and when the

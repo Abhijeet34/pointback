@@ -469,15 +469,60 @@ test("--root resolves relative to where the agent is, and is refused where it me
 test("stop shuts the server down and reports when none runs", async () => {
   const info = lab.serverInfo();
   assert.deepEqual((await cli(["stop"], lab.env)).json(), { status: "stopped" });
-  await until(
-    () =>
-      fetch(`http://127.0.0.1:${info.port}/health`).then(
-        () => false,
-        () => true,
-      ),
-    { what: "the stopped server to stop answering" },
-  );
+  await assert.rejects(fetch(`http://127.0.0.1:${info.port}/health`), "it no longer answers");
   assert.deepEqual((await cli(["stop"], lab.env)).json(), { status: "not-running" });
+});
+
+/** The environment of a daemon whose exit, once asked for, is held `hold` ms, or "never". */
+const holdingExit = (own, hold) => ({
+  ...own.env,
+  NODE_OPTIONS:
+    `${process.env.NODE_OPTIONS ?? ""} --import=${new URL("./helpers/slow-exit.js", import.meta.url).href}`.trim(),
+  TEST_EXIT_HOLD_MS: hold,
+});
+const bindable = (port) =>
+  new Promise((resolve) => {
+    const probe = createServer();
+    probe.once("error", (error) => resolve(error.code));
+    probe.listen(port, "127.0.0.1", () => probe.close(() => resolve("free")));
+  });
+
+// Hunt 37250521173, attempt 16: `stop` said stopped on the daemon's "stopping", before the process
+// was gone, so the port was still bound when the next listener asked for it. The daemon here holds
+// its exit 1.5 s after answering, so `stop` meets that order every time.
+test("stop says stopped only once the daemon has exited and its port is free", async () => {
+  const own = isolatedEnv();
+  const env = holdingExit(own, "1500");
+  try {
+    assert.equal((await cli([fixture], env)).code, 0);
+    const { pid, port } = own.serverInfo();
+    assert.deepEqual((await cli(["stop"], env)).json(), { status: "stopped" });
+    assert.equal(pidAlive(pid), false, "the daemon's process is gone");
+    assert.equal(await bindable(port), "free", "and its port can be bound at once");
+    assert.equal((await cli([fixture], env)).code, 0);
+    assert.equal(own.serverInfo().port, port, "so the next daemon comes back on it");
+  } finally {
+    await own.stop();
+  }
+});
+
+test("stop names a daemon that answered but did not exit in time, and never says stopped", async () => {
+  const own = isolatedEnv();
+  const env = holdingExit(own, "never");
+  let pid;
+  try {
+    assert.equal((await cli([fixture], env)).code, 0);
+    const info = own.serverInfo();
+    pid = info.pid;
+    assert.deepEqual((await cli(["stop"], env)).json(), {
+      status: "refused",
+      pid,
+      port: info.port,
+    });
+  } finally {
+    if (pid && pidAlive(pid)) process.kill(pid);
+    await own.stop();
+  }
 });
 
 /** `count` copies of the fixture under a fresh folder, so concurrent opens each review their own file. */
