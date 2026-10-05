@@ -2672,12 +2672,17 @@ const HELP_LINE =
   "Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, <send key> sends.";
 
 /**
- * Resolves once the document's faces have settled and two frames have painted since. A face can land
- * well after the review is ready (Plex Mono started 2673 ms into a reloaded chrome on windows-2025),
- * and what a layout or a paint reports before then is the fallback it replaces.
+ * Resolves once the document's faces have settled, every animation that ends has ended, and two
+ * frames have painted since. A face can land well after the review is ready (Plex Mono started
+ * 2673 ms into a reloaded chrome on windows-2025), and Send's background eases into the accent as a
+ * note is added wherever motion is not reduced (ubuntu-24.04 read it mid-way, run 37385952857);
+ * what a layout or a paint reports before then is a state on its way out.
  */
-const SETTLED =
-  "document.fonts.ready.then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))))";
+const SETTLED = `document.fonts.ready
+  .then(() => Promise.all(document.getAnimations()
+    .filter((a) => a.effect?.getComputedTiming().endTime !== Infinity)
+    .map((a) => a.finished.catch(() => {}))))
+  .then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))))`;
 
 /**
  * The family of the face the renderer drew most of `selector`'s text in, in a tab or the page under
@@ -2770,6 +2775,11 @@ async function openWithOneRefused(
     const url = (await cli([file], own.env)).json().session.url;
     const { port } = own.serverInfo();
     if (path) refused = await refuseLoads(page, path.replace("<port>", String(port)));
+    // Motion as an ubuntu-24.04 runner has it, whatever the host's setting: Send's background eases
+    // into the accent as a note is added, so the look is read only once that has ended (`SETTLED`).
+    await page.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+    });
     await page.navigate(url);
     // A face the chrome first sets once the review is shown fails after it is ready, so the review
     // is driven only once the chrome has reloaded for it.

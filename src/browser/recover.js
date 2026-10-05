@@ -7,7 +7,7 @@
 // flag and gets its one. A reload that would take a half-typed note with it waits for the hold
 // chrome.js registers to release.
 {
-  const key = "pointback.recover";
+  const key = "recoverReloaded";
   // The wrapper and the sandboxed page are cross-origin to this storage; unreadable storage counts as started.
   let started = true;
   try {
