@@ -2393,8 +2393,9 @@ test(
 // The page ignores what it is pointed at until it hears the card close, which crosses the wrapper and
 // can land after the chrome has hidden the card: on macos-15, hunts 37277309134 and 37299981095, a
 // test's next click reached the page first and opened no card. The close is held in the wrapper until
-// that click reaches the page, or, when `noteOn` waits for the page first and so no click comes, for
-// a second, which bounds only how late the page hears.
+// that click reaches the page. The one-second bound applies only while the first `noteOn` is still
+// pending, which is when `noteOn` waits for the page first and so no click comes; once it has returned,
+// only the next click releases the hold, so the bound cannot free the page before that click arrives.
 test(
   "a note added with noteOn leaves the page taking the next click however late it hears the card close",
   { skip: !executable && "no browser found" },
@@ -2404,12 +2405,15 @@ test(
     await artifact.eval(`globalThis.presses = 0;
       window.addEventListener("pointerdown", () => (globalThis.presses += 1), true)`);
     const held = await holdCloseRelay(page);
+    let firstSettled = false;
     const releasing = (async () => {
       try {
         await held.reached();
         const from = Date.now();
         await until(
-          async () => Date.now() - from > 1000 || (await artifact.eval("globalThis.presses >= 2")),
+          async () =>
+            (await artifact.eval("globalThis.presses >= 2")) ||
+            (Date.now() - from > 1000 && !firstSettled),
           { what: "the second note's press, or the hold to pass" },
         );
       } finally {
@@ -2418,6 +2422,7 @@ test(
     })();
     try {
       await noteOn(page, artifact, "#title", "Shorter title");
+      firstSettled = true;
       await noteOn(page, artifact, "#p1", "Say how long");
     } finally {
       await releasing;
