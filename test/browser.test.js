@@ -2405,13 +2405,16 @@ test(
       window.addEventListener("pointerdown", () => (globalThis.presses += 1), true)`);
     const held = await holdCloseRelay(page);
     const releasing = (async () => {
-      await held.reached();
-      const from = Date.now();
-      await until(
-        async () => Date.now() - from > 1000 || (await artifact.eval("globalThis.presses >= 2")),
-        { what: "the second note's press, or the hold to pass" },
-      );
-      await held.release();
+      try {
+        await held.reached();
+        const from = Date.now();
+        await until(
+          async () => Date.now() - from > 1000 || (await artifact.eval("globalThis.presses >= 2")),
+          { what: "the second note's press, or the hold to pass" },
+        );
+      } finally {
+        await held.release();
+      }
     })();
     try {
       await noteOn(page, artifact, "#title", "Shorter title");
@@ -3328,15 +3331,20 @@ async function holdCloseRelay(page) {
   const lineNumber = readFileSync(new URL("../src/browser/wrapper.js", import.meta.url), "utf8")
     .split("\n")
     .findIndex((line) => line.includes('postMessage(event.data, "*")'));
+  assert.notEqual(lineNumber, -1, "the wrapper still passes the card close on to the page");
   let session = null;
   for (const child of page.children.keys()) {
     const tree = await page.browser.send("Page.getFrameTree", {}, child).catch(() => null);
     if (tree?.frameTree.frame.url.endsWith("/wrapper.html")) session = child;
   }
   assert.ok(session, "the wrapper has a target of its own");
-  let paused = false;
+  let pausedAt = null;
+  const scriptUrls = new Map();
   const onPause = (message) => {
-    if (message.sessionId === session && message.method === "Debugger.paused") paused = true;
+    if (message.sessionId !== session) return;
+    if (message.method === "Debugger.scriptParsed")
+      scriptUrls.set(message.params.scriptId, message.params.url);
+    else if (message.method === "Debugger.paused") pausedAt = message.params.callFrames[0];
   };
   page.browser.listeners.push(onPause);
   await page.browser.send("Debugger.enable", {}, session);
@@ -3350,7 +3358,19 @@ async function holdCloseRelay(page) {
     session,
   );
   return {
-    reached: () => until(() => paused, { what: "the wrapper to hold the card close" }),
+    async reached() {
+      await until(() => pausedAt, { what: "the wrapper to hold the card close" });
+      assert.match(
+        scriptUrls.get(pausedAt.location.scriptId),
+        /\/wrapper\.js$/,
+        "the wrapper is held",
+      );
+      assert.equal(
+        pausedAt.location.lineNumber,
+        lineNumber,
+        "held on the wrapper's close relay line",
+      );
+    },
     async release() {
       page.browser.listeners.splice(page.browser.listeners.indexOf(onPause), 1);
       await page.browser.send("Debugger.removeBreakpoint", { breakpointId }, session);
