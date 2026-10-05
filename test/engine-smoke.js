@@ -5,7 +5,7 @@
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
-/* global document, parent, nonce */
+/* global document, location, parent, nonce */
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,32 +28,10 @@ async function smoke(engine) {
   try {
     browser = await ENGINES[engine].launch({ timeout: STEP_MS * 2 });
     named = `${engine} ${browser.version()}`;
-    const page = await browser.newPage();
-    page.setDefaultTimeout(STEP_MS);
-    const { session } = (await cli([fixture], lab.env)).json();
-    await page.goto(session.url);
-    await page.waitForFunction(() => document.body.dataset.ready === "1");
-    // Annotate starts on; the click below is the reviewer's gesture the chrome waits for.
-    await page.waitForFunction(() => document.body.dataset.annotate === "1");
-    // The page under review sits in pointback's wrapper frame, inside the chrome's own.
-    await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
-    await page.waitForFunction(() => document.activeElement?.id === "cardText");
-    await page.keyboard.type(NOTE);
-    await page.keyboard.press("Enter");
-    await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
-
-    await page.click("#send");
-    // After the click, not racing it: a sent batch waits on the server, and a poll left
-    // pending behind a stalled click would reject with nothing to report it.
-    const polled = (await cli(["poll", fixture, "--timeout-ms", "10000"], lab.env)).json();
-    assert.equal(polled.status, "feedback");
-    assert.deepEqual(
-      polled.prompts.map(({ prompt, selector, tag }) => ({ prompt, selector, tag })),
-      [{ prompt: NOTE, selector: "#title", tag: "h1" }],
-    );
-    await enterIsNotThePages(browser, lab);
-    await endKeepsTheCard(browser, lab);
-    await readingPlace(browser, lab, engine);
+    await act(browser, (page) => coreAct(page, lab));
+    await act(browser, (page) => enterIsNotThePages(page, lab));
+    await act(browser, (page) => endKeepsTheCard(page, lab));
+    await act(browser, (page) => readingPlace(page, lab, engine));
     return `${named} passed`;
   } catch (error) {
     throw Object.assign(error, { named });
@@ -64,18 +42,89 @@ async function smoke(engine) {
 }
 
 /**
+ * Each act on a page of its own, closed when the act ends, so no act inherits another's tab. A
+ * failed act says what the chrome showed, as `describe` in test/helpers/cdp.js does for Chromium:
+ * a timeout alone cannot tell a key that missed the card from a page that never loaded.
+ */
+async function act(browser, fn) {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(STEP_MS);
+  try {
+    await fn(page);
+  } catch (error) {
+    const shown = await page
+      .evaluate(() => ({
+        url: location.href.replace(/#.*/, "#..."),
+        ready: document.body?.dataset.ready,
+        focus: document.hasFocus(),
+        active: document.activeElement?.id || document.activeElement?.tagName,
+        card: document.getElementById("card")?.hidden === false,
+        text: document.getElementById("cardText")?.value,
+        marks: document.querySelectorAll(".mark:not(.sent)").length,
+        sent: document.querySelectorAll(".mark.sent").length,
+        notice: document.getElementById("noticeText")?.textContent,
+        reason: document.getElementById("cardReason")?.hidden
+          ? null
+          : document.getElementById("cardReason")?.textContent,
+        add: document.getElementById("cardAdd")?.disabled ? "disabled" : "enabled",
+        stream: document.getElementById("presence")?.dataset.state,
+        status: document.getElementById("status")?.textContent,
+      }))
+      .catch((reason) => `unreadable: ${reason.message.split("\n")[0]}`);
+    // The verdict prints the stack, which V8 composed when the error was made.
+    error.stack = `${error.stack}\n  the chrome showed ${JSON.stringify(shown)}`;
+    throw error;
+  } finally {
+    await page.close();
+  }
+}
+
+/**
+ * Opens a review the way the reviewer's browser does, and waits on the chrome's own word that the
+ * page under review is shown. Not `page.goto`, which waits on Playwright's record of the main
+ * frame's load: 4 of 80 Firefox runs on CI timed out there while the chrome showed the review,
+ * `ready` set, frames loaded and nothing pending.
+ */
+async function open(page, url) {
+  await page.evaluate((href) => setTimeout(() => location.assign(href)), url);
+  await page.waitForFunction(() => document.body?.dataset.ready === "1");
+}
+
+/** Open a file, point at an element, write a note, send, and a poll returns it. */
+async function coreAct(page, lab) {
+  const { session } = (await cli([fixture], lab.env)).json();
+  await open(page, session.url);
+  // Annotate starts on; the click below is the reviewer's gesture the chrome waits for.
+  await page.waitForFunction(() => document.body.dataset.annotate === "1");
+  // The page under review sits in pointback's wrapper frame, inside the chrome's own.
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.keyboard.type(NOTE);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
+
+  await page.click("#send");
+  // After the click, not racing it: a sent batch waits on the server, and a poll left
+  // pending behind a stalled click would reject with nothing to report it.
+  const polled = (await cli(["poll", fixture, "--timeout-ms", "10000"], lab.env)).json();
+  assert.equal(polled.status, "feedback");
+  assert.deepEqual(
+    polled.prompts.map(({ prompt, selector, tag }) => ({ prompt, selector, tag })),
+    [{ prompt: NOTE, selector: "#title", tag: "h1" }],
+  );
+}
+
+/**
  * Firefox and WebKit pass a key pressed in the chrome on to the page, so the page could spend the
  * reviewer's Enter in the card; the chrome hears nothing from the page for 5 s after a key there.
  */
-async function enterIsNotThePages(browser, lab) {
+async function enterIsNotThePages(page, lab) {
   const dir = join(lab.dir, "review");
   mkdirSync(dir);
   const file = join(dir, "rollout.html");
   copyFileSync(HOSTILE, file);
-  const page = await browser.newPage();
-  page.setDefaultTimeout(STEP_MS);
   const { session } = (await cli([file], lab.env)).json();
-  await page.goto(session.url);
+  await open(page, session.url);
   await page.waitForFunction(() => document.body.dataset.annotate === "1");
   await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
@@ -84,6 +133,13 @@ async function enterIsNotThePages(browser, lab) {
   await page.waitForFunction(() => !navigator.userActivation.isActive);
   await page.keyboard.insertText(NOTE);
   await page.keyboard.press("Enter");
+  // The chrome's own account that the Enter landed in the card: closed, the note kept unsent. A key
+  // that went elsewhere fails here by name rather than as the page's silence below.
+  await page.waitForFunction(
+    () =>
+      document.getElementById("card").hidden &&
+      document.querySelectorAll(".mark:not(.sent)").length === 1,
+  );
   const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
   await artifact.waitForFunction(() => globalThis.log.length === 1);
   // Posted behind the page's own two messages through the same frames, so both were handled.
@@ -102,15 +158,13 @@ async function enterIsNotThePages(browser, lab) {
 }
 
 /** The agent's end, which closes the card for a reason not the reviewer's, leaves their words in it. */
-async function endKeepsTheCard(browser, lab) {
+async function endKeepsTheCard(page, lab) {
   const dir = join(lab.dir, "ending");
   mkdirSync(dir);
   const file = join(dir, "plan.html");
   copyFileSync(fixture, file);
-  const page = await browser.newPage();
-  page.setDefaultTimeout(STEP_MS);
   const { session } = (await cli([file], lab.env)).json();
-  await page.goto(session.url);
+  await open(page, session.url);
   await page.waitForFunction(() => document.body.dataset.annotate === "1");
   await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
@@ -135,7 +189,7 @@ async function endKeepsTheCard(browser, lab) {
  * reviewer is; the reload must restore against the in-flow page, so a banner added above section 30
  * leaves its heading where the reviewer had it.
  */
-async function readingPlace(browser, lab, engine) {
+async function readingPlace(page, lab, engine) {
   const dir = mkdtempSync(join(tmpdir(), "pb-reading-"));
   try {
     const file = join(dir, "docs.html");
@@ -149,10 +203,8 @@ async function readingPlace(browser, lab, engine) {
       renameSync(`${file}.tmp`, file);
     };
     save("");
-    const page = await browser.newPage();
-    page.setDefaultTimeout(STEP_MS);
     const { session } = (await cli([file], lab.env)).json();
-    await page.goto(session.url);
+    await open(page, session.url);
     await page.waitForFunction(() => document.body.dataset.revision === "0");
     const heading = page.frameLocator("#artifact").frameLocator("#page").locator("#s30 h2");
     const y = await heading.evaluate((h2) => {
