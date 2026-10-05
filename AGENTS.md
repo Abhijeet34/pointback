@@ -17,7 +17,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   Never import Playwright into `test/*.test.js`; WebKit and Firefox are `npm run smoke` only.
   Drive Annotate with the CDP harness, never chrome-devtools-axi, which never moves focus into the out-of-process frame.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
-- Every wait goes through `until` in `test/helpers/wait.js` and carries its own deadline.
+- Every wait goes through `until` in `test/helpers/wait.js` and carries its own deadline; a failed `waitFor` on a tab reports what the chrome showed (`describe` in `test/helpers/cdp.js`).
   A positive expectation waits for its condition; a negative one waits on the barrier proving the thing it rules out was handled (`handled` and `TRACK_API_ANSWERS` in `test/browser.test.js`), sleeping only where nothing would have fired and saying in a comment what the duration bounds; a latency is printed, never asserted.
 - Never assert on the next line of an event stream: a failed watch arrives as `reload-off` on the same stream (`src/events.js`).
 - A test needing a review in a known state takes its own (`copyOfFixture`); a browser test's agent poll runs after the notes are sent, with `--timeout-ms 0`.
