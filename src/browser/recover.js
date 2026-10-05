@@ -31,7 +31,7 @@
       held = check;
     },
     release: () => {
-      if (waiting && !held()) reload();
+      if (waiting && !reloading && !held()) reload();
     },
   };
   const refused = () => {
