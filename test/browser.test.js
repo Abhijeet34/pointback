@@ -860,7 +860,7 @@ test(
 
 /** A private copy of the page that moves the focus to its own field, as its own review. */
 async function focusCallsReview() {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-focus-"));
+  const dir = mkdtempSync(join(lab.dir, "focus-"));
   const file = join(dir, "incident.html");
   copyFileSync(join(dirname(fixture), "focus-calls.html"), file);
   return { file, session: (await cli([file], lab.env)).json().session };
@@ -1639,7 +1639,7 @@ test(
   "a page that focuses its own field at load and on its own click is never hidden while notes are written",
   { skip: !executable && "no browser found" },
   async () => {
-    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-focus-own-"));
+    const dir = mkdtempSync(join(lab.dir, "focus-own-"));
     const file = join(dir, "search.html");
     copyFileSync(join(dirname(fixture), "focus-own.html"), file);
     const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
