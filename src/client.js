@@ -105,7 +105,8 @@ export async function ensureServer(stateDir, environment = process.env) {
   // The clock runs from the latest start in progress: this CLI's own spawn, or the last write to
   // the lock by a live holder, which the lock calls starting for STARTING_MS after its claim. Run
   // from the spawn alone, it gave up on a concurrent open's daemon the lock still called starting
-  // (hunt 37263767133). So a failed start means "not coming" only once no live holder is left.
+  // (hunt 37263767133). So a failed start means "not coming" only once no live holder is left, and
+  // a write stamped later than now, by a clock set back since, extends nothing.
   const startedAt = Date.now();
   let since = startedAt;
   let probes = 0;
