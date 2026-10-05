@@ -13,6 +13,7 @@ const toChrome = (message) => parent.postMessage(message, chromeOrigin);
 window.addEventListener("message", (event) => {
   if (event.source === parent && event.origin === chromeOrigin) {
     if (event.data?.type === "show") show(event.data.url);
+    else if (event.data?.type === "unload") unload();
     else page?.contentWindow?.postMessage(event.data, "*");
   } else if (page && event.source === page.contentWindow) {
     toChrome({
@@ -39,6 +40,18 @@ function show(url) {
   // announce itself in is how it learns the page strayed.
   page.addEventListener("load", () => toChrome({ type: "loaded" }));
   document.body.append(page);
+}
+
+/**
+ * Takes the page out of this document at once, where it can hold no focus and hear no key, and shows
+ * about:blank in its place until the chrome shows the page again; navigating the frame instead leaves
+ * the page able to take the focus until about:blank commits.
+ */
+function unload() {
+  page?.remove();
+  page = null;
+  show("about:blank");
+  toChrome({ type: "unloaded" });
 }
 
 // Focus the chrome hands this frame belongs to the page inside it, as it did when the chrome framed

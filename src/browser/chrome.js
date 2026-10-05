@@ -73,6 +73,8 @@ let strayed = false;
 // holds about:blank until that note is done (`unload`).
 let tookFocus = false;
 let unloaded = false;
+// The note field the page took the focus from, which gets it back once the page is out.
+let taken = /** @type {HTMLElement | null} */ (null);
 let current = true;
 let liveReload = true;
 let connection = "live";
@@ -1084,6 +1086,14 @@ window.addEventListener("message", (event) => {
     return;
   }
   if (event.data?.type === "loaded") return pageLoaded();
+  if (event.data?.type === "unloaded") {
+    // The page is out of the wrapper's document and can take the focus no more, so the note gets it;
+    // a field closed or rebuilt meanwhile leaves it to the note still open.
+    if (!unloaded) return;
+    if (taken?.isConnected && !taken.closest("[hidden]")) taken.focus();
+    else focusFrame();
+    return;
+  }
   if (event.data?.type !== "page") return;
   const { active, message: data } = event.data;
   if (data?.type === "ready") {
@@ -1367,8 +1377,6 @@ shield.addEventListener(
 );
 // A move the chrome or the reviewer's Tab makes names the frame as where the focus went; one the page
 // makes names nothing, and the window's blur that follows at once has the focus still in this tab.
-// The focus is put back a task later: put back inside the blur, the chrome reads it as here while
-// the keys still went to the page.
 let left = /** @type {HTMLElement | null} */ (null);
 document.addEventListener("focusout", (event) => {
   const field = /** @type {HTMLElement} */ (event.target);
@@ -1379,20 +1387,22 @@ document.addEventListener("focusin", () => (left = null));
 window.addEventListener("blur", () => {
   const field = left;
   left = null;
-  if (!field || !document.hasFocus()) return;
+  if (!field || !document.hasFocus() || unloaded) return;
+  taken = field;
   unload();
-  setTimeout(() => field.focus());
 });
 
 /**
  * Has the wrapper put about:blank in the page's place, at once on the page's move: a hidden page
- * keeps the focus it took and the keys after it. The cover covers a stray too, so Back goes with it.
+ * keeps the focus it took and the keys after it. The note gets the focus back once the wrapper says
+ * the page is out, since until then the page can take it again. The cover covers a stray too, so
+ * Back goes with it.
  */
 function unload() {
   tookFocus = true;
   unloaded = true;
   strayed = false;
-  frame.contentWindow.postMessage({ type: "show", url: "about:blank" }, wrapperOrigin);
+  frame.contentWindow.postMessage({ type: "unload" }, wrapperOrigin);
   render();
 }
 

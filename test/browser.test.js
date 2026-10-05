@@ -1043,11 +1043,11 @@ async function hiddenStateFocusChange(outOfView) {
   // Still shown and laid out, only moved out of the chrome's view.
   if (outOfView)
     await page.eval("document.getElementById('artifact').style.transform = 'translateY(100vh)'");
-  // From the page's move, which blurs the chrome's window, to about:blank loading in its place.
+  // From the page's move, which blurs the chrome's window, to the wrapper saying the page is out.
   await page.eval(`globalThis.unload = {};
     addEventListener("blur", () => (unload.moved ??= performance.now()));
     addEventListener("message", (event) => {
-      if (event.data?.type === "loaded" && unload.moved) unload.blank ??= performance.now();
+      if (event.data?.type === "unloaded") unload.out ??= performance.now();
     })`);
   await artifact.eval("globalThis.calling = true");
   await page.waitFor(kept(card, UNLOADED_LINE));
@@ -1072,9 +1072,9 @@ async function hiddenStateFocusChange(outOfView) {
     keyed: await back.eval("globalThis.keyed"),
     place: Math.abs(nowAt - wasAt) <= 2 || `moved from ${wasAt} px to ${nowAt} px`,
   };
-  const ms = Math.round(Number(await page.eval("unload.blank - unload.moved")));
+  const ms = Math.round(Number(await page.eval("unload.out - unload.moved")));
   console.log(
-    `hidden-state focus change, ${outOfView ? "out of" : "in"} view: ${JSON.stringify(result)}; about:blank ${ms} ms after the move`,
+    `hidden-state focus change, ${outOfView ? "out of" : "in"} view: ${JSON.stringify(result)}; page out ${ms} ms after the move`,
   );
   await page.close();
   assert.deepEqual(result, {
