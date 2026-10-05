@@ -68,7 +68,7 @@ In scope:
 
 Idle keep-alive connections have no count cap: `server.maxConnections` is unset on purpose, because any local user who can reach the loopback port could fill a count and lock the reviewer out.
 They are bounded only by the process's file-descriptor limit and the daemon's idle-out, which closes every connection after 30 minutes with no request (`idleShutdownMs` in `src/limits.js`, overridden by `POINTBACK_IDLE_MS`), and a visible review tab's heartbeat defers that idle-out.
-A local user could already hold a connection open without sending a byte: such a connection was still open after 45 s on Node 26.10.0 and 24.11.1 (`docs/ENGINEERING-NOTES.md`).
+A local user could already hold a connection open without sending a byte: on main such a connection was still open after 50 s on Node 26.10.0, and with this change it stays open after 45 s on Node 26.10.0 and 24.11.1 (`docs/ENGINEERING-NOTES.md`).
 
 Out of scope:
 
