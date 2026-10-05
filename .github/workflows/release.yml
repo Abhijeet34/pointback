@@ -125,9 +125,10 @@ jobs:
       # release-please tags the release pull request's merge commit, which is this run's tree
       # only when that merge started this run. A merge whose own run is still going is left to
       # that run, which tags it behind its own matrix, so release-please is skipped here and this
-      # run cannot tag it first. A merge whose run has finished without tagging, or has no run,
-      # fails before any tag exists, because a tag cannot be taken back. `autorelease: pending` is
-      # the label release-please finds a merged release pull request by, and swaps once it has tagged.
+      # run cannot tag it first. A merge whose run has finished still labelled pending, or has no
+      # run, fails before any tag exists, because a tag cannot be taken back. A finished run whose
+      # label has been swapped has tagged it, so it passes. `autorelease: pending` is the label
+      # release-please finds a merged release pull request by, and swaps once it has tagged.
       - name: Refuse to tag a tree this run did not test
         id: guard
         run: |
@@ -145,8 +146,13 @@ jobs:
                 echo "::notice::release pull request #$number merged as $sha; the run for $sha is still going and will tag it behind its own matrix" >&2
                 echo "in_flight=true" >> "$GITHUB_OUTPUT"
               else
-                echo "::error::release pull request #$number merged as $sha, but this run tested $GITHUB_SHA; re-run the failed jobs of the run for $sha, so the matrix that gates its tag is its own" >&2
-                rc=1
+                labels=$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
+                if [ -n "$statuses" ] && ! grep -qx "autorelease: pending" <<< "$labels"; then
+                  echo "::notice::release pull request #$number merged as $sha was tagged by the run for $sha" >&2
+                else
+                  echo "::error::release pull request #$number merged as $sha, but this run tested $GITHUB_SHA; re-run the failed jobs of the run for $sha, so the matrix that gates its tag is its own" >&2
+                  rc=1
+                fi
               fi
             fi
           done <<< "$merged"

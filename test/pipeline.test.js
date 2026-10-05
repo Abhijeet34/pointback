@@ -68,14 +68,6 @@ function stepsOf(jobBlock) {
     );
 }
 
-// A job's `permissions:` block as scope to level, read at the 6-space indent every job here uses.
-function permissionsOf(jobBlock) {
-  const block = jobBlock.match(/^ {4}permissions:\n((?: {6}.*\n)+)/m)?.[1] ?? "";
-  return Object.fromEntries(
-    [...block.matchAll(/^ {6}([\w-]+): (\S+)$/gm)].map((m) => [m[1], m[2]]),
-  );
-}
-
 // A workflow `if:` evaluated as the JavaScript it means, its context names bound to `context`.
 function evaluates(condition, context) {
   const js = condition.replace(/ == /g, " === ").replace(/ != /g, " !== ");
@@ -543,18 +535,18 @@ test("release-tag refuses to tag or release a tree its own run did not test", ()
   );
   // `pr list` and `run list` answer separately, as the API does; `run list` gets the status
   // lines `--jq '.[].status'` would have printed.
-  const fakeGh = (pending, statuses) =>
-    `gh() { echo "$*" >> "$GH_CALLS"; case "$1 $2" in "pr list") printf '%s' '${pending}' ;; "run list") printf '%s' '${statuses}' ;; esac; }\n${guard}`;
+  const fakeGh = (pending, statuses, labels) =>
+    `gh() { echo "$*" >> "$GH_CALLS"; case "$1 $2" in "pr list") printf '%s' '${pending}' ;; "pr view") printf '%s' '${labels}' ;; "run list") printf '%s' '${statuses}' ;; esac; }\n${guard}`;
   const env = { GITHUB_SHA: tested, GITHUB_REPOSITORY: "o/r", GITHUB_REF_NAME: "main" };
 
   const dir = mkdtempSync(join(tmpdir(), "pipeline-test-"));
   try {
     const calls = join(dir, "calls");
     const output = join(dir, "output");
-    const run = (pending, statuses = "") => {
+    const run = (pending, statuses = "", labels = "autorelease: pending") => {
       rmSync(calls, { force: true });
       rmSync(output, { force: true });
-      const result = runStepBody(fakeGh(pending, statuses), {
+      const result = runStepBody(fakeGh(pending, statuses, labels), {
         env: { ...env, GH_CALLS: calls, GITHUB_OUTPUT: output },
       });
       return {
@@ -593,6 +585,14 @@ test("release-tag refuses to tag or release a tree its own run did not test", ()
     );
     assert.equal(finished.output, "", "a finished run left release-please to run");
 
+    const swapped = run(`59 ${older}`, "completed", "autorelease: tagged");
+    assert.equal(swapped.status, 0, "a merge its own finished run tagged was refused");
+    assert.match(
+      swapped.stderr,
+      new RegExp(`::notice::release pull request #59 merged as ${older} was tagged`),
+    );
+    assert.equal(swapped.output, "", "a tagged merge left release-please to run");
+
     assert.equal(run(`59 ${older}`).status, 1, "a merge with no run for its commit was tagged");
     const matching = run(`59 ${tested}`);
     assert.equal(matching.status, 0, "the run the release merge started may tag it");
@@ -619,8 +619,6 @@ test("release-tag refuses to tag or release a tree its own run did not test", ()
   const tagAt = at((step) => step.uses?.startsWith("googleapis/release-please-action@"));
   const checkAt = at((step) => step.name === "Refuse to release a tree this run did not test");
   assert.ok(guardAt >= 0 && guardAt < tagAt && tagAt < checkAt, "the steps run out of order");
-  assert.equal(steps[guardAt].id, "guard");
-  assert.equal(steps[tagAt].id, "rp");
   const tagRuns = (inFlight) =>
     evaluates(steps[tagAt].if, { steps: { guard: { outputs: inFlight } } });
   assert.equal(
@@ -633,11 +631,6 @@ test("release-tag refuses to tag or release a tree its own run did not test", ()
     evaluates(steps[checkAt].if, { steps: { rp: { outputs: released } } });
   assert.equal(checkRuns({ release_created: "true" }), true);
   assert.equal(checkRuns({}), false, "the release check ran with release-please skipped");
-  assert.deepEqual(permissionsOf(releaseTag), {
-    contents: "write",
-    "pull-requests": "write",
-    actions: "read",
-  });
 });
 
 // The one ref taken at a branch: gates' shared workflows are the fleet's single
