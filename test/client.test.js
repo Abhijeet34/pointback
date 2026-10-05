@@ -13,7 +13,6 @@ test("a start stalled past the probe's timeout does not take a closed port for a
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-client-"));
   const record = { port: await closedPort(), pid: process.pid, token: "a".repeat(64) };
   writeFileSync(join(dir, "server.json"), JSON.stringify(record));
-  const refusing = refusingServer(dir);
   stallNextTick(2_000);
-  assert.equal(await refusing, null);
+  assert.equal(await refusingServer(dir), null);
 });

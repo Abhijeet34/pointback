@@ -65,9 +65,8 @@ test("a lock whose pid came back but whose port is closed is taken over", async 
 test("a start stalled past the probe's timeout still takes over a lock whose port is closed", async () => {
   const dir = stateDir();
   record(dir, 1, { pid: process.pid, port: await closedPort() });
-  const claiming = claimDaemon(dir);
   stallNextTick(1_500);
-  assert.ok(await claiming);
+  assert.ok(await claimDaemon(dir));
 });
 
 // A reboot can hand a crashed daemon's pid to a process and its sticky port to another listener; a
