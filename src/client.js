@@ -102,11 +102,10 @@ export async function ensureServer(stateDir, environment = process.env) {
   // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
   // directory; the rest exit 0. A start that stepped aside for a daemon that has since let go,
   // one caught on its way out, is replaced.
-  // The clock runs from the latest start in progress: this CLI's own spawn, or the last write to
-  // the lock by a live holder, which the lock calls starting for STARTING_MS after its claim. Run
-  // from the spawn alone, it gave up on a concurrent open's daemon the lock still called starting
-  // (hunt 37263767133). So a failed start means "not coming" only once no live holder is left, and
-  // a write stamped later than now, by a clock set back since, extends nothing.
+  // The clock runs from the latest start in progress: this CLI's own spawn, or a live holder's last
+  // write to the lock, so a holder the lock still calls starting is waited for (measurements in
+  // docs/ENGINEERING-NOTES.md). A failed start means "not coming" only once no live holder is left,
+  // and a write stamped later than now, by a clock set back since, extends nothing.
   const startedAt = Date.now();
   let since = startedAt;
   let probes = 0;
