@@ -1378,12 +1378,42 @@ test(
 );
 
 test(
-  "a page that never acknowledges the card close stops holding the focus once the next card opens",
+  "a page that never acknowledges the card close stops holding the focus once the reviewer points at the next element",
   { skip: !executable && "no browser found" },
   async () => {
     const { file } = copyOfFixture();
     const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
     const held = await holdCardClose(artifact);
+    try {
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await held.reached();
+      await held.evaluate(DROP_CLOSE_ACK);
+    } finally {
+      await held.release();
+    }
+    await pointAt(page, artifact, "#p1");
+    await page.waitFor("document.body.dataset.handoff === 'settled'");
+    await page.eval("document.getElementById('artifact').focus()");
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    // A timer queued by a take-back would run before this one, so one tick passes it.
+    await page.eval("new Promise((resolve) => setTimeout(resolve))");
+    assert.equal(
+      await page.eval("document.activeElement === document.getElementById('artifact')"),
+      true,
+      "the focus stays in the page, not taken back to the note card",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a late pull after an Answer card opens is taken back to the card text",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const held = await holdCardClose(artifact);
+    await countCloseAcks(page);
     try {
       await noteOn(page, artifact, "#title", "Shorter title");
       await held.reached();
@@ -1394,20 +1424,15 @@ test(
       await page.waitFor("document.querySelector('.mark-answer') !== null");
       await clickOn(page, "document.querySelector('.mark-answer')");
       await page.waitFor("document.activeElement.id === 'cardText'");
-      // A held page takes no press, so the focus goes into it the way the chrome sends it there.
-      await page.eval("document.getElementById('artifact').focus()");
-      await page.waitFor("document.activeElement === document.getElementById('artifact')");
-      // A timer queued by a take-back would run before this one, so one tick passes it.
-      await page.eval("new Promise((resolve) => setTimeout(resolve))");
-      assert.equal(await page.eval("document.body.dataset.handoff"), "settled");
-      assert.equal(
-        await page.eval("document.activeElement === document.getElementById('artifact')"),
-        true,
-        "the focus stays in the page, not taken back to the answer card",
-      );
+      await page.type("billing");
     } finally {
       await held.release();
     }
+    await page.waitFor("window.closeAcks === 1");
+    // A timer queued by a take-back would run before this one, so one tick passes it.
+    await page.eval("new Promise((resolve) => setTimeout(resolve))");
+    assert.equal(await page.eval("document.activeElement.id"), "cardText");
+    assert.equal(await page.eval("document.getElementById('cardText').value"), "billing");
     await page.close();
   },
 );
@@ -1912,8 +1937,7 @@ async function holdCardClose(artifact) {
     if (message.sessionId !== artifact.sessionId) return;
     if (message.method === "Debugger.scriptParsed")
       scriptUrls.set(message.params.scriptId, message.params.url);
-    else if (message.method === "Debugger.paused")
-      pausedAt = message.params.callFrames[0].location;
+    else if (message.method === "Debugger.paused") pausedAt = message.params.callFrames[0];
   };
   artifact.browser.listeners.push(onPause);
   await artifact.send("Debugger.enable");
@@ -1924,8 +1948,19 @@ async function holdCardClose(artifact) {
   return {
     async reached() {
       await until(() => pausedAt, { what: "the page to hear that the card closed" });
-      assert.match(scriptUrls.get(pausedAt.scriptId), /\/sdk\.js$/, "the page is held in the SDK");
-      assert.equal(pausedAt.lineNumber, lineNumber, "held on the SDK's card-close line");
+      assert.match(
+        scriptUrls.get(pausedAt.location.scriptId),
+        /\/sdk\.js$/,
+        "the page is held in the SDK",
+      );
+      assert.equal(pausedAt.location.lineNumber, lineNumber, "held on the SDK's card-close line");
+    },
+    async evaluate(expression) {
+      const { exceptionDetails } = await artifact.send("Debugger.evaluateOnCallFrame", {
+        callFrameId: pausedAt.callFrameId,
+        expression,
+      });
+      assert.equal(exceptionDetails, undefined, "the expression ran in the held page");
     },
     async release() {
       artifact.browser.listeners.splice(artifact.browser.listeners.indexOf(onPause), 1);
@@ -1935,6 +1970,30 @@ async function holdCardClose(artifact) {
     },
   };
 }
+
+/** Counts the page's close acknowledgements as the chrome hears them. */
+async function countCloseAcks(page) {
+  await page.eval(`(() => {
+    window.closeAcks = 0;
+    window.addEventListener("message", (event) => {
+      if (event.data?.type === "page" && event.data.message?.type === "closed") window.closeAcks += 1;
+    });
+  })()`);
+}
+
+/**
+ * Makes the page's close acknowledgement never reach the chrome. The SDK posts through `parent`, so a
+ * stand-in that forwards everything but `closed` takes its place. Run while the page is held at its
+ * card-close line, after the close has reached it, so the close itself still does.
+ */
+const DROP_CLOSE_ACK = `(() => {
+  const realParent = window.parent;
+  window.parent = {
+    postMessage(message, origin) {
+      if (message?.type !== "closed") realParent.postMessage(message, origin);
+    },
+  };
+})()`;
 
 /** A real click in the middle of a chrome element, scrolled into view first as a reviewer would. */
 async function clickOn(page, expression) {

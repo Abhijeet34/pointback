@@ -951,7 +951,7 @@ let held = false;
 
 function openCompose(note, label, outline, rects, from) {
   composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
-  if (handoff && !handoff.returning) settleHandoff();
+  if (!from) endWait();
   // A refusal belongs only to the words it refused; a fresh card gets a clean reason line.
   cardProblem = null;
   held = false;
@@ -1004,6 +1004,10 @@ function handOff() {
 function settleHandoff() {
   handoff = null;
   document.body.dataset.handoff = "settled";
+}
+
+function endWait() {
+  if (handoff && !handoff.returning) settleHandoff();
 }
 
 document.addEventListener("focusin", (event) => {
@@ -1061,7 +1065,7 @@ window.addEventListener("message", (event) => {
     document.body.dataset.ready = "1";
     announced = true;
     // A page loaded since the card closed has no focus of its own to bring back.
-    if (handoff && !handoff.returning) settleHandoff();
+    endWait();
     if (strayed) {
       // Back is about to be hidden under the reviewer, so the focus goes where Back led.
       if (document.activeElement === backButton) frame.focus();
@@ -1074,7 +1078,7 @@ window.addEventListener("message", (event) => {
   if (data.type === "annotate-ok") {
     document.body.dataset.annotate = data.on ? "1" : "0";
   } else if (data.type === "closed") {
-    if (handoff && !handoff.returning) settleHandoff();
+    endWait();
   } else if (data.type === "shown") {
     document.body.dataset.revision = String(shownRevision);
   } else if (data.type === "target" && data.note && typeof data.note === "object") {
