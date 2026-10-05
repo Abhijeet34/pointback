@@ -630,7 +630,7 @@ function renderReason() {
 function renderCover() {
   const kept = tookFocus && (composing !== null || editingNote !== null);
   // The note the page was unloaded for is done, so the page comes back the way a save brings it.
-  if (!kept && (unloaded || deferredReload)) {
+  if (!kept && !fileGone && (unloaded || deferredReload)) {
     unloaded = false;
     show();
   }
