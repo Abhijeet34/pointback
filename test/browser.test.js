@@ -2396,7 +2396,7 @@ test(
     const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
     const late = await holdCardClose(artifact);
     try {
-      await noteOn(page, artifact, "#title", "Shorter title");
+      await addNote(page, artifact, "#title", "Shorter title");
       await late.reached();
       await clickOn(page, "document.querySelector('.mark-edit')");
       await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
@@ -2431,7 +2431,7 @@ test(
     const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
     const held = await holdCardClose(artifact);
     try {
-      await noteOn(page, artifact, "#title", "Shorter title");
+      await addNote(page, artifact, "#title", "Shorter title");
       await held.reached();
       await held.evaluate(DROP_CLOSE_ACK);
     } finally {
@@ -2473,7 +2473,7 @@ test(
     const held = await holdCardClose(artifact);
     await countCloseAcks(page);
     try {
-      await noteOn(page, artifact, "#title", "Shorter title");
+      await addNote(page, artifact, "#title", "Shorter title");
       await held.reached();
       await clickOn(page, "document.getElementById('send')");
       await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
@@ -2491,6 +2491,63 @@ test(
     await page.eval("new Promise((resolve) => setTimeout(resolve))");
     assert.equal(await page.eval("document.activeElement.id"), "cardText");
     assert.equal(await page.eval("document.getElementById('cardText').value"), "billing");
+    await page.close();
+  },
+);
+
+// The page ignores what it is pointed at until it hears the card close, which crosses the wrapper and
+// can land after the chrome has hidden the card: on macos-15, hunts 37277309134 and 37299981095, a
+// test's next click reached the page first and opened no card. The close is held in the wrapper until
+// that click reaches the page. While the first `noteOn` is pending, the chrome in the state the old
+// `noteOn` returned on can only mean the new `noteOn` is waiting for the page, so twenty steady
+// sightings of it release the hold, in attempts rather than milliseconds (test/helpers/wait.js).
+test(
+  "a note added with noteOn leaves the page taking the next click however late it hears the card close",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await artifact.eval(`globalThis.presses = 0;
+      window.addEventListener("pointerdown", () => (globalThis.presses += 1), true)`);
+    const held = await holdCloseRelay(page);
+    let firstSettled = false;
+    const releasing = (async () => {
+      try {
+        await held.reached();
+        let steady = 0;
+        await until(
+          async () => {
+            if (await artifact.eval("globalThis.presses >= 2")) return true;
+            const closed = await page.eval(
+              "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+            );
+            steady = closed && !firstSettled ? steady + 1 : 0;
+            return steady >= 20;
+          },
+          { what: "the second note's press, or the hold to pass" },
+        );
+      } finally {
+        await held.release();
+      }
+    })();
+    releasing.catch(() => {});
+    try {
+      await noteOn(page, artifact, "#title", "Shorter title");
+      firstSettled = true;
+      await noteOn(page, artifact, "#p1", "Say how long");
+    } catch (error) {
+      await releasing.catch(() => {});
+      throw error;
+    }
+    await releasing;
+    assert.deepEqual(
+      JSON.parse(
+        await page.eval(
+          "JSON.stringify([...document.querySelectorAll('.mark:not(.sent) .mark-note')].map((n) => n.textContent))",
+        ),
+      ),
+      ["Shorter title", "Say how long"],
+    );
     await page.close();
   },
 );
@@ -3262,11 +3319,22 @@ async function handled(page, artifact, attempts) {
 }
 
 /**
- * Adds a note the way a reviewer does: point at the element, type, press Enter. The stream can
- * draw the note before the add's own answer closes the card, and the page ignores what it is
- * pointed at while a card is open, so the next gesture waits for the card to close as well.
+ * Adds a note the way a reviewer does: point at the element, type, press Enter. The page ignores
+ * what it is pointed at until it hears the card close, which crosses the wrapper and can land after
+ * the chrome hid the card, so the next gesture waits for the chrome to say the page heard. The chrome
+ * also settles the hand-off when a page-proposed card opens or a page focus pull is handed back, and
+ * `noteOn` reaches neither: it moves no focus, and the page proposes a target only once it has heard.
  */
 async function noteOn(page, artifact, selector, text) {
+  await addNote(page, artifact, selector, text);
+  await page.waitFor("document.body.dataset.handoff === 'settled'");
+}
+
+/**
+ * `noteOn` up to the chrome closing the card, for a test that holds the page from hearing it. The
+ * stream can draw the note before the add's own answer closes the card, so both are waited for.
+ */
+async function addNote(page, artifact, selector, text) {
   const unsent = "document.querySelectorAll('.mark:not(.sent)').length";
   const before = Number(await page.eval(unsent));
   await pointAt(page, artifact, selector);
@@ -3373,6 +3441,67 @@ const DROP_CLOSE_ACK = `(() => {
     },
   };
 })()`;
+
+/**
+ * Holds the chrome's card close in the wrapper, with a breakpoint on the line that passes it on, as a
+ * loaded runner's wrapper can: the page has not heard the close, and has not been held either, so the
+ * reviewer's next press still reaches it.
+ */
+async function holdCloseRelay(page) {
+  const lineNumber = readFileSync(new URL("../src/browser/wrapper.js", import.meta.url), "utf8")
+    .split("\n")
+    .findIndex((line) => line.includes('postMessage(event.data, "*")'));
+  let session = null;
+  for (const child of page.children.keys()) {
+    const tree = await page.browser.send("Page.getFrameTree", {}, child).catch(() => null);
+    if (tree?.frameTree.frame.url.endsWith("/wrapper.html")) session = child;
+  }
+  assert.ok(session, "the wrapper has a target of its own");
+  let pausedAt = null;
+  const scriptUrls = new Map();
+  const onPause = (message) => {
+    if (message.sessionId !== session) return;
+    if (message.method === "Debugger.scriptParsed")
+      scriptUrls.set(message.params.scriptId, message.params.url);
+    else if (message.method === "Debugger.paused") pausedAt = message.params.callFrames[0];
+  };
+  page.browser.listeners.push(onPause);
+  await page.browser.send("Debugger.enable", {}, session);
+  const { breakpointId, locations } = await page.browser.send(
+    "Debugger.setBreakpointByUrl",
+    {
+      urlRegex: "/wrapper\\.js$",
+      lineNumber,
+      condition: 'event.data?.type === "compose" && event.data.on === false',
+    },
+    session,
+  );
+  assert.ok(
+    locations.some((location) => /\/wrapper\.js$/.test(scriptUrls.get(location.scriptId) ?? "")),
+    "the breakpoint resolved to a location in the wrapper",
+  );
+  return {
+    async reached() {
+      await until(() => pausedAt, { what: "the wrapper to hold the card close" });
+      assert.match(
+        scriptUrls.get(pausedAt.location.scriptId),
+        /\/wrapper\.js$/,
+        "the wrapper is held",
+      );
+      assert.equal(
+        pausedAt.location.lineNumber,
+        lineNumber,
+        "held on the wrapper's close relay line",
+      );
+    },
+    async release() {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(onPause), 1);
+      await page.browser.send("Debugger.removeBreakpoint", { breakpointId }, session);
+      // Disabling the debugger resumes a frame paused in it.
+      await page.browser.send("Debugger.disable", {}, session);
+    },
+  };
+}
 
 /**
  * Holds the page's next load of the SDK, which the injected script asks for at the end of its body:
@@ -6153,6 +6282,7 @@ async function noteOnInstall(page, artifact, text) {
   await page.type(text);
   await page.enter();
   await page.waitFor(`document.getElementById('card').hidden && ${unsent} === ${before + 1}`);
+  await page.waitFor("document.body.dataset.handoff === 'settled'"); // as in `noteOn`
   return selector;
 }
 
