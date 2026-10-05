@@ -175,8 +175,16 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   `pastSharingViolations` in `src/state-dir.js` waits that out and rethrows anything a reader cannot have caused; run 33877405478, attempt 6, is the measurement.
   What identified it in one run is that `ensureServer` now reports the daemon's own last lines rather than the path of a log nobody on a runner can reach afterwards.
   Keep that: a start failure the product cannot describe is one nobody can fix.
-- A cold Chrome launch on `windows-2025` fails outright about once in twenty runs: on run 33874545761, attempt 2, `chrome.exe` was still running 45 s after it was spawned, had written no `DevToolsActivePort` and had printed nothing at all, and it took every test in the browser file with it.
-  `launchBrowser` gets two attempts for that reason; lengthening `STARTUP_MS` would not have helped, because the browser was not slow, it was never coming.
+- The first Chrome launch on a fresh `windows-2025` runner is slow, not wedged, because Chrome demand-pages its own 528 MB install directory off a cold disk.
+  Across 1444 Windows jobs from 2026-09-21 to 2026-10-05, the suite's first test (open plus launch) took 7.4 s at the median, 14 s at p95 and 35 s at p99; 9 took over 45 s, and 3 of those failed every test in the browser file, because two 45 s launch attempts never fit the 60 s test timeout.
+  Cold launches on 15 fresh runners took 3.9 to 64 s (run 37342047661); on another, Chrome had not yet written its own log 77 s in and was up at about 100 s (run 37341154101), while `powershell` on the same machine could not start in 20 s.
+  On 15 runners that first read every file of that directory in order, the launch took 0.53 to 0.91 s, and the read 3.5 to 6 s, or 11 to 82.5 s on a slow disk.
+  So `launchBrowser` reads the install directory first on Windows, and only for a browser this repository knows by path, so a `BROWSER` that is a bare name or sits in a large folder is not read.
+  It then launches once against one deadline, `LAUNCH_MS`, that covers the read and the start: 150 s.
+  That deadline is sized over the slowest measured read (82.5 s in run 37342047661 and 86.2 s in hunt 37344599638) and the slowest measured unread launch (about 100 s, run 37341154101).
+  There is one attempt, not two, because a slow launch was still coming up, and two 45 s attempts never fit the 60 s test timeout.
+  `LAUNCH_BOUND_MS` is 223 s: `LAUNCH_MS` plus the 10 s connect, 30 s first command, 3 s terminate and 30 s profile removal, the launcher's worst case including its failure path, where a failure quotes the end of Chrome's log.
+  `before` in `test/browser.test.js` launches the browser before it opens the shared review, with a hook timeout of `LAUNCH_BOUND_MS` plus 30 s for opening it plus a 10 s margin (263 s), so the launcher reports a failure itself and kills the browser it spawned.
 - A flake is proved absent by a count, never by a green tick.
   `.github/workflows/windows-flake-hunt.yml` is the instrument: dispatch it and read twenty independent verdicts off the job list.
   The bar this repository has used and should keep using is the whole suite, twenty Windows runs, before and after: 17/20 on `main` (run 33874545761), then 18/20, 20/20 and 19/20 across the passes that followed (runs 33875622583, 33876393712, 33877405478) - each red attempt naming something the pass before it could not see - and 40/40 over the two runs that closed it (33878156179, 33878425638).

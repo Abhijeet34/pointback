@@ -22,7 +22,7 @@ import { delimiter, dirname, join } from "node:path";
 import { after, afterEach, before, test } from "node:test";
 import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
-import { devToolsUrl, findBrowser, launchBrowser } from "./helpers/cdp.js";
+import { LAUNCH_BOUND_MS, devToolsUrl, findBrowser, launchBrowser } from "./helpers/cdp.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
 import { contrast, decodePng } from "./helpers/png.js";
 import { until } from "./helpers/wait.js";
@@ -82,11 +82,58 @@ test("a DevTools port file that cannot be read yet is waited for, not thrown out
   rmSync(profile, { recursive: true, force: true });
 });
 
-before(async () => {
-  if (!executable) return;
-  opened = (await cli([fixture], lab.env)).json();
-  browser = await launchBrowser(executable, { width: 800, height: 600 });
+// A browser that never writes its port inside the budget is reported with the end of its own log,
+// or with the fact that it wrote none. A near deadline makes the budget run out here, not 150 s later.
+async function outOfBudget(profile) {
+  const child = { exitCode: null, signalCode: null, stderr: { on() {} } };
+  return devToolsUrl(child, "a browser that is slow", profile, Date.now() + 300).then(
+    () => assert.fail("a browser with no port resolved"),
+    (error) => error.message,
+  );
+}
+
+test("a launch that runs out of budget quotes the end of its own log", async () => {
+  const profile = mkdtempSync(join(tmpdir(), "pb-log-"));
+  try {
+    writeFileSync(
+      join(profile, "chrome_debug.log"),
+      "first line\nsecond line\nlast line of the log\n",
+    );
+    const message = await outOfBudget(profile);
+    assert.match(message, /started but was not detected/);
+    assert.match(message, /Its log ended:\n(?:.*\n)*last line of the log/);
+  } finally {
+    rmSync(profile, { recursive: true, force: true });
+  }
 });
+
+test("a launch that runs out of budget says so when its browser wrote no log", async () => {
+  const profile = mkdtempSync(join(tmpdir(), "pb-nolog-"));
+  try {
+    const message = await outOfBudget(profile);
+    assert.match(message, /started but was not detected/);
+    assert.match(message, /It had written no log, so it never reached its own startup\./);
+  } finally {
+    rmSync(profile, { recursive: true, force: true });
+  }
+});
+
+// The browser first: a cold windows-2025 runner can take minutes to launch one, and a review
+// opened before that idles its daemon out (POINTBACK_IDLE_MS) before any tab has reached it. The
+// hook's own timeout outlasts both bounded waits, so a failed launch reports itself and kills its
+// browser.
+const OPEN_MS = 30_000;
+// Slack for spawning, creating the profile, the 250 ms cleanup poll and the wait after SIGKILL, so
+// the hook never cuts its own launch short.
+const MARGIN_MS = 10_000;
+before(
+  async () => {
+    if (!executable) return;
+    browser = await launchBrowser(executable, { width: 800, height: 600 });
+    opened = (await cli([fixture], lab.env, { timeoutMs: OPEN_MS })).json();
+  },
+  { timeout: LAUNCH_BOUND_MS + OPEN_MS + MARGIN_MS },
+);
 after(async () => {
   await browser?.close();
   await lab.stop();

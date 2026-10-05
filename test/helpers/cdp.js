@@ -7,19 +7,20 @@
 // hit its own 20-minute limit and was reported `cancelled`. A test may fail; it may not hang.
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { open, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { env } from "../../src/identity.js";
 import { until } from "./wait.js";
 
 /**
- * A loaded runner is slow to hand a browser its first frame, and 15 s was not enough: on run
- * 33823294930 Chrome 152 was still alive and still starting up at 26.6 s, and the suite
- * called it dead. Detection below is a poll, so the happy path is unaffected by the ceiling
- * and only a genuine failure pays it. A bounded 45 s, never the 20-minute job timeout.
+ * One deadline for the whole launch, reading the browser's files included, and one attempt: a slow
+ * first launch on windows-2025 was still coming up, never wedged. Unread, Chrome's files made one
+ * take 100 s (run 37341154101), and reading them took up to 82.5 s (run 37342047661). Detection is
+ * a poll, so a healthy launch pays none of this and only a broken one pays all of it.
  */
-const STARTUP_MS = 45_000;
+const LAUNCH_MS = 150_000;
 /** Between two reads of the port file; a browser that is ready is picked up within one tick. */
 const STARTUP_POLL_MS = 100;
 /** Enough of the browser's own output to name a failure by, without holding a session of it. */
@@ -38,20 +39,21 @@ const KEPT = 10;
 /** One frame tree's share of `describe`: long enough for a slow runner, never a hang. */
 const DESCRIBE_MS = 5000;
 /**
- * Two launches, not one. On run 33874545761, attempt 2, chrome.exe on windows-2025 was still
- * running 45 s after it was spawned, had written no DevToolsActivePort and had printed nothing
- * at all - 1 of 20 identical runs of this suite, and it took every test in the file with it.
- * A cold browser launch is an operation that fails outright about that often on that runner,
- * and the suite gave it exactly one attempt. Lengthening STARTUP_MS would not have helped: the
- * browser was not slow, it was never coming.
- */
-const LAUNCH_ATTEMPTS = 2;
-/**
  * How long the browser's profile directory is worth trying to remove. Windows answers EPERM
  * while any of Chromium's helper processes still holds a file in it, and the top-level process
  * exiting is not the same fact.
  */
 const PROFILE_REMOVE_MS = 30_000;
+/** Where in its profile the browser logs, so a launch that never starts can say how far it got. */
+const LOG_FILE = "chrome_debug.log";
+/** Enough of that log to show where a launch stopped. */
+const LOG_LINES_KEPT = 10;
+/**
+ * The longest `launchBrowser` can take, its failure path included. A caller's own timeout must be
+ * longer, or it abandons the launch midway and the browser it spawned outlives the suite.
+ */
+export const LAUNCH_BOUND_MS =
+  LAUNCH_MS + CONNECT_MS + COMMAND_MS + TERMINATE_MS + PROFILE_REMOVE_MS;
 
 /**
  * Every path this repository knows a browser by, most specific first, and the one list of
@@ -96,9 +98,10 @@ function terminate(child) {
  * The three things that go wrong here need three different fixes, so they get three
  * different sentences: no browser at all is `findBrowser` returning null before this is
  * ever called, a browser that would not start exits, and a browser that started but was
- * not detected is still running when the budget ends.
+ * not detected is still running when the budget ends. That last one says how far the browser got
+ * from its own log, since on windows-2025 it printed nothing before the deadline.
  */
-export async function devToolsUrl(child, executable, profile) {
+export async function devToolsUrl(child, executable, profile, deadline = Date.now() + LAUNCH_MS) {
   const portFile = join(profile, "DevToolsActivePort");
   let unreadable = "";
   const read = (file) => {
@@ -119,7 +122,6 @@ export async function devToolsUrl(child, executable, profile) {
   });
   const said = () => printed.trim() || "(nothing)";
 
-  const deadline = Date.now() + STARTUP_MS;
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
@@ -139,9 +141,55 @@ export async function devToolsUrl(child, executable, profile) {
     if (/^\d+$/.test(port ?? "") && path?.startsWith("/")) return `ws://127.0.0.1:${port}${path}`;
     await sleep(STARTUP_POLL_MS);
   }
+  let log;
+  try {
+    log = readFileSync(join(profile, LOG_FILE), "utf8").trim();
+  } catch {
+    log = "";
+  }
   throw new Error(
     `${executable} started but was not detected: it is still running and wrote no readable ` +
-      `DevTools port to ${portFile} within ${STARTUP_MS} ms.${unreadable} It printed: ${said()}`,
+      `DevTools port to ${portFile} within its ${LAUNCH_MS} ms launch.${unreadable} ` +
+      `It printed: ${said()}\n` +
+      (log
+        ? `Its log ended:\n${log.split("\n").slice(-LOG_LINES_KEPT).join("\n")}`
+        : "It had written no log, so it never reached its own startup."),
+  );
+}
+
+/**
+ * Reads every file the browser is installed with, once and in order, before it is started. A fresh
+ * windows-2025 runner serves Chrome's own page faults off a cold disk: on run 37342047661 the first
+ * launch took 3.9 to 64 s on 15 runners without this read and 0.53 to 0.91 s on 15 with it.
+ */
+async function readInstall(executable, deadline) {
+  const started = Date.now();
+  const buffer = Buffer.allocUnsafe(4 << 20);
+  let bytes = 0;
+  const directory = dirname(executable);
+  for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const file = await open(join(entry.parentPath, entry.name));
+    try {
+      let read;
+      do {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `${executable} was never started: reading the ${Math.round(bytes / 1e6)} MB of ` +
+              `${directory} read so far used its whole ${LAUNCH_MS} ms launch, so this ` +
+              `machine's disk, not the browser, is what is slow.`,
+          );
+        }
+        ({ bytesRead: read } = await file.read(buffer, 0, buffer.length, null));
+        bytes += read;
+      } while (read > 0);
+    } finally {
+      await file.close();
+    }
+  }
+  console.log(
+    `browser launch: read ${Math.round(bytes / 1e6)} MB of ${directory} in ` +
+      `${Date.now() - started} ms before launching`,
   );
 }
 
@@ -159,24 +207,13 @@ function removeProfile(profile) {
   }
 }
 
-export async function launchBrowser(executable, options = {}) {
-  let failure;
-  for (let attempt = 1; attempt <= LAUNCH_ATTEMPTS; attempt += 1) {
-    try {
-      return await startBrowser(executable, options);
-    } catch (error) {
-      failure = error;
-      if (attempt < LAUNCH_ATTEMPTS) {
-        console.warn(
-          `browser launch attempt ${attempt} of ${LAUNCH_ATTEMPTS} failed: ${error.message}`,
-        );
-      }
-    }
-  }
-  throw failure;
-}
-
-async function startBrowser(executable, { width = 1200, height = 800 } = {}) {
+export async function launchBrowser(executable, { width = 1200, height = 800 } = {}) {
+  const deadline = Date.now() + LAUNCH_MS;
+  // Windows, and only a browser this repository knows by path: a BROWSER that is a bare name or
+  // sits in a large folder would otherwise read that whole folder, and the deadline would blame
+  // the disk for it.
+  if (process.platform === "win32" && KNOWN_BROWSERS.includes(executable))
+    await readInstall(executable, deadline);
   const profile = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-browser-"));
   const child = spawn(
     executable,
@@ -201,6 +238,8 @@ async function startBrowser(executable, { width = 1200, height = 800 } = {}) {
       // runs out. On a machine with a real /dev/shm this only moves those pages to
       // a temporary file.
       "--disable-dev-shm-usage",
+      "--enable-logging",
+      `--log-file=${join(profile, LOG_FILE)}`,
       "about:blank",
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
@@ -229,7 +268,7 @@ async function startBrowser(executable, { width = 1200, height = 800 } = {}) {
   };
   let browser;
   try {
-    browser = await connect(await devToolsUrl(child, executable, profile));
+    browser = await connect(await devToolsUrl(child, executable, profile, deadline));
     // Every renderer that crashes, with the address it held, for `describe` to name.
     const urls = new Map();
     browser.crashes = [];
