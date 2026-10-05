@@ -153,7 +153,9 @@ function listening(port) {
       socket.destroy();
       resolve(true);
     });
-    socket.once("error", (error) => resolve(error.code !== "ECONNREFUSED"));
+    socket.once("error", (/** @type {NodeJS.ErrnoException} */ error) =>
+      resolve(error.code !== "ECONNREFUSED"),
+    );
   });
 }
 
