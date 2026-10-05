@@ -2560,7 +2560,8 @@ test(
       if (method !== "Fetch.requestPaused" || sessionId) return;
       counts.asked += 1;
       if (held.length === 0) held.push(params.requestId);
-      else page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
+      else
+        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
     };
     page.browser.listeners.push(listener);
     try {
