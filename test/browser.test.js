@@ -1266,10 +1266,21 @@ test(
 
     await clickOn(page, "document.getElementById('cardCancel')");
     await page.waitFor("document.getElementById('card').hidden");
-    renameSync(away, file);
-    await page.waitFor("!document.getElementById('notice').checkVisibility()");
-    // Cancel asks the server for nothing, so no note can still be on its way to the margin.
-    assert.equal(await page.eval("document.querySelectorAll('.mark').length"), 0);
+    // The file's return reloads the page, and a point made before that page is shown lands on a
+    // document still arriving: hunt 37251439894, attempt 2, found no #p1 in it. The reload is held
+    // there, so the point always meets that window unless it waits for the page to be shown.
+    await page.eval("delete document.body.dataset.revision");
+    const sdk = await holdSdk(artifact);
+    try {
+      renameSync(away, file);
+      await sdk.held();
+      await page.waitFor("!document.getElementById('notice').checkVisibility()");
+      // Cancel asks the server for nothing, so no note can still be on its way to the margin.
+      assert.equal(await page.eval("document.querySelectorAll('.mark').length"), 0);
+    } finally {
+      await sdk.release();
+    }
+    await page.waitFor("document.body.dataset.revision !== undefined");
     await pointAt(page, artifact, "#p1");
     assert.equal(
       JSON.parse(await page.eval(CARD_SEEN)).words,
@@ -1994,6 +2005,29 @@ const DROP_CLOSE_ACK = `(() => {
     },
   };
 })()`;
+
+/**
+ * Holds the page's next load of the SDK, which the injected script asks for at the end of its body:
+ * a reload then stays between its new document arriving and that page being shown, for as long as
+ * the test keeps it there. `held` waits until the load is caught; `release` lets it go.
+ */
+async function holdSdk(artifact) {
+  const caught = [];
+  const hold = (message) => {
+    if (message.sessionId === artifact.sessionId && message.method === "Fetch.requestPaused")
+      caught.push(message.params.requestId);
+  };
+  artifact.browser.listeners.push(hold);
+  await artifact.send("Fetch.enable", { patterns: [{ urlPattern: "*/sdk.js" }] });
+  return {
+    held: () => until(() => caught.length > 0, { what: "the reloaded page to ask for the SDK" }),
+    async release() {
+      artifact.browser.listeners.splice(artifact.browser.listeners.indexOf(hold), 1);
+      for (const requestId of caught) await artifact.send("Fetch.continueRequest", { requestId });
+      await artifact.send("Fetch.disable");
+    },
+  };
+}
 
 /** A real click in the middle of a chrome element, scrolled into view first as a reviewer would. */
 async function clickOn(page, expression) {
