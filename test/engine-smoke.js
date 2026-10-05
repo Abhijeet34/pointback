@@ -82,8 +82,9 @@ async function act(browser, fn) {
 /**
  * Opens a review the way the reviewer's browser does, and waits on the chrome's own word that the
  * page under review is shown. Not `page.goto`, which waits on Playwright's record of the main
- * frame's load: 4 of 80 Firefox runs on CI timed out there while the chrome showed the review,
- * `ready` set, frames loaded and nothing pending.
+ * frame's load: on CI 5 of 75 Firefox runs on main timed out there while the chrome showed the
+ * review, `ready` set, frames loaded and nothing pending; in the pages-closed variant tested just
+ * before the change 4 of 80 did; after the change 0 of 320 failed on CI.
  */
 async function open(page, url) {
   await page.evaluate((href) => setTimeout(() => location.assign(href)), url);

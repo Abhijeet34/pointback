@@ -242,9 +242,12 @@ A gate that runs after the thing it was meant to prevent is decoration.
 **The tag goes only on the tree this run tested.**
 release-please tags the release pull request's merge commit, not `github.sha`, and the two are the same commit only on the run that merge started.
 If that run goes red on a flake, `release-tag` skips, and the next push to `main` would tag the older merge commit behind a matrix that tested the newer head.
-So `release-tag` first lists merged pull requests labelled `autorelease: pending`, the label release-please finds them by, and fails before any tag exists when one merged as a commit other than `github.sha`; the error names that commit, and re-running the failed jobs of its own run releases it behind its own matrix.
+So `release-tag` first lists merged pull requests labelled `autorelease: pending`, the label release-please finds them by, before any tag exists.
+For one merged as a commit other than `github.sha`, it asks for that commit's `release.yml` runs.
+While one of them is still going, the step passes with a notice and `release-please` is skipped, so that run tags the commit behind its own matrix and this run cannot tag it first.
+When those runs have all finished without a tag, or there is none, the step fails and names the commit, and re-running the failed jobs of its own run releases it behind its own matrix.
 After release-please answers, a second step compares the `sha` it released with `github.sha` and fails `release-tag` on a difference, so `artifacts` and `publish` never attach to an untested tree even if the two searches ever disagree.
-`test/pipeline.test.js` runs both step bodies against a mismatched and a matching sha.
+`test/pipeline.test.js` runs both step bodies against a fake `gh` that answers `pr list` and `run list` separately, covering an in-flight run, a finished one, no run, a matching sha and nothing pending.
 
 The `artifacts` job checks the tag out rather than `main`, so the tarball is packed from the tagged tree, and the `cross-platform` job upstream of it ran on the release commit, which the preflight proves is the commit the tag names.
 The SBOM comes from GitHub's dependency-graph export (`gh api repos/OWNER/REPO/dependency-graph/sbom`), which describes the manifests from the same data the pull request dependency review reads.

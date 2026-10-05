@@ -2585,11 +2585,14 @@ function fakeOpener() {
   // How long a negative waits for an opener that would have fired: a shell printf is done well
   // inside 1000 ms, and the Windows stand-in is timed below, after its first launch is paid for.
   let settleMs = 1000;
+  const remove = () =>
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   if (process.platform === "win32") {
-    const preload = join(dir, "opener.cjs");
-    writeFileSync(
-      preload,
-      `if (require("node:path").basename(process.execPath).toLowerCase() === "cmd.exe") {
+    try {
+      const preload = join(dir, "opener.cjs");
+      writeFileSync(
+        preload,
+        `if (require("node:path").basename(process.execPath).toLowerCase() === "cmd.exe") {
   const args = process.argv.slice(2);
   const line = args.length === 3 && args[0] === "start" && args[1] === ""
     ? args[2] : "unexpected cmd arguments " + JSON.stringify(args);
@@ -2597,23 +2600,27 @@ function fakeOpener() {
   process.exit(0);
 }
 `,
-    );
-    const cmd = join(dir, "cmd.exe");
-    copyFileSync(process.execPath, cmd);
-    env.NODE_OPTIONS = `--require "${preload.replaceAll("\\", "/")}"`;
-    const launch = () => {
-      const started = Date.now();
-      execFileSync(cmd, ["/c", "start", "", "about:blank"], { env });
-      return Date.now() - started;
-    };
-    // The first launch of a freshly written executable also pays for its scan; the second is timed.
-    launch();
-    settleMs = Math.max(1000, 3 * launch());
-    assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
-      "about:blank",
-      "about:blank",
-    ]);
-    writeFileSync(log, "");
+      );
+      const cmd = join(dir, "cmd.exe");
+      copyFileSync(process.execPath, cmd);
+      env.NODE_OPTIONS = `--require "${preload.replaceAll("\\", "/")}"`;
+      const launch = () => {
+        const started = Date.now();
+        execFileSync(cmd, ["/c", "start", "", "about:blank"], { env });
+        return Date.now() - started;
+      };
+      // The first launch of a freshly written executable also pays for its scan; the second is timed.
+      launch();
+      settleMs = Math.max(1000, 3 * launch());
+      assert.deepEqual(readFileSync(log, "utf8").split("\n").filter(Boolean), [
+        "about:blank",
+        "about:blank",
+      ]);
+      writeFileSync(log, "");
+    } catch (error) {
+      remove();
+      throw error;
+    }
   } else {
     for (const command of ["open", "xdg-open"]) {
       writeFileSync(join(dir, command), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\n`);
@@ -2624,7 +2631,7 @@ function fakeOpener() {
     env,
     settleMs,
     opened: () => readFileSync(log, "utf8").split("\n").filter(Boolean),
-    remove: () => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }),
+    remove,
   };
 }
 
