@@ -5495,10 +5495,9 @@ test(
     await pickTextSize(review.page, "xl");
     // The house root is 15px at M and 19px at XL, and the page's prose is rem on it.
     await review.artifact.waitFor(`Math.abs(${prose} - ${atM * (19 / 15)}) < 0.05`);
-    // A reload is a new document, told the size again when it says it is ready. The frame is asked
-    // for once it has said so, since `frame()` answers with the page's current one.
+    // A reload is a new document, told the size again when it says it is ready, which `frame()`
+    // waits for.
     await review.page.reload();
-    await review.page.waitFor("document.body.dataset.ready === '1'");
     const reloaded = await review.page.frame();
     await reloaded.waitFor(`Math.abs(${prose} - ${atM * (19 / 15)}) < 0.05`);
 
