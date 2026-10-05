@@ -250,11 +250,16 @@ async function listen() {
       code = await follow(() => {
         failures = 0;
         connection = "live";
+        // Published for the same reason as ready: `connection` reads live from the health check on,
+        // before the stream opens, and a stream connect Windows refuses is lost for a pause then
+        // retried, so only this says the page is following its review (docs/ENGINEERING-NOTES.md).
+        document.body.dataset.stream = "open";
         // A failure the lost connection caused is over once it is back.
         problem = null;
         cardProblem = null;
         render();
       });
+      delete document.body.dataset.stream;
     } catch {
       // Nothing answered the health check: the daemon is down or restarting.
     }
