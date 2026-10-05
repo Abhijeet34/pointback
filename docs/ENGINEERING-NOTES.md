@@ -157,7 +157,7 @@ Each section below is the text `AGENTS.md` carried under the same heading before
 - One daemon per state directory, by construction rather than by the CLI's timing.
   On 0.1.6, 8 cold `pointback f<i>.html` at once left 8 daemons on one state directory and 7 of the 8 calls failed after 10 s, and after an idle-out a tab reconnected to the daemon that won its old port while the agent reached another, whose next write deleted the tab's sent note from disk (deep review A1).
   A start claims the next `daemon.<n>.lock` with an exclusive create before it loads a session (`claimDaemon` in `src/daemon-lock.js`); replacing a dead holder by delete-then-create lets two starts that both saw it die each delete the other's fresh lock, which the racing test in `test/daemon-lock.test.js` would catch.
-  A holder is alive while its pid is and its port answers `/health` as `pointback` with that same pid, or does not answer within a second.
+  A holder is alive while its pid is and its port answers `/health` as `pointback` with that same pid, or does not answer within a second of running time.
   A pid alone can come back after a crash and lock every start out.
   A port alone can be taken by another listener after a reboot, since the recorded port is sticky.
   A busy daemon times out and counts as alive, so a second one does not get in while its event loop is blocked.
@@ -165,7 +165,6 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   Every probe whose expiry reads as a verdict runs on `probeTimeout` in `src/daemon-lock.js`: `isDaemon` (the lock's holder check), `refusingServer` and `health` in `src/client.js`, and `listening` in `stopServer`.
   `probeTimeout` gives each probe two budgets. The verdict budget counts only this process's running time in 50 ms slices, a gap longer than a slice counting as one, so a stall charges the peer nothing. The wall ceiling, `PROBE_CEILING_MS` = 20000 ms, is the backstop: a probe aborts once wall time since it began passes it, so starvation that outlasts it cannot hold a start or a stop forever. The ceiling sits above the longest stall measured (11670 ms), so a stall alone never reaches it.
   Either budget aborts one event-loop turn after it is spent, so an answer or refusal read during the stall wins.
-  Every probe's verdict runs on that running time, with `PROBE_CEILING_MS` as its wall backstop.
   `stopServer` is bounded as a whole by `STOP_BACKSTOP_MS` (20000 ms: `STOP_TIMEOUT_MS` plus the worst stalled probe measured, 11670 ms, rounded up): its `/shutdown` request is aborted at the backstop, and each `listening` look's ceiling is what remains of it, so a stop still running at the backstop reports did not stop.
   The per-look cap of `listening` at what remains of the backstop is not reachable by a loopback test: on loopback a connect is accepted or refused at once, and it stays pending only when a full listen backlog drops it, which a test cannot build deterministically. The backstop test covers the bound through the `/shutdown` request and the loop's own check.
   The start loop in `ensureServer` has no whole-operation wall bound under sustained starvation yet: each of its looks can take up to `PROBE_CEILING_MS`, and that bound belongs to the concurrent cold-opens follow-up, which rewrites that loop.

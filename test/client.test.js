@@ -75,17 +75,21 @@ test("a stop whose daemon never goes is given up at its wall backstop, though st
   assert.ok(Date.now() - started < 5_000, "given up before the 5 s deadline");
 });
 
-test("a stop whose daemon never answers the shutdown is given up at the shutdown request's budget", { timeout: 15_000 }, async () => {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-client-"));
-  const server = createServer(() => {});
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const info = { port: server.address().port, token: "c".repeat(64), pid: process.pid };
-  const started = Date.now();
-  try {
-    assert.equal(await stopServer(dir, info, { proven: true, pid: process.pid }, 300), false);
-    assert.ok(Date.now() - started < 5_000, "given up before the 5 s deadline");
-  } finally {
-    server.closeAllConnections();
-    server.close();
-  }
-});
+test(
+  "a stop whose daemon never answers the shutdown is given up at the shutdown request's budget",
+  { timeout: 15_000 },
+  async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-client-"));
+    const server = createServer(() => {});
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const info = { port: server.address().port, token: "c".repeat(64), pid: process.pid };
+    const started = Date.now();
+    try {
+      assert.equal(await stopServer(dir, info, { proven: true, pid: process.pid }, 300), false);
+      assert.ok(Date.now() - started < 5_000, "given up before the 5 s deadline");
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  },
+);

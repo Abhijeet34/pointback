@@ -10,12 +10,12 @@ import { pastSharingViolations, writeJsonAtomic } from "./state-dir.js";
  * one file and creating it again. Generations below the holder's are litter the holder clears.
  *
  * A holder is alive while its pid is and its port answers as this app with that same pid, or does
- * not answer within CONNECT_MS of this process's running time (or PROBE_CEILING_MS of wall time) because
- * its event loop is busy. Both are checked because each alone
- * can be reused by something else after a crash; a pid whose port belongs to nothing, to another
- * app, or to another daemon, is a dead holder whose pid came back. Until it has a port, a holder is
- * given STARTING_MS. Node has no portable flock, and a socket file lock would leave a stale file
- * behind on POSIX and be refused by sandboxes that deny AF_UNIX.
+ * not answer within CONNECT_MS of this process's running time (or PROBE_CEILING_MS of wall time)
+ * because its event loop is busy. Both are checked because each alone can be reused by something
+ * else after a crash; a pid whose port belongs to nothing, to another app, or to another daemon, is
+ * a dead holder whose pid came back. Until it has a port, a holder is given STARTING_MS. Node has no
+ * portable flock, and a socket file lock would leave a stale file behind on POSIX and be refused by
+ * sandboxes that deny AF_UNIX.
  */
 const LOCK_NAME = /^daemon\.(\d+)\.lock$/;
 const STARTING_MS = 10_000;
