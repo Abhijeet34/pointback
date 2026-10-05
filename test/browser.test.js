@@ -2549,6 +2549,70 @@ for (const [what, path] of [
 }
 
 test(
+  "a refused first load of a reload held behind an open answer card gets the stray cover and Back, never the file-changed line",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    const counts = { asked: 0, refused: 0 };
+    const held = [];
+    const listener = ({ method, params, sessionId }) => {
+      if (method !== "Fetch.requestPaused" || sessionId) return;
+      counts.asked += 1;
+      if (held.length === 0) held.push(params.requestId);
+      else page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
+    };
+    try {
+      const { file, html } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      await page.navigate(url);
+      const { artifact } = await reviewIn(page);
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 0");
+      const { uid } = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().prompts[0];
+      await cli(["reply", file, String(uid), "--question", "--message", "Which queue?"], own.env);
+      await page.waitFor("document.querySelector('.mark-answer') !== null");
+      page.browser.listeners.push(listener);
+      await page.browser.send("Fetch.enable", {
+        patterns: [{ urlPattern: `http://127.0.0.1:${port}/artifact/*/plan.html*` }],
+      });
+      writeFileSync(file, html.replace("<main>", "<main><p>Added by the agent.</p>"));
+      await until(() => held.length === 1, { what: "the reload's page request to be held" });
+      // The answer card opens from the margin, which the chrome alone does: the page under review
+      // cannot be evaluated while its reload is held, so a click in it would never return.
+      await clickOn(page, "document.querySelector('.mark-answer')");
+      await page.waitFor("document.activeElement.id === 'cardText'");
+      await page.browser.send("Fetch.failRequest", {
+        requestId: held[0],
+        errorReason: "ConnectionRefused",
+      });
+      counts.refused += 1;
+      await page.waitFor("document.getElementById('cover')?.checkVisibility()");
+      assert.deepEqual(JSON.parse(await page.eval(OPENED_SEEN)), {
+        cover:
+          "The frame went to a page that is missing or is not plan.html, so nothing on it can be noted.",
+        status: "Go back to the page under review to point at it again.",
+        file: "plan.html",
+      });
+      await clickOn(page, "document.getElementById('cardCancel')");
+      await page.waitFor("document.getElementById('card').hidden");
+      await clickOn(page, "document.getElementById('back')");
+      await page.waitFor("document.body.dataset.revision === '1'");
+      const reloaded = await page.frame();
+      await noteOn(page, reloaded, "#title", "Name the queue in the title");
+      assert.deepEqual({ asked: counts.asked, refused: counts.refused }, { asked: 2, refused: 1 });
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.browser.send("Fetch.disable").catch(() => {});
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
   "a page under review that never loads is asked for once more, then covered with Back, never reloaded in a loop",
   { skip: !executable && "no browser found" },
   async () => {
