@@ -2425,6 +2425,7 @@ test(
         await held.release();
       }
     })();
+    releasing.catch(() => {});
     try {
       await noteOn(page, artifact, "#title", "Shorter title");
       firstSettled = true;
@@ -3345,7 +3346,6 @@ async function holdCloseRelay(page) {
   const lineNumber = readFileSync(new URL("../src/browser/wrapper.js", import.meta.url), "utf8")
     .split("\n")
     .findIndex((line) => line.includes('postMessage(event.data, "*")'));
-  assert.notEqual(lineNumber, -1, "the wrapper still passes the card close on to the page");
   let session = null;
   for (const child of page.children.keys()) {
     const tree = await page.browser.send("Page.getFrameTree", {}, child).catch(() => null);
@@ -3362,7 +3362,7 @@ async function holdCloseRelay(page) {
   };
   page.browser.listeners.push(onPause);
   await page.browser.send("Debugger.enable", {}, session);
-  const { breakpointId } = await page.browser.send(
+  const { breakpointId, locations } = await page.browser.send(
     "Debugger.setBreakpointByUrl",
     {
       urlRegex: "/wrapper\\.js$",
@@ -3370,6 +3370,10 @@ async function holdCloseRelay(page) {
       condition: 'event.data?.type === "compose" && event.data.on === false',
     },
     session,
+  );
+  assert.ok(
+    locations.some((location) => /\/wrapper\.js$/.test(scriptUrls.get(location.scriptId) ?? "")),
+    "the breakpoint resolved to a location in the wrapper",
   );
   return {
     async reached() {
