@@ -1455,10 +1455,10 @@ function leftWindow() {
 function regained() {
   const field = away;
   away = undefined;
-  if (field && writing(field) && document.activeElement === frame && !unloaded) {
-    taken = field;
-    unload();
-  }
+  if (!field || !writing(field) || document.activeElement !== frame || unloaded) return;
+  if (handoff?.returning) return takenFrom(field);
+  taken = field;
+  unload();
 }
 window.addEventListener("blur", leftWindow);
 window.addEventListener("focus", regained);

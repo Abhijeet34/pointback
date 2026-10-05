@@ -930,6 +930,10 @@ const slowFrameOnHide = (page) =>
   })()`);
 
 /** The address of the page's frame as the browser has it, from the wrapper's frame tree. */
+/**
+ * The address of the page's frame from the wrapper's frame tree: about:blank once the page is unloaded,
+ * and null while it is loaded, since it then runs in its own process, outside that tree.
+ */
 async function pageAddress(page) {
   for (const session of page.children.keys()) {
     const tree = await page.browser
@@ -1421,6 +1425,27 @@ const lateWhileAway = (page) =>
     const real = window.setTimeout;
     window.setTimeout = (run, ms, ...rest) =>
       real(run, document.hasFocus() ? ms : Math.max(ms ?? 0, 200), ...rest);
+  })()`);
+
+/**
+ * Holds every timer the chrome queues while its window is away until the window is back, so a
+ * take-back the page's late refocus queued while away is still pending when the window returns, and
+ * records the hand-off at that return. The test starts the hold once the window has left.
+ */
+const heldWhileAway = (page) =>
+  page.eval(`(() => {
+    const real = window.setTimeout;
+    const held = [];
+    globalThis.holding = false;
+    const back = () => {
+      if (!holding || document.hidden) return;
+      holding = false;
+      globalThis.handoffAtReturn = document.body.dataset.handoff ?? "";
+      for (const args of held.splice(0)) real(...args);
+    };
+    window.addEventListener("focus", back);
+    document.addEventListener("visibilitychange", back);
+    window.setTimeout = (...args) => (holding ? (held.push(args), 0) : real(...args));
   })()`);
 
 for (const late of [false, true]) {
@@ -2416,6 +2441,104 @@ for (const late of [false, true]) {
 }
 
 test(
+  "a late refocus taken back while the window is away keeps the page loaded when the window comes back before the take-back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    const held = await holdCardClose(artifact);
+    let targetId;
+    try {
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await held.reached();
+      await clickOn(page, "document.querySelector('.mark-edit')");
+      await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+      await page.type(", four words at most");
+      await heldWhileAway(page);
+      await page.eval(`globalThis.handoffs = [];
+        new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
+          attributes: true,
+          attributeFilter: ["data-handoff"],
+        })`);
+      ({ targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" }));
+      await page.browser.send("Target.activateTarget", { targetId });
+      await until(async () => !(await page.eval("document.hasFocus()")), {
+        what: "the review window to lose focus",
+      });
+      await page.eval("holding = true");
+    } finally {
+      await held.release();
+    }
+    await page.waitFor("handoffs.includes('returning')");
+    await page.front();
+    await page.waitFor("document.body.dataset.handoff === 'settled'");
+    await page.eval("new Promise((resolve) => setTimeout(resolve))");
+    await page.browser.send("Target.closeTarget", { targetId });
+    assert.equal(
+      await page.eval("handoffAtReturn"),
+      "returning",
+      "the window came back while the take-back was pending",
+    );
+    assert.deepEqual(
+      await page.eval("[document.activeElement.className, document.activeElement.value]"),
+      ["hw-textarea mark-edit-text", "Shorter title, four words at most"],
+      "the editor kept the focus and its words",
+    );
+    await assertPageStays(page);
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus again when the window comes back before its late refocus was taken back is unloaded, and no key reaches it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const edit = "document.querySelector('.mark-edit-text')";
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    const held = await holdCardClose(artifact);
+    let targetId;
+    try {
+      await noteOn(page, artifact, "#p1", "Say when");
+      await held.reached();
+      await clickOn(page, "document.querySelector('.mark-edit')");
+      await page.waitFor(`${edit} === document.activeElement`);
+      await heldWhileAway(page);
+      await page.eval(`globalThis.handoffs = [];
+        new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
+          attributes: true,
+          attributeFilter: ["data-handoff"],
+        })`);
+      ({ targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" }));
+      await page.browser.send("Target.activateTarget", { targetId });
+      await until(async () => !(await page.eval("document.hasFocus()")), {
+        what: "the review window to lose focus",
+      });
+      await page.eval("holding = true");
+      // The page takes the focus every 20 ms after its late refocus, so it is held there when the window returns.
+      await held.evaluate("globalThis.calling = true");
+    } finally {
+      await held.release();
+    }
+    await page.waitFor("handoffs.includes('returning')");
+    await page.front();
+    const result = await writeNote(page, edit, `${edit} === null`);
+    await page.browser.send("Target.closeTarget", { targetId });
+    assert.equal(await page.eval("handoffAtReturn"), "returning");
+    assert.deepEqual(
+      JSON.parse(await page.eval("JSON.stringify(handoffs)")).slice(0, 2),
+      ["returning", "settled"],
+      "the late refocus was taken back first",
+    );
+    assert.deepEqual(
+      { text: result.text, keys: result.keys, kept: result.kept },
+      { text: "Say whenabc", keys: 0, kept: true },
+    );
+    await page.close();
+  },
+);
+
+test(
   "a late pull after an Answer card opens is taken back to the card text",
   { skip: !executable && "no browser found" },
   async () => {
@@ -3339,7 +3462,7 @@ async function holdCardClose(artifact) {
   };
 }
 
-/** The page under review is shown, uncovered, and still loaded at its address. */
+/** The page under review is shown, uncovered, and not swapped for about:blank. */
 async function assertPageStays(page) {
   const state = JSON.parse(
     await page.eval(`JSON.stringify({
