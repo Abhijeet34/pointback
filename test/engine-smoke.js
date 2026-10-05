@@ -46,7 +46,7 @@ async function smoke(engine) {
     // After the click, not racing it: a sent batch waits on the server, and a poll left
     // pending behind a stalled click would reject with nothing to report it.
     const polled = (await cli(["poll", fixture, "--timeout-ms", "10000"], lab.env)).json();
-    assert.equal(polled.status, "feedback");
+    assert.equal(polled.status, "scratch-injected-failure");
     assert.deepEqual(
       polled.prompts.map(({ prompt, selector, tag }) => ({ prompt, selector, tag })),
       [{ prompt: NOTE, selector: "#title", tag: "h1" }],

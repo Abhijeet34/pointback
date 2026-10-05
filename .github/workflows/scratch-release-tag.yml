@@ -1,0 +1,49 @@
+name: scratch-release-tag
+
+# Scratch, never merged: runs release.yml's two release-tag guard bodies, extracted verbatim,
+# in GitHub's engine against the real API. github.sha here is this pull request's merge ref,
+# which is no release pull request's merge commit, so it stands in for a mismatched sha.
+on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guards:
+    name: ${{ matrix.case }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [before-tag-mismatch, before-tag-nothing-pending, after-tag-mismatch, after-tag-match]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Extract and run the release-tag step
+        run: |
+          set -uo pipefail
+          node -e '
+            const fs = require("fs");
+            const text = fs.readFileSync(".github/workflows/release.yml", "utf8");
+            const body = (name) => text.match(new RegExp("^ {6}- name: " + name + "\\n(?: {8}if: .*\\n)? {8}run: \\|\\n((?: {10}.*\\n|\\n)+)", "m"))[1].replace(/^ {10}/gm, "");
+            fs.writeFileSync("before.sh", body("Refuse to tag a tree this run did not test"));
+            fs.writeFileSync("after.sh", body("Refuse to release a tree this run did not test"));
+          '
+          export GITHUB_REF_NAME=main
+          echo "github.sha (this run's tested tree): $GITHUB_SHA"
+          case "${{ matrix.case }}" in
+            before-tag-mismatch)
+              # Every past release pull request carries "autorelease: tagged" and merged as a
+              # commit other than this run's, which is the shape a stranded pending one has.
+              sed 's/autorelease: pending/autorelease: tagged/' before.sh > run.sh ;;
+            before-tag-nothing-pending) cp before.sh run.sh ;;
+            after-tag-mismatch) export RELEASED_SHA=7f1838ef9fa8a1299ce319081f12de32b75dcbe8; cp after.sh run.sh ;;
+            after-tag-match) export RELEASED_SHA=$GITHUB_SHA; cp after.sh run.sh ;;
+          esac
+          echo "--- step body as run ---"; cat run.sh; echo "---"
+          bash run.sh
+          rc=$?
+          echo "${{ matrix.case }}: exit $rc" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
