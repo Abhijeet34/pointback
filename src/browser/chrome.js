@@ -1431,6 +1431,9 @@ document.addEventListener("focusout", (event) => {
 });
 function takenFrom(field) {
   setTimeout(() => {
+    // A pull the hand-off is taking back is the page's late refocus, which the chrome asked for, so it
+    // is looked at again once the focus is back: only a page still holding it then is unloaded.
+    if (handoff?.returning) return takenFrom(field);
     if (document.activeElement !== frame || unloaded || !writing(field)) return;
     taken = field;
     unload();

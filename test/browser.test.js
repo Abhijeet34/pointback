@@ -2304,11 +2304,14 @@ test(
     await page.waitFor(`document.body.dataset.handoff === "settled" ||
       (document.body.dataset.handoff !== "returning" &&
         !document.activeElement.classList.contains("mark-edit-text"))`);
+    // A timer queued by a take-back would run before this one, so one tick passes it.
+    await page.eval("new Promise((resolve) => setTimeout(resolve))");
     assert.deepEqual(
       await page.eval("[document.activeElement.className, document.activeElement.value]"),
       ["hw-textarea mark-edit-text", "Shorter title, four words at most"],
       "the editor kept the focus and its words",
     );
+    await assertPageStays(page);
     await page.type(" please");
     await page.enter();
     await page.waitFor(
@@ -2386,6 +2389,44 @@ test(
     await page.eval("new Promise((resolve) => setTimeout(resolve))");
     assert.equal(await page.eval("document.activeElement.id"), "cardText");
     assert.equal(await page.eval("document.getElementById('cardText').value"), "billing");
+    await assertPageStays(page);
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus again once its late pull was taken back is unloaded, and no key reaches it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const edit = "document.querySelector('.mark-edit-text')";
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    const held = await holdCardClose(artifact);
+    try {
+      await noteOn(page, artifact, "#p1", "Say when");
+      await held.reached();
+      await clickOn(page, "document.querySelector('.mark-edit')");
+      await page.waitFor(`${edit} === document.activeElement`);
+      await page.eval(`globalThis.handoffs = [];
+        new MutationObserver(() => handoffs.push(document.body.dataset.handoff ?? "")).observe(document.body, {
+          attributes: true,
+          attributeFilter: ["data-handoff"],
+        })`);
+      // Once released, the page takes the focus every 20 ms after its late refocus.
+      await held.evaluate("globalThis.calling = true");
+    } finally {
+      await held.release();
+    }
+    const result = await writeNote(page, edit, `${edit} === null`);
+    assert.deepEqual(
+      JSON.parse(await page.eval("JSON.stringify(handoffs)")).slice(0, 2),
+      ["returning", "settled"],
+      "the late refocus was taken back first",
+    );
+    assert.deepEqual(
+      { text: result.text, keys: result.keys, kept: result.kept },
+      { text: "Say whenabc", keys: 0, kept: true },
+    );
     await page.close();
   },
 );
@@ -3243,6 +3284,18 @@ async function holdCardClose(artifact) {
       await artifact.send("Debugger.disable");
     },
   };
+}
+
+/** The page under review is shown, uncovered, and still loaded at its address. */
+async function assertPageStays(page) {
+  const state = JSON.parse(
+    await page.eval(`JSON.stringify({
+      shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
+      cover: document.getElementById("cover").hidden ? null : document.getElementById("coverText").textContent,
+    })`),
+  );
+  state.unloaded = (await pageAddress(page)) === "about:blank";
+  assert.deepEqual(state, { shown: true, cover: null, unloaded: false }, "the page stays loaded");
 }
 
 /** Counts the page's close acknowledgements as the chrome hears them. */
