@@ -953,7 +953,11 @@ async function writeNote(page, field, done) {
     address: await pageAddress(page),
   };
   await page.enter();
-  await page.waitFor(done);
+  // A note that did not finish says what it held and whether a key reached the page.
+  await page.waitFor(done).catch((error) => {
+    error.message += `\n  the note held ${JSON.stringify(result)}; key events at the page since it opened: ${keyReports.length - quiet}`;
+    throw error;
+  });
   // No note is open now, so the page is back.
   await page.waitFor(
     `getComputedStyle(document.getElementById("artifact")).display !== "none" && document.getElementById("cover").hidden`,
@@ -1006,9 +1010,16 @@ test(
       await pointAt(page, artifact, "#p1");
       await artifact.eval("globalThis.calling = true");
       results.card = await writeNote(page, card, cardClosed);
-      // Hidden before this note takes the focus; the page takes it in the hide's slow frame.
+      // Hidden before this note takes the focus; the page takes it back as its window loses it to
+      // the card, which reaches the page before the hide does. Not the fixture's 20 ms call: a hidden
+      // page's timers stop and its focus() does nothing, so on a loaded runner the call can miss the
+      // moment between the card taking the focus and the hide (windows-2025, run 37273208836).
       const back = await page.frame();
-      await back.eval("globalThis.calling = true");
+      await back.eval(`addEventListener(
+        "blur",
+        () => document.getElementById("field").focus({ preventScroll: true }),
+        { once: true },
+      )`);
       await pointAt(page, back, "#p2");
       results["second note"] = await writeNote(page, card, cardClosed);
       await page.close();

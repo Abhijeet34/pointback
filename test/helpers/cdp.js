@@ -462,9 +462,9 @@ class Page {
   }
 
   /**
-   * What a wait that failed on this page cannot see for itself: what the chrome shows, with its
-   * event stream's state, every frame's address, the answers its documents got, its last console
-   * errors, and any renderer that crashed. On run 37247968168, attempt 20, a reloaded review never
+   * What a wait that failed on this page cannot see for itself: what the chrome shows and where its
+   * focus is, with its event stream's state, every frame's address, the answers its documents got,
+   * its last console errors, and any renderer that crashed. On run 37247968168, attempt 20, a reloaded review never
    * got ready in 10 s while the browser answered every 31 ms, and the timeout was all it said.
    */
   async describe() {
@@ -475,6 +475,7 @@ class Page {
         notice: document.getElementById("notice")?.hidden === false
           ? document.getElementById("noticeText").textContent : null,
         stream: document.getElementById("presence")?.dataset.state,
+        focus: document.activeElement?.id || document.activeElement?.className || document.activeElement?.tagName,
         body: { ...document.body?.dataset },
       })`),
       sleep(DESCRIBE_MS, "no answer", { ref: false }),
