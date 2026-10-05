@@ -97,6 +97,19 @@ test("a pointback daemon of another pid on the recorded port does not hold this 
   }
 });
 
+test("a pointback daemon of another pid, stalled past the probe's timeout, does not hold this directory", async () => {
+  const dir = stateDir();
+  const { server, port } = await answering({ ok: true, app: name, pid: process.ppid });
+  try {
+    record(dir, 1, { pid: process.pid, port });
+    stallNextTick(1_500);
+    assert.ok(await claimDaemon(dir));
+    assert.deepEqual(locks(dir), ["daemon.2.lock"]);
+  } finally {
+    server.close();
+  }
+});
+
 test("a daemon too busy to answer within a second still holds the state directory", async () => {
   const dir = stateDir();
   const { server, port } = await listening();
