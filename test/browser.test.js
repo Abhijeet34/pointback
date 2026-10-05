@@ -2393,9 +2393,9 @@ test(
 // The page ignores what it is pointed at until it hears the card close, which crosses the wrapper and
 // can land after the chrome has hidden the card: on macos-15, hunts 37277309134 and 37299981095, a
 // test's next click reached the page first and opened no card. The close is held in the wrapper until
-// that click reaches the page. The one-second bound applies only while the first `noteOn` is still
-// pending, which is when `noteOn` waits for the page first and so no click comes; once it has returned,
-// only the next click releases the hold, so the bound cannot free the page before that click arrives.
+// that click reaches the page. While the first `noteOn` is pending, the chrome in the state the old
+// `noteOn` returned on can only mean the new `noteOn` is waiting for the page, so twenty steady
+// sightings of it release the hold, in attempts rather than milliseconds (test/helpers/wait.js).
 test(
   "a note added with noteOn leaves the page taking the next click however late it hears the card close",
   { skip: !executable && "no browser found" },
@@ -2409,11 +2409,16 @@ test(
     const releasing = (async () => {
       try {
         await held.reached();
-        const from = Date.now();
+        let steady = 0;
         await until(
-          async () =>
-            (await artifact.eval("globalThis.presses >= 2")) ||
-            (Date.now() - from > 1000 && !firstSettled),
+          async () => {
+            if (await artifact.eval("globalThis.presses >= 2")) return true;
+            const closed = await page.eval(
+              "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+            );
+            steady = closed && !firstSettled ? steady + 1 : 0;
+            return steady >= 20;
+          },
           { what: "the second note's press, or the hold to pass" },
         );
       } finally {
