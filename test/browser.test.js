@@ -2672,48 +2672,458 @@ const HELP_LINE =
   "Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, <send key> sends.";
 
 /**
- * Opens a review in its own daemon with the first load matching `path` refused, and has the reviewer
- * note the title once it opens; answers what the reviewer saw and how many loads were asked and refused.
+ * Resolves once the document's faces have settled, every animation that ends has ended, and two
+ * frames have painted since. A face can land well after the review is ready (Plex Mono started
+ * 2673 ms into a reloaded chrome on windows-2025), and Send's background eases into the accent as a
+ * note is added wherever motion is not reduced (ubuntu-24.04 read it mid-way, run 37385952857);
+ * what a layout or a paint reports before then is a state on its way out.
  */
-async function openWithOneRefused(path) {
+const SETTLED = `document.fonts.ready
+  .then(() => Promise.all(document.getAnimations()
+    .filter((a) => a.effect?.getComputedTiming().endTime !== Infinity)
+    .map((a) => a.finished.catch(() => {}))))
+  .then(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))))`;
+
+/**
+ * The family of the face the renderer drew most of `selector`'s text in, in a tab or the page under
+ * review in one: what paints, never the family a style names.
+ */
+async function paintedFace(target, selector) {
+  await target.eval(SETTLED);
+  await target.send("DOM.enable");
+  await target.send("CSS.enable");
+  // A render that lands first, such as Send relabelled by an event, replaces the text node, and the
+  // new one reports no fonts until it has painted, so this waits for the paint.
+  const fonts = await until(
+    async () => {
+      const root = await target.document();
+      const { nodeId } = await target.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+      const { fonts } = await target.send("CSS.getPlatformFontsForNode", { nodeId });
+      return fonts.length > 0 && fonts;
+    },
+    { what: `${selector} to paint its text` },
+  );
+  // The face that sets the text is the one drawing most of its glyphs: a symbol such as ⌘ is outside
+  // the latin subset and falls back. A variable face reports its named instance, "Archivo SemiBold",
+  // so the family is the prefix.
+  const [main] = fonts.toSorted((x, y) => y.glyphCount - x.glyphCount);
+  return main.familyName.replace(/ (Medium|SemiBold|Bold)$/, "");
+}
+
+/**
+ * How a working review paints and answers, read after a note on its title: whether each of the
+ * chrome's faces loaded, the computed styles of the elements each of the chrome's sheets and the
+ * page's own set, the faces the renderer drew their text in, and the text size's arrow keys, which
+ * the house's radiogroup.js gives it.
+ */
+async function lookOf(
+  page,
+  artifact,
+  chrome = ["body", ".bar", "#fileName", "#status", "#send", ".margin", "#artifact"],
+) {
+  const styles = (selectors) => `JSON.stringify(${JSON.stringify(selectors)}.map((s) => {
+    const e = document.querySelector(s);
+    const c = getComputedStyle(e);
+    const r = e.getBoundingClientRect();
+    return [s, c.color, c.backgroundColor, c.fontFamily, c.fontSize, c.fontWeight, c.lineHeight,
+      c.paddingTop, c.borderTopLeftRadius, Math.round(r.width), Math.round(r.height)];
+  }))`;
+  await page.eval(SETTLED);
+  await artifact.eval(SETTLED);
+  const look = {
+    loads: JSON.parse(
+      await page.eval(
+        "JSON.stringify([...document.fonts].map((f) => `${f.family} ${f.weight} ${f.status}`))",
+      ),
+    ),
+    chrome: JSON.parse(await page.eval(styles(chrome))),
+    page: JSON.parse(await artifact.eval(styles(["body", "h1", "p"]))),
+    faces: [
+      await paintedFace(page, "#status"),
+      await paintedFace(page, "#fileName"),
+      await paintedFace(artifact, "h1"),
+    ],
+  };
+  const checked =
+    "document.querySelector('#textSize [aria-checked=true]')?.getAttribute('aria-label')";
+  await clickOn(page, "document.getElementById('textSizeButton')");
+  await clickOn(page, "document.querySelector('#textSize [data-size=\"m\"]')");
+  await page.key("ArrowRight", { keyCode: 39 });
+  await page.waitFor(`${checked} === "Large"`);
+  // Back to the house default, which every later review in this browser opens at.
+  await page.key("ArrowLeft", { keyCode: 37 });
+  await page.waitFor(`${checked} === "Medium"`);
+  return look;
+}
+
+/**
+ * Waits for the chrome to have reloaded itself. A look that lands as the reload replaces the document
+ * is answered "Inspected target navigated or closed", which is that reload under way (macos-15, run
+ * 37387213092), so it looks again.
+ */
+function reloadOf(page) {
+  return page.explained(
+    until(
+      () =>
+        page
+          .eval("performance.getEntriesByType('navigation')[0]?.type === 'reload'")
+          .catch((error) => {
+            if (error.message === "Inspected target navigated or closed") return false;
+            throw error;
+          }),
+      { what: "the chrome to reload itself" },
+    ),
+  );
+}
+
+/**
+ * Opens a review in its own daemon with the first load matching `path` refused, or none when `path`
+ * is null, and has the reviewer note the heading once it opens; answers what the reviewer saw, how
+ * the review paints and answers then, how many times the chrome asked to reload itself, and how many
+ * loads were asked and refused.
+ *
+ * A reload is counted where the chrome asks for it, never read off the document's navigation entry:
+ * the browser's own reload of the error page a refused top-level load leaves is labelled `reload`
+ * there by Chrome on macos-15 (20 of 20 attempts on run 37380416654) and `navigate` elsewhere.
+ */
+async function openWithOneRefused(
+  path,
+  { copy = copyOfFixture, heading = "#title" } = {},
+  navigation = "navigate",
+) {
   const own = isolatedEnv();
   const page = await browser.page("about:blank");
+  let reloads = 0;
+  const asksToReload = ({ method, params, sessionId }) => {
+    if (sessionId !== page.sessionId || method !== "Page.frameRequestedNavigation") return;
+    if (params.frameId === page.targetId && params.reason === "reload") reloads += 1;
+  };
+  page.browser.listeners.push(asksToReload);
   let refused;
   try {
-    const { file } = copyOfFixture();
+    const { file } = copy();
     const url = (await cli([file], own.env)).json().session.url;
     const { port } = own.serverInfo();
-    refused = await refuseLoads(page, path.replace("<port>", String(port)));
+    if (path) refused = await refuseLoads(page, path.replace("<port>", String(port)));
+    // Motion as an ubuntu-24.04 runner has it, whatever the host's setting: Send's background eases
+    // into the accent as a note is added, so the look is read only once that has ended (`SETTLED`).
+    await page.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+    });
     await page.navigate(url);
+    // A face the chrome first sets once the review is shown fails after it is ready, so the review
+    // is driven only once the chrome has reloaded for it.
+    if (navigation === "reload") await reloadOf(page);
     const { artifact } = await reviewIn(page);
     const seen = JSON.parse(await page.eval(OPENED_SEEN));
-    await noteOn(page, artifact, "#title", "Name the queue in the title");
-    return { seen, ...refused.counts };
+    await noteOn(page, artifact, heading, "Name the queue in the title");
+    // Counted before the look is read: DevTools fetches the chrome's sheets again for the CSS domain.
+    const counts = { ...(refused?.counts ?? { asked: 0, refused: 0 }) };
+    return { seen, look: await lookOf(page, artifact), reloads, ...counts };
   } finally {
+    page.browser.listeners.splice(page.browser.listeners.indexOf(asksToReload), 1);
     await refused?.stop();
     await page.close();
     await own.stop();
   }
 }
 
-for (const [what, path] of [
-  ["the page under review", "http://127.0.0.1:<port>/artifact/*/plan.html*"],
-  ["the page's script from the review", "http://127.0.0.1:<port>/sdk.js*"],
-  ["the frame the page is shown in", "http://localhost:<port>/wrapper.html*"],
-  ["the review itself", "http://127.0.0.1:<port>/api/*/session*"],
+const MARKDOWN = { copy: copyOfReadme, heading: "main > h1" };
+/** The same review opened with every load answered, which a review that met a refusal is held to. */
+const healthy = new Map();
+const healthyReview = (fixture) => {
+  if (!healthy.has(fixture)) healthy.set(fixture, openWithOneRefused(null, fixture));
+  return healthy.get(fixture);
+};
+
+test(
+  "a review whose loads all answer is loaded once, with the help line, and the review it opens is the look the refused ones are held to",
+  { skip: !executable && "no browser found" },
+  async () => {
+    for (const [fixture, file] of [
+      [undefined, "plan.html"],
+      [MARKDOWN, "README.md"],
+    ]) {
+      const { seen, reloads, asked, refused } = await healthyReview(fixture);
+      assert.deepEqual(
+        { seen, reloads, asked, refused },
+        {
+          seen: { cover: null, status: HELP_LINE, file },
+          reloads: 0,
+          asked: 0,
+          refused: 0,
+        },
+      );
+    }
+  },
+);
+
+// Each of a review's loads that a refused connect can fail, and how the tab recovers it: the browser
+// asks again for its own top-level page, the chrome reloads itself once for a file of its own, and the
+// rest are asked for again where they failed (docs/ENGINEERING-NOTES.md).
+for (const [what, path, navigation, fixture] of [
+  ["the page under review", "http://127.0.0.1:<port>/artifact/*/plan.html*", "navigate"],
+  ["the page's script from the review", "http://127.0.0.1:<port>/sdk.js*", "navigate"],
+  ["the frame the page is shown in", "http://localhost:<port>/wrapper.html*", "navigate"],
+  ["the review itself", "http://127.0.0.1:<port>/api/*/session*", "navigate"],
+  ["the chrome's own page", "http://127.0.0.1:<port>/session/*", "navigate"],
+  ["the chrome's script", "http://127.0.0.1:<port>/chrome.js*", "reload"],
+  ["the house's radio group script", "http://127.0.0.1:<port>/house/radiogroup.js*", "reload"],
+  ["the house's tokens", "http://127.0.0.1:<port>/house/brand.tokens.css*", "reload"],
+  ["the house's roles", "http://127.0.0.1:<port>/house/roles.css*", "reload"],
+  ["the house's scales", "http://127.0.0.1:<port>/house/scales.css*", "reload"],
+  ["the house's components", "http://127.0.0.1:<port>/house/components.css*", "reload"],
+  ["the chrome's stylesheet", "http://127.0.0.1:<port>/chrome.css*", "reload"],
+  ["the chrome's interface face", "http://127.0.0.1:<port>/house/fonts/archivo/*", "reload"],
+  ["the chrome's code face", "http://127.0.0.1:<port>/house/fonts/ibm-plex-mono/*", "reload"],
+  ["the page's own stylesheet", "http://127.0.0.1:<port>/artifact/*/plan.css*", "navigate"],
+  ["a Markdown page's stylesheet", "http://127.0.0.1:<port>/markdown.css*", "navigate", MARKDOWN],
 ]) {
   test(
     `a refused first load of ${what} is asked for again, and the reviewer gets a working review, never a dead end`,
     { skip: !executable && "no browser found" },
     async () => {
-      assert.deepEqual(await openWithOneRefused(path), {
-        seen: { cover: null, status: HELP_LINE, file: "plan.html" },
-        asked: 2,
-        refused: 1,
-      });
+      const { asked, ...rest } = await openWithOneRefused(path, fixture, navigation);
+      const { seen, look } = await healthyReview(fixture);
+      assert.deepEqual(rest, { seen, look, reloads: navigation === "reload" ? 1 : 0, refused: 1 });
+      // A refused face is asked for again on the reloaded chrome: measured as 3 asks (the refused one,
+      // then two on the reloaded chrome) in 1200 of 1200 windows-2025 samples for Plex Mono. Not pinned
+      // at 3, since how often Chrome requests a face can change with its version, not with this code.
+      if (what.endsWith("face")) assert.ok(asked >= 2, "the refused face asked for again");
+      else assert.equal(asked, 2, "one ask more than the one refused");
     },
   );
 }
+
+test(
+  "a refused load of the chrome's first script, which asks again for the others, costs the reviewer nothing",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { seen, look } = await healthyReview();
+    assert.deepEqual(await openWithOneRefused("http://127.0.0.1:<port>/recover.js*"), {
+      seen,
+      look,
+      reloads: 0,
+      asked: 1,
+      refused: 1,
+    });
+  },
+);
+
+test(
+  "a chrome file refused after the reviewer's own reload is recovered once, as a first load's is",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    let refused;
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      await page.navigate(url);
+      await reviewIn(page);
+      refused = await refuseLoads(page, `http://127.0.0.1:${port}/chrome.css*`);
+      await page.send("Page.reload");
+      // The recovered load is the second ask for the sheet; the reviewer's reload alone is the first.
+      await until(() => refused.counts.asked === 2, {
+        what: "the recovered chrome to ask for its sheet",
+      });
+      await page.waitFor("document.body?.dataset.ready === '1'");
+      const { artifact } = await reviewIn(page);
+      await noteOn(page, artifact, "#title", "Name the queue in the title");
+      // Counted before the look is read: DevTools fetches the chrome's sheets again for the CSS domain.
+      const counts = { ...refused.counts };
+      assert.deepEqual(
+        { look: await lookOf(page, artifact), counts },
+        { look: (await healthyReview()).look, counts: { asked: 2, refused: 1 } },
+      );
+    } finally {
+      await refused?.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a file of the chrome's own that never loads reloads the chrome once, never in a loop",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    let refused;
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      refused = await refuseLoads(page, `http://127.0.0.1:${port}/chrome.css*`, Infinity);
+      // A reload the chrome asks for fires `navigate` in the same turn as the refused sheet's error,
+      // which comes before the chrome's own script runs and so before the review is ready.
+      await page.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `window.leaving = 0;
+        navigation.addEventListener("navigate", () => { window.leaving += 1; });`,
+      });
+      await page.navigate(url);
+      // The chrome's script still runs, so the review opens; without its sheet it is the residual a
+      // file refused on both loads leaves (docs/ENGINEERING-NOTES.md).
+      await page.waitFor("document.body?.dataset.ready === '1'");
+      assert.deepEqual(
+        JSON.parse(
+          await page.eval(`JSON.stringify({
+            navigation: performance.getEntriesByType('navigation')[0].type,
+            leaving: window.leaving,
+          })`),
+        ),
+        { navigation: "reload", leaving: 0 },
+      );
+      assert.deepEqual(refused.counts, { asked: 2, refused: 2 });
+    } finally {
+      await refused?.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a chrome face refused while a margin note holds typed text keeps the text, and the chrome reloads for the face once the note is saved",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    const held = [];
+    const listener = ({ method, params, sessionId }) => {
+      if (method !== "Fetch.requestPaused" || sessionId) return;
+      if (held.length === 0) held.push(params.requestId);
+      else
+        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
+    };
+    page.browser.listeners.push(listener);
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      await page.browser.send("Fetch.enable", {
+        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
+      });
+      // The held face holds the chrome's load event, so the navigation is not waited on for it; the
+      // review's own ready is what reviewIn waits for.
+      await page.send("Page.navigate", { url });
+      const { artifact } = await reviewIn(page);
+      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
+      await pointAt(page, artifact, "#title");
+      await page.type("Shorter title");
+      await page.browser.send("Fetch.failRequest", {
+        requestId: held[0],
+        errorReason: "ConnectionRefused",
+      });
+      // The face's load has failed once the document's faces have settled; two frames after that let
+      // the chrome's loadingerror handler run before the note is read.
+      await page.eval(SETTLED);
+      assert.deepEqual(
+        JSON.parse(
+          await page.eval(`JSON.stringify({
+            text: document.getElementById('cardText').value,
+            open: !document.getElementById('card').hidden,
+            navigation: performance.getEntriesByType('navigation')[0].type,
+          })`),
+        ),
+        { text: "Shorter title", open: true, navigation: "navigate" },
+      );
+      await page.enter();
+      await reloadOf(page);
+      const reloaded = await reviewIn(page);
+      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+      assert.deepEqual(
+        {
+          note: await page.eval(
+            "document.querySelector('.mark:not(.sent)').textContent.includes('Shorter title')",
+          ),
+          look: await lookOf(page, reloaded.artifact),
+          face: await paintedFace(page, "#fileName"),
+        },
+        {
+          note: true,
+          look: (await healthyReview()).look,
+          face: "IBM Plex Mono",
+        },
+      );
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.browser.send("Fetch.disable").catch(() => {});
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a chrome face refused while a margin note edit holds typed text keeps the text, and the chrome reloads for the face once the edit is saved",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    const held = [];
+    const listener = ({ method, params, sessionId }) => {
+      if (method !== "Fetch.requestPaused" || sessionId) return;
+      if (held.length === 0) held.push(params.requestId);
+      else
+        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
+    };
+    page.browser.listeners.push(listener);
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      await page.browser.send("Fetch.enable", {
+        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
+      });
+      await page.send("Page.navigate", { url });
+      const { artifact } = await reviewIn(page);
+      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
+      await noteOn(page, artifact, "#title", "Shorter title");
+      await clickOn(page, "document.querySelector('.mark-edit')");
+      await page.waitFor("document.activeElement?.classList.contains('mark-edit-text')");
+      await press(page, "again");
+      await page.browser.send("Fetch.failRequest", {
+        requestId: held[0],
+        errorReason: "ConnectionRefused",
+      });
+      await page.eval(SETTLED);
+      assert.deepEqual(
+        JSON.parse(
+          await page.eval(`JSON.stringify({
+            text: document.querySelector('.mark-edit-text')?.value ?? null,
+            navigation: performance.getEntriesByType('navigation')[0].type,
+          })`),
+        ),
+        { text: "Shorter titleagain", navigation: "navigate" },
+      );
+      await page.enter();
+      await reloadOf(page);
+      const reloaded = await reviewIn(page);
+      await page.waitFor(
+        "document.querySelectorAll('.mark:not(.sent)').length === 1 && document.querySelector('.mark:not(.sent)').textContent.includes('Shorter titleagain')",
+      );
+      assert.deepEqual(
+        {
+          look: await lookOf(page, reloaded.artifact),
+          face: await paintedFace(page, "#fileName"),
+        },
+        {
+          look: (await healthyReview()).look,
+          face: "IBM Plex Mono",
+        },
+      );
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.browser.send("Fetch.disable").catch(() => {});
+      await page.close();
+      await own.stop();
+    }
+  },
+);
 
 test(
   "a refused first load of a reload held behind an open answer card gets the stray cover and Back, never the file-changed line",
@@ -3114,7 +3524,7 @@ async function openReview(url, viewport) {
 async function reviewIn(page) {
   hearKeys(page);
   const attaching = page.frame();
-  await page.waitFor("document.body.dataset.ready === '1'");
+  await page.waitFor("document.body?.dataset.ready === '1'");
   await page.waitFor(FOLLOWING);
   const artifact = await attaching;
   await artifact.waitFor("document.readyState === 'complete'");
@@ -5979,30 +6389,7 @@ test(
     await noteOn(page, artifact, "#title", "Name the run");
     // The faces are what paints, read from the font the renderer used for each run of text, and
     // they came from this daemon: the review asks nothing of the network off loopback.
-    await page.eval("document.fonts.ready.then(() => true)");
-    await page.send("DOM.enable");
-    await page.send("CSS.enable");
-    const { root } = await page.send("DOM.getDocument");
-    const painted = async (selector) => {
-      // A render that lands first, such as Send relabelled by an event, replaces the text node,
-      // and the new one reports no fonts until it has painted, so this waits for the paint.
-      const fonts = await until(
-        async () => {
-          const { nodeId } = await page.send("DOM.querySelector", {
-            nodeId: root.nodeId,
-            selector,
-          });
-          const { fonts } = await page.send("CSS.getPlatformFontsForNode", { nodeId });
-          return fonts.length > 0 && fonts;
-        },
-        { what: `${selector} to paint its text` },
-      );
-      // The face that sets the text is the one drawing most of its glyphs: a symbol such as ⌘ is
-      // outside the latin subset and falls back. A variable face reports its named instance,
-      // "Archivo SemiBold", so the family is the prefix.
-      const [main] = fonts.toSorted((x, y) => y.glyphCount - x.glyphCount);
-      return main.familyName.replace(/ (Medium|SemiBold|Bold)$/, "");
-    };
+    const painted = (selector) => paintedFace(page, selector);
     for (const selector of ["#send", "#status", ".mark-note", "#end"]) {
       assert.equal(await painted(selector), "Archivo", `${selector} paints in Archivo`);
     }
@@ -6178,19 +6565,7 @@ test(
     assert.ok(shape.items > 0 && shape.code > 0 && shape.heads > 0, JSON.stringify(shape));
     assert.equal(shape.syntax, false, "no Markdown syntax paints as text");
     // The house reading faces, read from the font the renderer used for each run of text.
-    await artifact.eval("document.fonts.ready.then(() => true)");
-    await artifact.send("DOM.enable");
-    await artifact.send("CSS.enable");
-    const root = await artifact.document();
-    const painted = async (selector) => {
-      const { nodeId } = await artifact.send("DOM.querySelector", {
-        nodeId: root.nodeId,
-        selector,
-      });
-      const { fonts } = await artifact.send("CSS.getPlatformFontsForNode", { nodeId });
-      const [main] = fonts.toSorted((x, y) => y.glyphCount - x.glyphCount);
-      return main.familyName.replace(/ (Medium|SemiBold|Bold)$/, "");
-    };
+    const painted = (selector) => paintedFace(artifact, selector);
     assert.equal(await painted("main > p"), "Literata", "prose paints in Literata");
     assert.equal(await painted("main > h2"), "Archivo", "a heading paints in Archivo");
     assert.equal(await painted("pre > code"), "IBM Plex Mono", "code paints in Plex Mono");

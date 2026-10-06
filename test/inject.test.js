@@ -3,10 +3,14 @@ import { test } from "node:test";
 import { parse } from "parse5";
 import { assetsOutside, injectSdk } from "../src/inject.js";
 
-test("the SDK script becomes the last child of body", () => {
-  const out = injectSdk("<!doctype html><html><body><p>hi</p></body></html>", "/sdk.js");
+test("the SDK script becomes the last child of body, and the one asking again for a refused sheet the first of head", () => {
+  const out = injectSdk(
+    '<!doctype html><html><head><link rel="stylesheet" href="a.css"></head><body><p>hi</p></body></html>',
+    "/sdk.js",
+  );
+  assert.match(out, /<head><script>[^<]+<\/script><link rel="stylesheet" href="a.css"><\/head>/);
   assert.match(out, /<p>hi<\/p><script src="\/sdk.js"><\/script><\/body>/);
-  assert.equal(out.match(/<script/g).length, 1);
+  assert.equal(out.match(/<script/g).length, 2);
 });
 
 test("a fragment with no body still gets one, and the script inside it", () => {
@@ -30,8 +34,9 @@ test("the src attribute is serialised, never spliced", () => {
     for (const child of node.childNodes ?? []) walk(child);
   };
   walk(parse(out));
-  assert.equal(scripts.length, 1, "the hostile value produced no second element");
-  assert.equal(scripts[0].attrs.find((a) => a.name === "src").value, src);
+  assert.equal(scripts.length, 2, "the hostile value produced no third element");
+  assert.deepEqual(scripts[0].attrs, [], "the head's own script has no source to take");
+  assert.equal(scripts[1].attrs.find((a) => a.name === "src").value, src);
 });
 
 test("the assets a page loads from above its root are named as the page wrote them, and nothing else", () => {

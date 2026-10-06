@@ -492,7 +492,7 @@ class Page {
    */
   async frame() {
     await this.watch();
-    await this.waitFor("document.body.dataset.ready === '1'", { timeoutMs: ATTACH_MS });
+    await this.waitFor("document.body?.dataset.ready === '1'", { timeoutMs: ATTACH_MS });
     const artifact = await this.explained(
       until(() => this.#findArtifact(), {
         what: "the page under review to load in its frame",
