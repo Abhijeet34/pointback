@@ -2525,7 +2525,7 @@ for (const late of [false, true]) {
         await clickOn(page, "document.querySelector('.mark-edit')");
         await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
         await page.type(", four words at most");
-        if (late) await lateWhileAway(page);
+        if (late) await holdTasks(page);
         await recordHandoffs(page);
         ({ targetId } = await page.browser.send("Target.createTarget", { url: "about:blank" }));
         await page.browser.send("Target.activateTarget", { targetId });
@@ -2536,6 +2536,13 @@ for (const late of [false, true]) {
         await held.release();
       }
       await page.waitFor("window.closeAcks === 1");
+      if (late) {
+        // The chrome's checks of the late refocus run only once the take-back has been asked for.
+        await page.waitFor("handoffs.includes('returning')", {
+          what: "the chrome to hold the take-back of the page's late refocus while the window is away",
+        });
+        await page.eval("runHeld()");
+      }
       await page.waitFor("handoffs.length >= 2");
       assert.deepEqual(
         JSON.parse(await page.eval("JSON.stringify(handoffs.slice(0, 2))")),
