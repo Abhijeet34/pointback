@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { DEBOUNCE_MS, watchFile } from "../src/watch.js";
 import { until } from "./helpers/wait.js";
 import { watchAvailable } from "./helpers/watch.js";
@@ -124,4 +127,27 @@ test("a stopped watcher stays silent, and a vanished directory reports instead o
   // A negative: the vanished directory must report, not throw, within the windows it would fire in.
   await sleep(DEBOUNCE_MS * 3);
   stopAgain();
+});
+
+test("the suite's watch probe gives a process held off its loop past the probe's clock the same answer", async () => {
+  const expected = await watchAvailable();
+  // A fresh process, as each test file's first call is, held off its loop right after the probe
+  // starts, as a loaded runner deschedules it (a full-suite run spent the whole 10 s deadline).
+  const helper = pathToFileURL(join(import.meta.dirname, "helpers", "watch.js")).href;
+  const script = `import { watchAvailable } from ${JSON.stringify(helper)};
+const verdict = watchAvailable(500);
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+console.log(await verdict);`;
+  const { stdout } = await promisify(execFile)(process.execPath, [
+    "--input-type=module",
+    "-e",
+    script,
+  ]);
+  assert.equal(
+    stdout.trim(),
+    String(expected),
+    expected
+      ? "watching works here, so a stall must not read as watching being unavailable"
+      : "watching is refused here, and a stall must not change that answer",
+  );
 });
