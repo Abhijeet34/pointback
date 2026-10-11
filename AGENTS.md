@@ -31,7 +31,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - A test driving a tab it sent to the background calls `page.front()` first, and an animation assertion emulates `prefers-reduced-motion: no-preference` first.
 - A key the chrome acts on is `preventDefault`ed, or headless Chromium on macOS freezes; it also sends a key the page leaves unhandled back to the page, so a test types into the page only once the element meant to take the keys holds the focus (`docs/ENGINEERING-NOTES.md`).
 - The browser suite prints `browser suite: running against <path>` or `browser suite: SKIPPED`; a skip needs an explicit `<PREFIX>BROWSER=none`.
-- The browser suite launches Chrome once, before it opens its shared review, against one `LAUNCH_MS` deadline that its `before` hook outlasts (`LAUNCH_BOUND_MS` in `test/helpers/cdp.js`); a slow first launch on `windows-2025` is a cold disk, not a reason for a second attempt (`docs/ENGINEERING-NOTES.md`).
+- The browser suite launches Chrome once, before it opens its shared review, against one `LAUNCH_MS` deadline that its `before` hook outlasts (`LAUNCH_BOUND_MS` in `test/helpers/cdp.js`); a slow first launch on `windows-2025` or `ubuntu-24.04` is a cold disk, read first and never a reason for a second attempt or a bound of its own (`docs/ENGINEERING-NOTES.md`).
 - `README.md` is a browser-suite fixture: its Install paragraph opens with `` `parse5` ``.
 - The vendored house files under `src/browser/house/` are never edited; move the pin with `node scripts/sync-house.js`.
   The chrome uses `--hw-*` roles and rem sizes only (`src/browser/chrome.css`).
