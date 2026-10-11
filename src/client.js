@@ -101,10 +101,10 @@ export async function ensureServer(stateDir, environment = process.env) {
   };
   let child = start();
   // Bounded by attempts as well as by the clock. Every turn of this loop can cost a health probe its
-  // running-time budget of 1.5 s, or under sustained starvation up to PROBE_CEILING_MS of wall time,
-  // so a budget written only in milliseconds is really a budget in however many looks the machine
-  // can afford - and a busy windows-2025 runner affords few. This loop has no whole-operation wall
-  // bound under starvation yet; the concurrent cold-opens work owns that.
+  // running-time budget of 1.5 s and a look at the lock's holder its CONNECT_MS, or under sustained
+  // starvation up to PROBE_CEILING_MS of wall time each, so a budget written only in milliseconds is
+  // really a budget in however many looks the machine can afford - and a busy windows-2025 runner
+  // affords few. This loop has no whole-operation wall bound under starvation yet.
   // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
   // directory; the rest exit 0. A start that stepped aside for a daemon that has since let go,
   // one caught on its way out, is replaced.
