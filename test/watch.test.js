@@ -138,7 +138,11 @@ test("the suite's watch probe gives a process held off its loop past the probe's
 const verdict = watchAvailable(500);
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
 console.log(await verdict);`;
-  const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", script]);
+  const { stdout } = await promisify(execFile)(process.execPath, [
+    "--input-type=module",
+    "-e",
+    script,
+  ]);
   assert.equal(
     stdout.trim(),
     String(expected),
