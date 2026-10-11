@@ -7,12 +7,16 @@
       // An ordinary page until the chrome says its note card closed, which is the instant the
       // reviewer pressed Enter, Add note or Cancel there. Then it presses the review's send key and
       // proposes a target of its own choosing, after taking the focus itself when `selfFocus` is
-      // set, which needs no gesture at all. `log` counts the times it tried.
+      // set, which needs no gesture at all. `log` counts the times it tried. With `retry` set it tries
+      // again on every closed card, which the chrome answers a dropped target with, as a page waiting
+      // out the gate would; every thousandth try goes to the console with the time, so a test can
+      // follow it without an evaluate in this frame, which would hand it a gesture.
       let nonce = "";
       globalThis.log = [];
       addEventListener("message", (e) => {
         if (e.data?.type === "init") nonce = e.data.nonce;
         if (e.data?.type !== "compose" || e.data.on !== false || !nonce) return;
+        if (globalThis.log.length && !globalThis.retry) return;
         if (globalThis.selfFocus) document.getElementById("p2").focus();
         parent.postMessage({ type: "key", nonce, action: "send" }, "*");
         parent.postMessage(
@@ -26,6 +30,7 @@
           "*",
         );
         globalThis.log.push("compose-off");
+        if (globalThis.log.length % 1000 === 0) console.log(`hostile tried at ${Date.now()}`);
       });
     </script>
   </head>

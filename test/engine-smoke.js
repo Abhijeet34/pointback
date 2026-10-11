@@ -6,7 +6,7 @@
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
-/* global document, location, parent, nonce, getComputedStyle */
+/* global document, location, getComputedStyle */
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +26,8 @@ const ENGINES = { webkit, firefox };
 /** The longest any one Playwright wait may take; nothing in the act is slow, so a miss is a hang. */
 const STEP_MS = 30_000;
 const NOTE = "Make the title shorter";
+// `ACTIVATION_MS` in src/browser/chrome.js: how long the chrome hears nothing from the page after a key.
+const GATE_MS = 5000;
 
 async function smoke(engine) {
   const lab = isolatedEnv();
@@ -37,6 +39,7 @@ async function smoke(engine) {
     named = `${engine} ${browser.version()}`;
     await act(browser, (page) => coreAct(page, lab));
     await act(browser, (page) => enterIsNotThePages(page, lab));
+    await act(browser, (page) => clickInsideTheGate(page, lab));
     await act(browser, (page) => endKeepsTheCard(page, lab));
     await act(browser, (page) => readingPlace(page, lab, engine));
     await act(browser, (page) => pressOverThePage(page, lab));
@@ -136,15 +139,24 @@ async function coreAct(page, lab) {
 /**
  * Firefox and WebKit pass a key pressed in the chrome on to the page, so the page could spend the
  * reviewer's Enter in the card; the chrome hears nothing from the page for 5 s after a key there.
+ * The page tries again on every target the chrome hands back, until well after the gate lapses.
  */
 async function enterIsNotThePages(page, lab) {
   const dir = join(lab.dir, "review");
   mkdirSync(dir);
   const file = join(dir, "rollout.html");
   copyFileSync(HOSTILE, file);
+  const tries = [];
+  page.on("console", (message) => {
+    const at = /^hostile tried at (\d+)$/.exec(message.text())?.[1];
+    if (at) tries.push(Number(at));
+  });
   const { session } = (await cli([file], lab.env)).json();
   await open(page, session.url);
   await page.waitForFunction(() => document.body.dataset.annotate === "1");
+  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
+  // Before the click, whose gesture is let lapse below along with this evaluate's.
+  await artifact.evaluate(() => (globalThis.retry = true));
   await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
   // The click is the reviewer's own gesture in the page, which the page may use; it is let lapse,
@@ -152,6 +164,8 @@ async function enterIsNotThePages(page, lab) {
   await page.waitForFunction(() => !navigator.userActivation.isActive);
   await page.keyboard.insertText(NOTE);
   await page.keyboard.press("Enter");
+  // The gate has lapsed by then: it began at the Enter's keydown, before the press returned.
+  const lapsed = Date.now() + GATE_MS;
   // The chrome's own account that the Enter landed in the card: closed, the note kept unsent. A key
   // that went elsewhere fails here by name rather than as the page's silence below.
   await page.waitForFunction(
@@ -159,11 +173,12 @@ async function enterIsNotThePages(page, lab) {
       document.getElementById("card").hidden &&
       document.querySelectorAll(".mark:not(.sent)").length === 1,
   );
-  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
-  await artifact.waitForFunction(() => globalThis.log.length === 1);
-  // Posted behind the page's own two messages through the same frames, so both were handled.
-  await artifact.evaluate(() => parent.postMessage({ type: "scroll", nonce, y: -7 }, "*"));
-  await page.waitForFunction(() => document.body.dataset.scroll === "-7");
+  // Each try follows the chrome's answer to the one before, so a second report stamped after the
+  // lapse means tries made after it were handled. Nothing here evaluates in the page's frames.
+  await until(() => tries.filter((at) => at > lapsed).length >= 2, {
+    what: "two reports of the page's tries after the gate lapsed",
+    timeoutMs: STEP_MS,
+  });
   assert.deepEqual(
     await page.evaluate(() => ({
       card: !document.getElementById("card").hidden,
@@ -174,6 +189,63 @@ async function enterIsNotThePages(page, lab) {
   );
   const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
   assert.equal(polled.status, "waiting", "the agent receives nothing the reviewer did not send");
+}
+
+/**
+ * The ordinary rhythm of a review: add a note with Enter and click the next thing at once. The gate
+ * drops that click, and must hand the page back, so the click after the gate lapses opens the card.
+ */
+async function clickInsideTheGate(page, lab) {
+  const dir = join(lab.dir, "quick");
+  mkdirSync(dir);
+  const file = join(dir, "plan.html");
+  copyFileSync(fixture, file);
+  const { session } = (await cli([file], lab.env)).json();
+  await open(page, session.url);
+  await page.waitForFunction(() => document.body.dataset.annotate === "1");
+  const view = page.frameLocator("#artifact").frameLocator("#page");
+  await view.locator("#title").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.keyboard.type(NOTE);
+  const pressing = Date.now();
+  await page.keyboard.press("Enter");
+  // The gate began at the Enter's keydown, between these two.
+  const lapsed = Date.now() + GATE_MS;
+  await page.waitForFunction(() => document.getElementById("card").hidden);
+  const p1 = view.locator("#p1");
+  await p1.click();
+  // The page reports this scroll behind the click's target through the same frames, so once the
+  // chrome shows it, the chrome has handled the target.
+  const y = await p1.evaluate((p) => {
+    const win = p.ownerDocument.defaultView;
+    win.scrollTo(0, win.scrollY + 7);
+    return win.scrollY;
+  });
+  await page.waitForFunction((expected) => document.body.dataset.scroll === expected, String(y));
+  const heard = Date.now() - pressing;
+  assert.ok(heard < GATE_MS, `the click was handled ${heard} ms after Enter, outside the gate`);
+  assert.equal(
+    await page.evaluate(() => document.getElementById("card").hidden),
+    true,
+    "a click inside the gate opens no card",
+  );
+  // Nothing fires here; the wait only outlasts the gate.
+  await new Promise((resolve) => setTimeout(resolve, lapsed - Date.now()));
+  await view.locator("#risks").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.keyboard.type("Name the owner");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 2);
+  await page.click("#send");
+  const polled = (await cli(["poll", file, "--timeout-ms", "10000"], lab.env)).json();
+  assert.deepEqual(
+    polled.prompts?.map(({ prompt, selector }) => ({ prompt, selector })),
+    [
+      { prompt: NOTE, selector: "#title" },
+      { prompt: "Name the owner", selector: "#risks" },
+    ],
+    "the click after the gate lapsed was noted, and the agent receives it",
+  );
 }
 
 /** The agent's end, which closes the card for a reason not the reviewer's, leaves their words in it. */
