@@ -1178,7 +1178,12 @@ window.addEventListener("message", (event) => {
     // A proposal is heard only while the reviewer has Annotate on, no card open, and has just
     // clicked or pressed a key in the page: the page can send one at any moment, and must not pop
     // the card, take focus, or wipe a note being typed.
-    if (!annotate || composing || !gesture(active)) return;
+    if (!annotate || composing || !gesture(active)) {
+      // The page holds a target it proposed, deaf to every later click, until it hears the card
+      // closed, so a dropped one is answered as closed; that tells it nothing proposing again would not.
+      post({ type: "compose", on: false });
+      return;
+    }
     // Only what the reviewer pointed at: `answers` is the chrome's to set, from the margin.
     const { selector, lines, tag, text, target } = data.note;
     const note = { selector, lines, tag, text, target };
