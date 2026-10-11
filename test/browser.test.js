@@ -3599,9 +3599,25 @@ test(
     );
 
     // Read to the bottom, then save: the page must come back at the bottom, not at the top.
-    await artifact.eval("window.scrollTo(0, document.documentElement.scrollHeight)");
-    // Then wait for that place to reach the chrome, which is what a reload restores from.
-    await page.waitFor("Number(document.body.dataset.scroll) > 0");
+    // The page's report of this scroll is held until the wait for it is in flight, which forces
+    // the order CI once hit: the chrome still holds the place above, so a wait on any report
+    // passed at once, and the saves reloaded the page there, leaving the tail below the frame.
+    const bottom = await artifact.eval(`(() => {
+      globalThis.realFrame = window.requestAnimationFrame;
+      globalThis.heldFrames = [];
+      window.requestAnimationFrame = (run) => heldFrames.push(run);
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      return window.scrollY;
+    })()`);
+    await artifact.waitFor("heldFrames.length > 0");
+    const before = await page.eval("document.body.dataset.scroll");
+    assert.ok(Number(before) > 0 && before !== String(bottom), `the chrome held ${before}`);
+    // Then wait for this scroll's own place to reach the chrome, which is what a reload restores.
+    const reported = page.waitFor(`document.body.dataset.scroll === '${bottom}'`);
+    await artifact.eval(
+      "window.requestAnimationFrame = realFrame; heldFrames.forEach((run) => run(performance.now()))",
+    );
+    await reported;
 
     // Five saves in a row, timed from the write to the page being parsed, placed and annotatable.
     const latencies = [];
