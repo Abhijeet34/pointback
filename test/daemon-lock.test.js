@@ -6,8 +6,9 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { claimDaemon } from "../src/daemon-lock.js";
+import { claimDaemon, probeTimeout } from "../src/daemon-lock.js";
 import { name } from "../src/identity.js";
+import { closedPort, stallNextTick } from "./helpers/stall.js";
 
 const stateDir = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-lock-"));
 const locks = (dir) => readdirSync(dir).filter((name) => name.endsWith(".lock"));
@@ -21,12 +22,6 @@ async function listening() {
   const server = createServer().listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   return { server, port: /** @type {import("node:net").AddressInfo} */ (server.address()).port };
-}
-
-async function closedPort() {
-  const { server, port } = await listening();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
 }
 
 /** A listener whose `/health` answers with `body`, and nothing else. */
@@ -65,6 +60,15 @@ test("a lock whose pid came back but whose port is closed is taken over", async 
   assert.ok(await claimDaemon(dir));
 });
 
+// A start the machine descheduled for longer than the probe's 1 s timeout comes back to the port's
+// refusal and an expired timer at once. The refusal is the answer, or the dead holder reads as busy.
+test("a start stalled past the probe's timeout still takes over a lock whose port is closed", async () => {
+  const dir = stateDir();
+  record(dir, 1, { pid: process.pid, port: await closedPort() });
+  stallNextTick(1_500);
+  assert.ok(await claimDaemon(dir));
+});
+
 // A reboot can hand a crashed daemon's pid to a process and its sticky port to another listener; a
 // listener that is not pointback is not a daemon, or the directory would be locked for good.
 test("a lock whose pid came back and whose port answers as another app is taken over", async () => {
@@ -93,6 +97,19 @@ test("a pointback daemon of another pid on the recorded port does not hold this 
   }
 });
 
+test("a pointback daemon of another pid, stalled past the probe's timeout, does not hold this directory", async () => {
+  const dir = stateDir();
+  const { server, port } = await answering({ ok: true, app: name, pid: process.ppid });
+  try {
+    record(dir, 1, { pid: process.pid, port });
+    stallNextTick(1_500);
+    assert.ok(await claimDaemon(dir));
+    assert.deepEqual(locks(dir), ["daemon.2.lock"]);
+  } finally {
+    server.close();
+  }
+});
+
 test("a daemon too busy to answer within a second still holds the state directory", async () => {
   const dir = stateDir();
   const { server, port } = await listening();
@@ -102,6 +119,16 @@ test("a daemon too busy to answer within a second still holds the state director
   } finally {
     server.close();
   }
+});
+
+test("a probe starved past its wall ceiling aborts there, though its running time barely accrued", async () => {
+  const probe = probeTimeout(60_000, 300);
+  for (let turn = 0; !probe.signal.aborted && turn < 100; turn += 1) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  probe.done();
+  assert.equal(probe.signal.reason?.name, "TimeoutError");
 });
 
 test("a start that died before it wrote its lock is waited on only for a bounded time", async () => {
