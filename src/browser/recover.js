@@ -2,26 +2,31 @@
 // 100000 of Chrome's new loopback connects (docs/ENGINEERING-NOTES.md), and nothing asks again for
 // a refused script, sheet or face of the chrome's own: a refused chrome.js leaves a page that never
 // boots, a sheet or a face one that paints wrong. So one failing reloads the chrome, and the reload
-// leaves a flag in the tab's sessionStorage that the load it starts spends, so that load never asks
-// again and a file that never loads costs one reload and no more. A reviewer's own reload finds no
-// flag and gets its one. A reload that would take a half-typed note with it waits for the hold
-// chrome.js registers to release.
+// leaves the files the reloads so far were for in the tab's sessionStorage, which the load it starts
+// spends: that load reloads again only for a file not on that list, so a file that never loads costs
+// one reload, and a chain of reloads ends within the chrome's own files. A reviewer's own reload
+// finds no list and starts a new one. A reload that would take a half-typed note with it waits for
+// the hold chrome.js registers to release.
 {
   const key = "recoverReloaded";
-  // The wrapper and the sandboxed page are cross-origin to this storage; unreadable storage counts as started.
-  let started = true;
+  // The wrapper and the sandboxed page are cross-origin to this storage; storage that cannot be read
+  // leaves no list, and a file that fails then is never reloaded.
+  let reloadedFor = null;
   try {
-    started = sessionStorage.getItem(key) !== null;
+    const stored = sessionStorage.getItem(key);
     sessionStorage.removeItem(key);
+    const files = JSON.parse(stored ?? "[]");
+    if (Array.isArray(files)) reloadedFor = files;
   } catch {
-    // Storage that cannot be read stays "started", so a file that fails here is never reloaded.
+    // Unreadable storage, or a value this script did not write, reloads for nothing.
   }
   let held = () => false;
   let reloading = false;
-  let waiting = false;
-  const reload = () => {
+  /** The file a reload held by a note is waiting to be made for. */
+  let waiting = null;
+  const reload = (file) => {
     try {
-      sessionStorage.setItem(key, "1");
+      sessionStorage.setItem(key, JSON.stringify([...reloadedFor, file]));
     } catch {
       return;
     }
@@ -33,21 +38,24 @@
       held = check;
     },
     release: () => {
-      if (waiting && !reloading && !held()) reload();
+      if (waiting !== null && !reloading && !held()) reload(waiting);
     },
   };
-  const refused = () => {
-    if (started || reloading || waiting) return;
-    if (held()) waiting = true;
-    else reload();
+  const refused = (file) => {
+    if (!reloadedFor || reloadedFor.includes(file) || reloading || waiting !== null) return;
+    if (held()) waiting = file;
+    else reload(file);
   };
   addEventListener(
     "error",
     (event) => {
-      if (event.target instanceof HTMLLinkElement || event.target instanceof HTMLScriptElement)
-        refused();
+      const { target } = event;
+      if (target instanceof HTMLLinkElement) refused(target.href);
+      else if (target instanceof HTMLScriptElement) refused(target.src);
     },
     true,
   );
-  document.fonts.addEventListener("loadingerror", refused);
+  document.fonts.addEventListener("loadingerror", (event) => {
+    for (const face of event.fontfaces) refused(`${face.family} ${face.weight}`);
+  });
 }

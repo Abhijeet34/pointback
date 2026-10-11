@@ -2929,14 +2929,18 @@ function reloadOf(page) {
 }
 
 /**
- * Opens a review in its own daemon with the first load matching `path` refused, or none when `path`
- * is null, and has the reviewer note the heading once it opens; answers what the reviewer saw, how
- * the review paints and answers then, how many times the chrome asked to reload itself, and how many
- * loads were asked and refused.
+ * Opens a review in its own daemon with the first load matching `path` refused, or the numbered asks
+ * a list of `[path, ask]` pairs names, or none when `path` is null, and has the reviewer note the
+ * heading once it opens; answers what the reviewer saw, how the review paints and answers then, how
+ * many times the chrome asked to reload itself, how many of the chrome's loads met a refused file of
+ * its own, and how many loads were asked and refused.
  *
  * A reload is counted where the chrome asks for it, never read off the document's navigation entry:
  * the browser's own reload of the error page a refused top-level load leaves is labelled `reload`
  * there by Chrome on macos-15 (20 of 20 attempts on run 37380416654) and `navigate` elsewhere.
+ * A refused file is counted by the load that asked for it, since the chrome reloads once for every
+ * load that meets one, whether this test refused it or the network did (Windows refuses about 5 in
+ * 100000 of Chrome's new loopback connects; docs/ENGINEERING-NOTES.md).
  */
 async function openWithOneRefused(
   path,
@@ -2946,9 +2950,23 @@ async function openWithOneRefused(
   const own = isolatedEnv();
   const page = await browser.page("about:blank");
   let reloads = 0;
+  let loads = 0;
+  const loaderOf = new Map();
+  const refusedIn = new Set();
   const asksToReload = ({ method, params, sessionId }) => {
-    if (sessionId !== page.sessionId || method !== "Page.frameRequestedNavigation") return;
-    if (params.frameId === page.targetId && params.reason === "reload") reloads += 1;
+    if (sessionId !== page.sessionId) return;
+    if (method === "Page.frameRequestedNavigation") {
+      if (params.frameId === page.targetId && params.reason === "reload") reloads += 1;
+    } else if (method === "Page.frameNavigated") {
+      if (params.frame.id === page.targetId) loads += 1;
+    } else if (method === "Network.requestWillBeSent") {
+      loaderOf.set(params.requestId, { loader: params.loaderId, url: params.request.url });
+    } else if (method === "Network.loadingFailed" && !params.canceled) {
+      // The files recover.js watches: the chrome's own scripts but itself, its sheets and its faces.
+      const { loader, url } = loaderOf.get(params.requestId) ?? {};
+      const watched = ["Script", "Stylesheet", "Font"].includes(params.type);
+      if (watched && url && new URL(url).pathname !== "/recover.js") refusedIn.add(loader);
+    }
   };
   page.browser.listeners.push(asksToReload);
   let refused;
@@ -2956,7 +2974,14 @@ async function openWithOneRefused(
     const { file } = copy();
     const url = (await cli([file], own.env)).json().session.url;
     const { port } = own.serverInfo();
-    if (path) refused = await refuseLoads(page, path.replace("<port>", String(port)));
+    const at = (where) => where.replace("<port>", String(port));
+    const planned = typeof path === "string" ? 1 : (path?.length ?? 0);
+    if (typeof path === "string") refused = await refuseLoads(page, at(path));
+    else if (path)
+      refused = await refuseLoads(
+        page,
+        path.map(([where, ask]) => [at(where), ask]),
+      );
     // Motion as an ubuntu-24.04 runner has it, whatever the host's setting: Send's background eases
     // into the accent as a note is added, so the look is read only once that has ended (`SETTLED`).
     await page.send("Emulation.setEmulatedMedia", {
@@ -2964,14 +2989,19 @@ async function openWithOneRefused(
     });
     await page.navigate(url);
     // A face the chrome first sets once the review is shown fails after it is ready, so the review
-    // is driven only once the chrome has reloaded for it.
-    if (navigation === "reload") await reloadOf(page);
+    // is driven only once the chrome has reloaded for each refusal planned here, on the load that
+    // ends with, which no reload can replace under it.
+    if (navigation === "reload")
+      await page.explained(
+        until(() => loads >= 1 + planned, { what: `the chrome's load after ${planned} reloads` }),
+      );
     const { artifact } = await reviewIn(page);
     const seen = JSON.parse(await page.eval(OPENED_SEEN));
     await noteOn(page, artifact, heading, "Name the queue in the title");
     // Counted before the look is read: DevTools fetches the chrome's sheets again for the CSS domain.
     const counts = { ...(refused?.counts ?? { asked: 0, refused: 0 }) };
-    return { seen, look: await lookOf(page, artifact), reloads, ...counts };
+    const refusedLoads = refusedIn.size;
+    return { seen, look: await lookOf(page, artifact), reloads, refusedLoads, ...counts };
   } finally {
     page.browser.listeners.splice(page.browser.listeners.indexOf(asksToReload), 1);
     await refused?.stop();
@@ -2996,12 +3026,13 @@ test(
       [undefined, "plan.html"],
       [MARKDOWN, "README.md"],
     ]) {
-      const { seen, reloads, asked, refused } = await healthyReview(fixture);
+      const { seen, reloads, refusedLoads, asked, refused } = await healthyReview(fixture);
       assert.deepEqual(
         { seen, reloads, asked, refused },
         {
           seen: { cover: null, status: HELP_LINE, file },
-          reloads: 0,
+          // None, unless the network refused one of the chrome's own files itself.
+          reloads: refusedLoads,
           asked: 0,
           refused: 0,
         },
@@ -3035,14 +3066,22 @@ for (const [what, path, navigation, fixture] of [
     `a refused first load of ${what} is asked for again, and the reviewer gets a working review, never a dead end`,
     { skip: !executable && "no browser found" },
     async () => {
-      const { asked, ...rest } = await openWithOneRefused(path, fixture, navigation);
+      const { asked, refusedLoads, ...rest } = await openWithOneRefused(path, fixture, navigation);
       const { seen, look } = await healthyReview(fixture);
-      assert.deepEqual(rest, { seen, look, reloads: navigation === "reload" ? 1 : 0, refused: 1 });
+      // One reload for the refusal here when it is the chrome's own file, and one more for each load
+      // in which the network refused one itself, which the chrome recovers the same way.
+      const own = navigation === "reload" ? 1 : 0;
+      assert.ok(refusedLoads >= own, `${refusedLoads} of the chrome's loads met a refused file`);
+      assert.deepEqual(rest, { seen, look, reloads: refusedLoads, refused: 1 });
       // A refused face is asked for again on the reloaded chrome: measured as 3 asks (the refused one,
       // then two on the reloaded chrome) in 1200 of 1200 windows-2025 samples for Plex Mono. Not pinned
       // at 3, since how often Chrome requests a face can change with its version, not with this code.
       if (what.endsWith("face")) assert.ok(asked >= 2, "the refused face asked for again");
-      else assert.equal(asked, 2, "one ask more than the one refused");
+      else
+        assert.ok(
+          asked >= 2 && asked <= 2 + refusedLoads - own,
+          `asked ${asked}: one ask more than the one refused, and at most one per later reload`,
+        );
     },
   );
 }
@@ -3052,13 +3091,33 @@ test(
   { skip: !executable && "no browser found" },
   async () => {
     const { seen, look } = await healthyReview();
-    assert.deepEqual(await openWithOneRefused("http://127.0.0.1:<port>/recover.js*"), {
-      seen,
-      look,
-      reloads: 0,
-      asked: 1,
-      refused: 1,
-    });
+    const { refusedLoads, ...rest } = await openWithOneRefused(
+      "http://127.0.0.1:<port>/recover.js*",
+    );
+    assert.deepEqual(rest, { seen, look, reloads: refusedLoads, asked: 1, refused: 1 });
+  },
+);
+
+test(
+  "a different file of the chrome's own refused on the load its recovery made reloads it again, and the reviewer gets a working review",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { seen, look } = await healthyReview();
+    // The house's roles on the first load, then its components on the load the reload for them made:
+    // on windows-2025 (hunt 38168177233, attempt 20) the second left Send in the browser's own style.
+    const { refusedLoads, asked, ...rest } = await openWithOneRefused(
+      [
+        ["http://127.0.0.1:<port>/house/roles.css*", 1],
+        ["http://127.0.0.1:<port>/house/components.css*", 2],
+      ],
+      undefined,
+      "reload",
+    );
+    // Two, or one more for each load in which the network refused a file of the chrome's itself.
+    assert.ok(refusedLoads >= 2, `${refusedLoads} of the chrome's loads met a refused file`);
+    assert.deepEqual(rest, { seen, look, reloads: refusedLoads, refused: 2 });
+    // The roles on each of the three loads, the components on the last two at least.
+    assert.ok(asked >= 5, `asked ${asked}: each refused file asked for again on a later load`);
   },
 );
 
@@ -3736,16 +3795,25 @@ test(
 
 /**
  * Refuses the first `times` loads whose address matches `pattern` as Windows refuses a loopback
- * connect (docs/ENGINEERING-NOTES.md), and lets the rest through. It intercepts at the browser, so a
- * frame's load is caught however early its target attaches; `pattern` names a port only the calling
- * test's daemon holds, so no other tab is touched.
+ * connect (docs/ENGINEERING-NOTES.md), and lets the rest through; a list of `[pattern, ask]` pairs
+ * refuses only that numbered ask of each, such as the one a reload made. It intercepts at the
+ * browser, so a frame's load is caught however early its target attaches; `pattern` names a port
+ * only the calling test's daemon holds, so no other tab is touched.
  */
 async function refuseLoads(page, pattern, times = 1) {
+  const rules = (typeof pattern === "string" ? [[pattern]] : pattern).map(([glob, ask]) => ({
+    glob,
+    matches: new RegExp(`^${glob.split("*").map(RegExp.escape).join(".*")}$`),
+    refuses: (n) => (ask === undefined ? n <= times : n === ask),
+    asked: 0,
+  }));
   const counts = { asked: 0, refused: 0 };
   const listener = ({ method, params, sessionId }) => {
     if (method !== "Fetch.requestPaused" || sessionId) return;
+    const rule = rules.find(({ matches }) => matches.test(params.request.url));
     counts.asked += 1;
-    const refuse = counts.refused < times;
+    rule.asked += 1;
+    const refuse = rule.refuses(rule.asked);
     if (refuse) counts.refused += 1;
     page.browser
       .send(
@@ -3757,7 +3825,9 @@ async function refuseLoads(page, pattern, times = 1) {
       .catch(() => {});
   };
   page.browser.listeners.push(listener);
-  await page.browser.send("Fetch.enable", { patterns: [{ urlPattern: pattern }] });
+  await page.browser.send("Fetch.enable", {
+    patterns: rules.map(({ glob }) => ({ urlPattern: glob })),
+  });
   return {
     counts,
     async stop() {
