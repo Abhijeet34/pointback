@@ -321,12 +321,14 @@ test(
       "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 2",
     );
 
-    // Keyboard only from here. Adding a note hands focus back to the element in the artifact, so
-    // Shift+Arrow grows a real selection there and Enter opens the chrome card to type the note.
-    // The note was made with the mouse, so focus comes back without its box: one drawn now would
-    // read as a selection the reviewer never made.
-    await artifact.waitFor("document.activeElement && document.activeElement.id === 'p1'");
+    // Keyboard only from here. A note made by mouse gives the page its focus back with nothing in it
+    // focused and no box, which would read as a selection the reviewer never made. The keyboard
+    // moves on from the passage as from any click in it, so Shift+Tab comes back onto its block;
+    // there Shift+Arrow grows a real selection and Enter opens the chrome card to type the note.
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
     assert.equal(await highlights(artifact), 0, "no focus box after a note made by mouse");
+    await page.key("Tab", { keyCode: 9, modifiers: 8 });
+    await artifact.waitFor("document.activeElement.id === 'p1'");
     await page.key("Escape", { keyCode: 27 });
     for (let word = 0; word < 5; word += 1) await page.shiftArrow("right");
     assert.equal(
@@ -2721,7 +2723,7 @@ test(
       await pointAt(page, artifact, "#title");
       await page.key("Escape", { keyCode: 27 });
       await page.waitFor("document.getElementById('card').hidden");
-      await artifact.waitFor("document.activeElement?.id === 'title'");
+      await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
     }
     await noteOn(page, artifact, "#title", "Make the title shorter");
     assert.equal(
@@ -6515,10 +6517,11 @@ test(
 
     const session = (await cli([plan], lab.env)).json().session;
     const { page, artifact } = await openReview(session.url);
-    // Into the page the way a reviewer starts: point at the title, then Escape back onto it.
+    // Into the page the way a reviewer starts: point at the title, then Escape. The page has the
+    // focus back with nothing in it focused, and Tab moves on from the title.
     await pointAt(page, artifact, "#title");
     await page.key("Escape", { keyCode: 27 });
-    await artifact.waitFor("document.activeElement.id === 'title'");
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
     const focused = `(() => {
       const e = document.activeElement;
       return e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + " " + e.textContent.trim().replace(/\\s+/g, " ").slice(0, 12).trim();
@@ -6603,11 +6606,11 @@ test(
       [["Rank the risks", "h2"]],
     );
 
-    // And from the page, after Enter has added a note and handed focus back to its block.
+    // And from the page, after Enter has added a note and handed the page its focus back.
     await pointAt(page, artifact, "#rollback h2");
     await page.type("Say who can roll back");
     await page.enter();
-    await artifact.waitFor("document.activeElement.textContent === 'Rollback'");
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
     await ctrlEnter();
     await page.waitFor(`${sent} === ${sentBefore + 2}`);
     polled = (await cli(["poll", plan, "--timeout-ms", "0"], lab.env)).json();

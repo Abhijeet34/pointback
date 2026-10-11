@@ -2,6 +2,7 @@
 // browser, which is Safari on an unconfigured Mac, while test/browser.test.js drives Chromium
 // only. Open a file, point at an element, write a note, send, and a poll returns it. Then the gate
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
+// Keys pressed after a note made by mouse edit nothing in the page.
 // And an add after the tab sat idle past Node's default keep-alive close is kept.
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
@@ -40,6 +41,7 @@ async function smoke(engine) {
     await act(browser, (page) => endKeepsTheCard(page, lab));
     await act(browser, (page) => readingPlace(page, lab, engine));
     await act(browser, (page) => pressOverThePage(page, lab));
+    await act(browser, (page) => keysAfterAMouseNote(page, lab, engine));
     const control = await act(browser, (page) => keysReachThePage(page, lab, engine));
     const probes = [];
     const ms = [];
@@ -339,6 +341,41 @@ async function keysReachThePage(page, lab, engine) {
   });
   assert.deepEqual(keys.slice(0, 4), ["keydown o", "keyup o", "keydown k", "keyup k"], engine);
   return keys.length;
+}
+
+/**
+ * Keys pressed once a note made by mouse is added reach no element of the page: the noted field keeps
+ * its value, and the page has the focus back with nothing in it focused. A card Space might open is
+ * not looked for, since the chrome hears nothing from the page for 5 s after the reviewer's Enter.
+ */
+async function keysAfterAMouseNote(page, lab, engine) {
+  await openFocusFixture(page, lab, "mouse-note");
+  const keys = listenForKeys(page);
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#field").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.keyboard.insertText(NOTE);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(
+    () => document.getElementById("card").hidden && document.body.dataset.handoff === "settled",
+  );
+  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
+  await artifact.waitForFunction(() => document.hasFocus());
+  const heard = keys.length;
+  await page.keyboard.press("Space");
+  await page.keyboard.press("x");
+  // The page hears x's keyup only once its keydown has been acted on.
+  await until(() => keys.slice(heard).includes("keyup x"), {
+    what: `${engine}: the page to hear the keys pressed after the note`,
+    timeoutMs: STEP_MS,
+  });
+  assert.deepEqual(
+    await artifact.evaluate(() => ({
+      field: document.getElementById("field").value,
+      focus: document.activeElement.id || document.activeElement.tagName,
+    })),
+    { field: "", focus: "BODY" },
+    `${engine}: keys pressed after a note made by mouse on a field`,
+  );
 }
 
 /**
