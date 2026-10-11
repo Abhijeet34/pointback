@@ -17,12 +17,19 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, afterEach, before, test } from "node:test";
 import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
-import { LAUNCH_BOUND_MS, devToolsUrl, findBrowser, launchBrowser } from "./helpers/cdp.js";
+import {
+  LAUNCH_BOUND_MS,
+  connect,
+  devToolsUrl,
+  findBrowser,
+  launchBrowser,
+} from "./helpers/cdp.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
 import { contrast, decodePng } from "./helpers/png.js";
 import { until } from "./helpers/wait.js";
@@ -115,6 +122,29 @@ test("a launch that runs out of budget says so when its browser wrote no log", a
     assert.match(message, /It had written no log, so it never reached its own startup\./);
   } finally {
     rmSync(profile, { recursive: true, force: true });
+  }
+});
+
+// A browser paging itself in off a cold disk has written its port but not yet answered the socket, so
+// a server that accepts and never answers stands in for it. Ending the attempt closes the socket, which
+// fires "error" at once, and that used to report every slow connect as a bare "cannot connect".
+test("a DevTools connection that never opens fails on the launch's deadline and says it timed out", async () => {
+  const held = [];
+  const server = createTcpServer((socket) => held.push(socket));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `ws://127.0.0.1:${server.address().port}/devtools/browser/silent`;
+  try {
+    const message = await connect(url, Date.now() + 300).then(
+      () => assert.fail("a socket nobody answered opened"),
+      (error) => error.message,
+    );
+    assert.match(
+      message,
+      /^the browser opened no DevTools connection on ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/silent in the \d+ ms left of its launch$/,
+    );
+  } finally {
+    for (const socket of held) socket.destroy();
+    server.close();
   }
 });
 

@@ -6,7 +6,7 @@
 // killed the browser, and the live child process kept Node's event loop open until the job
 // hit its own 20-minute limit and was reported `cancelled`. A test may fail; it may not hang.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { open, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -15,8 +15,8 @@ import { env } from "../../src/identity.js";
 import { until } from "./wait.js";
 
 /**
- * One deadline for the whole launch, reading the browser's files included, and one attempt: a slow
- * first launch on windows-2025 was still coming up, never wedged. Unread, Chrome's files made one
+ * One deadline for the whole launch, reading the browser's files and opening its DevTools connection
+ * included, and one attempt: a slow first launch on windows-2025 was still coming up, never wedged. Unread, Chrome's files made one
  * take 100 s (run 37341154101), and reading them took up to 82.5 s (run 37342047661). Detection is
  * a poll, so a healthy launch pays none of this and only a broken one pays all of it.
  */
@@ -25,7 +25,6 @@ const LAUNCH_MS = 150_000;
 const STARTUP_POLL_MS = 100;
 /** Enough of the browser's own output to name a failure by, without holding a session of it. */
 const STDERR_KEPT = 4000;
-const CONNECT_MS = 10_000;
 /** No DevTools command in this suite is slow; a reply that never comes is a dead browser. */
 const COMMAND_MS = 30_000;
 const TERMINATE_MS = 3000;
@@ -52,8 +51,7 @@ const LOG_LINES_KEPT = 10;
  * The longest `launchBrowser` can take, its failure path included. A caller's own timeout must be
  * longer, or it abandons the launch midway and the browser it spawned outlives the suite.
  */
-export const LAUNCH_BOUND_MS =
-  LAUNCH_MS + CONNECT_MS + COMMAND_MS + TERMINATE_MS + PROFILE_REMOVE_MS;
+export const LAUNCH_BOUND_MS = LAUNCH_MS + COMMAND_MS + TERMINATE_MS + PROFILE_REMOVE_MS;
 
 /**
  * Every path this repository knows a browser by, most specific first, and the one list of
@@ -158,15 +156,29 @@ export async function devToolsUrl(child, executable, profile, deadline = Date.no
 }
 
 /**
- * Reads every file the browser is installed with, once and in order, before it is started. A fresh
- * windows-2025 runner serves Chrome's own page faults off a cold disk: on run 37342047661 the first
- * launch took 3.9 to 64 s on 15 runners without this read and 0.53 to 0.91 s on 15 with it.
+ * The folder a browser this repository knows by path is installed in, or null where there is none to
+ * read: a `BROWSER` that is a bare name or sits in a large folder would have that whole folder read and
+ * the deadline blame the disk for it. Linux names Chrome by a link in /usr/bin into /opt/google/chrome,
+ * while a distribution's chromium is a script in /usr/bin itself, a folder that is the system's.
  */
-async function readInstall(executable, deadline) {
+function installFolder(executable) {
+  if (!KNOWN_BROWSERS.includes(executable)) return null;
+  if (process.platform === "win32") return dirname(executable);
+  if (process.platform !== "linux") return null;
+  const folder = dirname(realpathSync(executable));
+  return folder === dirname(executable) ? null : folder;
+}
+
+/**
+ * Reads every file the browser is installed with, once and in order, before it is started. A fresh
+ * runner serves Chrome's own page faults off a cold disk: on run 37342047661 (windows-2025) the first
+ * launch took 3.9 to 64 s on 15 runners without this read and 0.53 to 0.91 s on 15 with it, and on
+ * ubuntu-24.04 Chrome waited on the disk with its DevTools port already written (docs/ENGINEERING-NOTES.md).
+ */
+async function readInstall(executable, directory, deadline) {
   const started = Date.now();
   const buffer = Buffer.allocUnsafe(4 << 20);
   let bytes = 0;
-  const directory = dirname(executable);
   for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const file = await open(join(entry.parentPath, entry.name));
@@ -209,11 +221,8 @@ function removeProfile(profile) {
 
 export async function launchBrowser(executable, { width = 1200, height = 800 } = {}) {
   const deadline = Date.now() + LAUNCH_MS;
-  // Windows, and only a browser this repository knows by path: a BROWSER that is a bare name or
-  // sits in a large folder would otherwise read that whole folder, and the deadline would blame
-  // the disk for it.
-  if (process.platform === "win32" && KNOWN_BROWSERS.includes(executable))
-    await readInstall(executable, deadline);
+  const folder = installFolder(executable);
+  if (folder) await readInstall(executable, folder, deadline);
   const profile = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-browser-"));
   const child = spawn(
     executable,
@@ -268,7 +277,7 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
   };
   let browser;
   try {
-    browser = await connect(await devToolsUrl(child, executable, profile, deadline));
+    browser = await connect(await devToolsUrl(child, executable, profile, deadline), deadline);
     // Every renderer that crashes, with the address it held, for `describe` to name.
     const urls = new Map();
     browser.crashes = [];
@@ -315,18 +324,26 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
   };
 }
 
-function connect(url) {
+/**
+ * The DevTools connection, on what is left of the launch's deadline: a browser that has written its
+ * port can still be paging itself in off a cold disk before it answers.
+ */
+export function connect(url, deadline) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url);
     const pending = new Map();
     const listeners = [];
     let nextId = 1;
+    const left = Math.max(0, deadline - Date.now());
     const timer = setTimeout(() => {
-      socket.close();
+      // Rejected before the close, which fires "error" at once and would report this as a refusal.
       reject(
-        new Error(`the browser opened no DevTools connection on ${url} within ${CONNECT_MS} ms`),
+        new Error(
+          `the browser opened no DevTools connection on ${url} in the ${left} ms left of its launch`,
+        ),
       );
-    }, CONNECT_MS);
+      socket.close();
+    }, left);
     socket.addEventListener("open", () => {
       clearTimeout(timer);
       resolve({
