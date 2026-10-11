@@ -1694,19 +1694,16 @@ test(
   "keys pressed after a note made by mouse reach no element of the page: a field keeps its value, Space opens no card, and H moves on from the note",
   { skip: !executable && "no browser found" },
   async () => {
-    const { session } = await focusCallsReview();
-    const { page, artifact } = await openReview(session.url);
-    // Space with nothing focused falls through to the browser's own page-down scroll, which lands
-    // on its own schedule, well after the key: the next selector's click would otherwise land on
-    // whatever scrolled under its stale coordinates.
-    await artifact.eval(
-      'window.__lastScrollAt = 0; window.addEventListener("scroll", () => (window.__lastScrollAt = Date.now()))',
-    );
     const shown = `JSON.stringify({
       field: document.getElementById("field").value,
       focus: document.activeElement.id || document.activeElement.tagName,
     })`;
+    // Space with nothing focused falls through to the browser's own page-down scroll, which lands
+    // on its own schedule, well after the key. Each selector gets its own review rather than reusing
+    // one tab, so a mouse note is never made on a page a previous round's Space is still scrolling.
     for (const selector of ["#field", "#p1"]) {
+      const { session } = await focusCallsReview();
+      const { page, artifact } = await openReview(session.url);
       await noteOn(page, artifact, selector, "Say what belongs here");
       // The card gave the page its focus back, so the keys below go wherever the page holds it.
       await page.waitFor("document.activeElement === document.getElementById('artifact')");
@@ -1731,20 +1728,13 @@ test(
       assert.equal(await page.eval("document.getElementById('card').hidden"), true, "no card");
       await press(page, "a");
       await page.waitFor("document.body.dataset.annotate === '1'");
-      const markedAt = Date.now();
-      await until(
-        async () => {
-          const lastScrollAt = Number(await artifact.eval("window.__lastScrollAt"));
-          const now = Date.now();
-          return now - markedAt > 400 && (lastScrollAt === 0 || now - lastScrollAt > 200);
-        },
-        { what: "the page's own scroll from Space to settle", timeoutMs: 3000 },
-      );
+      if (selector === "#p1") {
+        // H moves on from the last note, as Tab does from a click: Shift+H goes to the heading before it.
+        await page.key("H", { code: "KeyH", keyCode: 72, text: "H", modifiers: 8 });
+        await artifact.waitFor("document.activeElement.id === 't'");
+      }
+      await page.close();
     }
-    // H moves on from the last note, as Tab does from a click: Shift+H goes to the heading before it.
-    await page.key("H", { code: "KeyH", keyCode: 72, text: "H", modifiers: 8 });
-    await artifact.waitFor("document.activeElement.id === 't'");
-    await page.close();
   },
 );
 
