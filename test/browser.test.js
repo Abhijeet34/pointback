@@ -1689,6 +1689,49 @@ test(
 );
 
 test(
+  "keys pressed after a note made by mouse reach no element of the page: a field keeps its value, Space opens no card, and H moves on from the note",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    const shown = `JSON.stringify({
+      field: document.getElementById("field").value,
+      focus: document.activeElement.id || document.activeElement.tagName,
+    })`;
+    for (const selector of ["#field", "#p1"]) {
+      await noteOn(page, artifact, selector, "Say what belongs here");
+      // The card gave the page its focus back, so the keys below go wherever the page holds it.
+      await page.waitFor("document.activeElement === document.getElementById('artifact')");
+      await artifact.waitFor("document.hasFocus()");
+      const heard = keyReports.length;
+      await page.key(" ", { code: "Space", keyCode: 32, text: " " });
+      await press(page, "x");
+      await until(() => keyReports.slice(heard).includes("keyup x"), {
+        what: "the page to hear the reviewer's keys",
+      });
+      // The page hears x's keyup only once its keydown has been acted on, so the field holds whatever
+      // it took.
+      assert.deepEqual(
+        JSON.parse(await artifact.eval(shown)),
+        { field: "", focus: "BODY" },
+        `after a note on ${selector}`,
+      );
+      // Space on a focused element proposes it in the keydown, and A is posted behind it through the
+      // same frames, so a chrome that has turned Annotate off has handled any proposal.
+      await press(page, "a");
+      await page.waitFor("document.body.dataset.annotate === '0'");
+      assert.equal(await page.eval("document.getElementById('card').hidden"), true, "no card");
+      await press(page, "a");
+      await page.waitFor("document.body.dataset.annotate === '1'");
+    }
+    // H moves on from the last note, as Tab does from a click: Shift+H goes to the heading before it.
+    await page.key("H", { code: "KeyH", keyCode: 72, text: "H", modifiers: 8 });
+    await artifact.waitFor("document.activeElement.id === 't'");
+    await page.close();
+  },
+);
+
+test(
   "a move of the focus from a note to a chrome control, or out of the window, leaves the page alone",
   { skip: !executable && "no browser found" },
   async () => {

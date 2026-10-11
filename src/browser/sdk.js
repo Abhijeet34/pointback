@@ -495,6 +495,9 @@
   // alone reads from the reviewer, nor a label, which the chrome words itself from those fields. `open` blocks a second target until the card closes.
   function selectTarget(hit) {
     open = hit;
+    // A press focuses what it lands on, and a note made by mouse must leave nothing in the page
+    // holding the keys once the card closes: a field would take them, and Space would note again.
+    if (hit.pointed) /** @type {HTMLElement} */ (document.activeElement)?.blur();
     outlineRects(hit.rects);
     send({
       type: "target",
@@ -519,20 +522,27 @@
 
   // Whether the focused element is outlined; not after a note made by mouse, until a key is pressed.
   let focusShown = true;
+  // The target last noted by mouse, which H moves on from while nothing in the page holds the focus,
+  // as Tab moves on from it by the browser's own starting point.
+  let pointedLast = null;
 
   function closeTarget(refocus) {
     if (!open) return;
     const { element, pointed, pressed } = open;
     open = null;
     outlineRects([]);
-    // Focus goes back however the target was reached, so the next Tab starts from the note; only a
-    // target reached by keyboard is outlined there, since after a click the box reads as a
-    // selection never made.
+    // Only a target reached by keyboard is outlined once its note is done, since after a click the
+    // box reads as a selection never made.
     focusShown = !pointed;
+    if (pointed) pointedLast = element;
     // Not once the reviewer has pressed in the page: this close can land mid-drag, and moving focus
     // then ends the drag, so the passage is recorded cut short or as its whole element.
-    if (refocus && annotate && !pressed && element.isConnected)
-      element.focus({ preventScroll: true });
+    if (!refocus || !annotate || pressed) return;
+    // Focus goes back to a target reached by keyboard, so the next Tab starts from the note. One
+    // reached by mouse was let go when it was noted (`selectTarget`), so the page takes the keys
+    // back with nothing in it focused.
+    if (pointed) window.focus();
+    else if (element.isConnected) element.focus({ preventScroll: true });
   }
 
   function describe(element) {
@@ -1035,7 +1045,13 @@
 
   /** Moves focus to the next heading after the focused element, or the one before it. */
   function jumpHeading(direction) {
-    const from = document.activeElement ?? document.body;
+    const active = document.activeElement;
+    const from =
+      active && active !== document.body
+        ? active
+        : pointedLast?.isConnected
+          ? pointedLast
+          : document.body;
     const headings = focusable.filter((e) => /^H[1-6]$/.test(tagName(e)) && e.checkVisibility());
     const ahead = (h) =>
       !h.contains(from) &&
