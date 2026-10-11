@@ -5,7 +5,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { daemonHolds, pidAlive } from "./daemon-lock.js";
+import { STARTING_MS, daemonHolds, pidAlive, probeTimeout } from "./daemon-lock.js";
 import { tokenProof } from "./http-guard.js";
 import { env, name, version } from "./identity.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
@@ -25,28 +25,32 @@ export function readServerInfo(stateDir) {
  */
 export async function health(info) {
   const challenge = randomBytes(16).toString("hex");
+  const probe = probeTimeout(1500);
   try {
     const res = await fetch(`http://127.0.0.1:${info.port}/health?challenge=${challenge}`, {
-      signal: AbortSignal.timeout(1500),
+      signal: probe.signal,
     });
     if (!res.ok) return null;
     const status = /** @type {any} */ (await res.json());
     return { ...status, proven: status.proof === tokenProof(info.token, challenge) };
   } catch {
     return null;
+  } finally {
+    probe.done();
   }
 }
 
-export async function api(info, method, path, body, retried = false) {
+export async function api(info, method, path, body, retried = false, signal) {
   const res = await fetch(`http://127.0.0.1:${info.port}${path}`, {
     method,
+    signal,
     headers: { authorization: `Bearer ${info.token}`, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = /** @type {any} */ (await res.json());
   // A refused write left the daemon holding the copy another process wrote, so the same call made once
   // more lands on it. The second refusal is the answer.
-  if (res.status === 409 && !retried) return api(info, method, path, body, true);
+  if (res.status === 409 && !retried) return api(info, method, path, body, true, signal);
   // The body rides on the error, because a refusal such as a gone file is an answer to print.
   if (!res.ok)
     throw Object.assign(new Error(json.error ?? `${method} ${path} failed with ${res.status}`), {
@@ -96,21 +100,36 @@ export async function ensureServer(stateDir, environment = process.env) {
     return started;
   };
   let child = start();
-  // Bounded by attempts as well as by the clock. Every turn of this loop can cost a probe's
-  // own `AbortSignal.timeout`, so a budget written only in milliseconds is really a budget in
-  // however many looks the machine can afford - and a busy windows-2025 runner affords few.
+  // Bounded by attempts as well as by the clock. Every turn of this loop can cost a health probe its
+  // running-time budget of 1.5 s and a look at the lock's holder its CONNECT_MS, or under sustained
+  // starvation up to PROBE_CEILING_MS of wall time each, so a budget written only in milliseconds is
+  // really a budget in however many looks the machine can afford - and a busy windows-2025 runner
+  // affords few. This loop has no whole-operation wall bound under starvation yet.
   // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
   // directory; the rest exit 0. A start that stepped aside for a daemon that has since let go,
-  // one caught on its way out, is replaced; only a failed exit means "not coming".
+  // one caught on its way out, is replaced.
+  // The clock runs from the latest start in progress: this CLI's own spawn, or a live holder's last
+  // write to the lock, so a holder the lock still calls starting is waited for (measurements in
+  // docs/ENGINEERING-NOTES.md). A failed start means "not coming" only once no live holder is left,
+  // and a write stamped later than now, by a clock set back since, extends nothing.
   const startedAt = Date.now();
+  let since = startedAt;
   let probes = 0;
+  const lapsed = () => probes >= START_PROBES && Date.now() - since >= STARTING_MS;
   for (;;) {
     probes += 1;
     const info = readServerInfo(stateDir);
     if (info && serves(await health(info))) return info;
-    if (child.exitCode !== null && child.exitCode !== 0) break;
-    if (child.exitCode === 0 && !(await daemonHolds(stateDir))) child = start();
-    if (probes >= START_PROBES && Date.now() - startedAt >= START_TIMEOUT_MS) break;
+    if (child.exitCode !== null || lapsed()) {
+      const held = await daemonHolds(stateDir);
+      if (held) {
+        if (held.wroteAt <= Date.now()) since = Math.max(since, held.wroteAt);
+      } else if (child.exitCode === 0) {
+        child = start();
+        since = Date.now();
+      } else if (child.exitCode !== null) break;
+    }
+    if (lapsed()) break;
     await sleep(50);
   }
   throw new Error(startFailure(stateDir, child, Date.now() - startedAt, probes));
@@ -126,20 +145,24 @@ export async function ensureServer(stateDir, environment = process.env) {
  * on its port, either of which frees the port, so a start right after comes back on it and the tabs
  * holding it reconnect. One still there after STOP_TIMEOUT_MS did not stop.
  */
-export async function stopServer(stateDir, info, status) {
-  const asked = await api(info, "POST", "/shutdown").then(
+export async function stopServer(stateDir, info, status, backstopMs = STOP_BACKSTOP_MS) {
+  const backstop = Date.now() + backstopMs;
+  const shutdown = probeTimeout(backstopMs, backstopMs);
+  const asked = await api(info, "POST", "/shutdown", undefined, false, shutdown.signal).then(
     () => true,
     () => false,
   );
+  shutdown.done();
   if (!status.proven) writeJsonAtomic(join(stateDir, "server.json"), { ...info, token: null });
   if (!asked) return false;
   const pid = Number.isInteger(info.pid) ? info.pid : status.pid;
   // The pid goes first: once it is gone, the port may rightly belong to a concurrent start's daemon.
   const gone = async (ms) =>
-    (Number.isInteger(pid) && !pidAlive(pid)) || !(await listening(info.port, ms));
+    (Number.isInteger(pid) && !pidAlive(pid)) ||
+    !(await listening(info.port, ms, backstop - Date.now()));
   const deadline = Date.now() + STOP_TIMEOUT_MS;
   while (!(await gone(deadline - Date.now()))) {
-    if (Date.now() >= deadline) return false;
+    if (Date.now() >= deadline || Date.now() >= backstop) return false;
     await sleep(50);
   }
   return true;
@@ -147,24 +170,31 @@ export async function stopServer(stateDir, info, status) {
 
 /** How long a daemon that answered "stopping" gets to exit before it is said not to have stopped. */
 const STOP_TIMEOUT_MS = 5_000;
+/**
+ * The wall backstop on the whole stop: STOP_TIMEOUT_MS plus the worst stalled probe measured, 11670 ms
+ * (windows-2025 hunt 37349003233, job 111894797244), rounded up to 20 s. A stop is given up at it even
+ * when starvation has spent no running time, so no look outlasts it.
+ */
+const STOP_BACKSTOP_MS = 20_000;
 
 /**
  * Whether anything accepts a connection on the loopback port; only a refusal says nothing does. A probe
- * that gets no answer within `ms` is still listening, so the caller's deadline is never overrun.
+ * that gets no answer within `ms` of running time is still listening. Its wall ceiling is what remains
+ * of stopServer's backstop, so no look outlasts the backstop.
  */
-function listening(port, ms) {
+function listening(port, ms, ceiling) {
   return new Promise((resolve) => {
+    const probe = probeTimeout(Math.max(1, ms), ceiling);
     const socket = connect(port, "127.0.0.1");
-    socket.setTimeout(Math.max(1, ms), () => {
+    const settle = (answer) => {
+      probe.done();
       socket.destroy();
-      resolve(true);
-    });
-    socket.once("connect", () => {
-      socket.destroy();
-      resolve(true);
-    });
+      resolve(answer);
+    };
+    probe.signal.addEventListener("abort", () => settle(true));
+    socket.once("connect", () => settle(true));
     socket.once("error", (/** @type {NodeJS.ErrnoException} */ error) =>
-      resolve(error.code !== "ECONNREFUSED"),
+      settle(error.code !== "ECONNREFUSED"),
     );
   });
 }
@@ -188,21 +218,23 @@ export function recordHolds(record, status) {
 export async function refusingServer(stateDir) {
   const record = readJson(join(stateDir, "server.json"));
   if (!Number.isInteger(record?.port) || !recordHolds(record, null)) return null;
+  const probe = probeTimeout(1500);
   try {
     const challenge = randomBytes(16).toString("hex");
     const res = await fetch(`http://127.0.0.1:${record.port}/health?challenge=${challenge}`, {
-      signal: AbortSignal.timeout(1500),
+      signal: probe.signal,
     });
     const status = /** @type {any} */ (await res.json());
     return status?.app === name && recordHolds(record, status) ? record : null;
   } catch (error) {
     const busy = error.name === "TimeoutError" || error.name === "AbortError";
     return busy ? record : null;
+  } finally {
+    probe.done();
   }
 }
 
-/** How long, and how many looks, a spawned daemon gets to answer before it is called dead. */
-const START_TIMEOUT_MS = 10_000;
+/** How many looks a start gets to answer, as well as STARTING_MS, before it is called dead. */
 const START_PROBES = 20;
 
 /**
@@ -219,7 +251,13 @@ function startFailure(stateDir, child, elapsedMs, probes) {
   } catch {
     said = "(unreadable)";
   }
-  const state = child.exitCode === null ? "it is still running" : `it exited ${child.exitCode}`;
+  // Named as the daemon, because "it exited 0" was read as the CLI's own exit status.
+  const state =
+    child.exitCode === null
+      ? "the daemon it started is still running"
+      : child.exitCode === 0
+        ? "the daemon it started stepped aside for one that never answered"
+        : `the daemon it started exited ${child.exitCode}`;
   return (
     `server did not start: ${state} after ${elapsedMs} ms and ${probes} probes. ` +
     `${log} says: ${said || "(nothing)"}`

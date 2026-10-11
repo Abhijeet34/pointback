@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import {
   copyFileSync,
@@ -19,7 +19,7 @@ import { after, test } from "node:test";
 import { pidAlive } from "../src/daemon-lock.js";
 import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
-import { cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
+import { bin, cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
 import { assertPrivate } from "./helpers/private.js";
 import { until } from "./helpers/wait.js";
 
@@ -473,13 +473,15 @@ test("stop shuts the server down and reports when none runs", async () => {
   assert.deepEqual((await cli(["stop"], lab.env)).json(), { status: "not-running" });
 });
 
-/** The environment of a daemon whose exit, once asked for, is held `hold` ms, or "never". */
-const holdingExit = (own, hold) => ({
-  ...own.env,
+/** `env` with a helper under `test/helpers/` imported into every process, which acts in a daemon. */
+const loading = (env, helper, extra = {}) => ({
+  ...env,
   NODE_OPTIONS:
-    `${process.env.NODE_OPTIONS ?? ""} --import=${new URL("./helpers/slow-exit.js", import.meta.url).href}`.trim(),
-  TEST_EXIT_HOLD_MS: hold,
+    `${process.env.NODE_OPTIONS ?? ""} --import=${new URL(`./helpers/${helper}`, import.meta.url).href}`.trim(),
+  ...extra,
 });
+/** The environment of a daemon whose exit, once asked for, is held `hold` ms, or "never". */
+const holdingExit = (own, hold) => loading(own.env, "slow-exit.js", { TEST_EXIT_HOLD_MS: hold });
 const bindable = (port) =>
   new Promise((resolve) => {
     const probe = createServer();
@@ -565,6 +567,64 @@ test("eight opens at once on a cold state directory all succeed, against one dae
     assert.doesNotThrow(() => process.kill(info.pid, 0), "that daemon is alive");
   } finally {
     await cold.stop();
+  }
+});
+
+// Hunt 37263767133, attempt 9: on windows-2025 three of these opens said "server did not start" after
+// 10.9 s, quoting a server log that ended with the winner listening. Each open timed the start from its
+// own spawn, though the lock gives the winner 10 s from its later claim. Here every daemon claims no
+// sooner than 7 s after its process started and binds no sooner than 10.5 s: after the 10 s the open
+// that spawned it allows, and at most 3.5 s into the claim's 10 s. In the windows-2025 trace a claim
+// came at most 6.7 s after the first spawn, inside that open's 10 s, and claim to listening took at
+// most 7.2 s, so the 6.5 s the claim has left after the bind covers the publish that follows it.
+test("eight cold opens wait for a winning daemon that is slow to come up, while the lock calls it starting", async () => {
+  const slow = isolatedEnv();
+  const env = loading(slow.env, "slow-start.js", {
+    TEST_CLAIM_AT_MS: "7000",
+    TEST_BIND_AT_MS: "10500",
+  });
+  try {
+    const opened = await Promise.all(copies(8).map((file) => cli([file], env)));
+    assert.deepEqual(
+      opened.map((o) => o.code),
+      Array(8).fill(0),
+      opened.map((o) => o.stderr).join(""),
+    );
+    const ports = new Set(opened.map((o) => new URL(o.json().session.url).port));
+    assert.deepEqual([...ports], [String(slow.serverInfo().port)], "every review on one daemon");
+  } finally {
+    await slow.stop();
+  }
+});
+
+// A start that fails before it claims the directory, as one the platform refuses does, ended the open's
+// wait at once even while a concurrent start's daemon was coming up. Now it ends it only once no live
+// start is left: here the concurrent start has claimed the directory and binds 5 s after it started.
+test("an open whose own start fails still gets the daemon a concurrent start brings up", async () => {
+  const racing = isolatedEnv();
+  const concurrent = spawn(process.execPath, [bin, "server"], {
+    env: loading(racing.env, "slow-start.js", {
+      TEST_CLAIM_AT_MS: "0",
+      TEST_BIND_AT_MS: "5000",
+    }),
+    stdio: "ignore",
+  });
+  try {
+    await until(() => existsSync(join(racing.dir, "daemon.1.lock")), {
+      what: "the concurrent start to claim the state directory",
+    });
+    const opened = await cli([copies(1)[0]], loading(racing.env, "failed-start.js"));
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.match(
+      readFileSync(join(racing.dir, "server.log"), "utf8"),
+      /refused before it claimed/,
+      "the open's own start failed",
+    );
+    assert.equal(new URL(opened.json().session.url).port, String(racing.serverInfo().port));
+    assert.equal(racing.serverInfo().pid, concurrent.pid, "on the concurrent start's daemon");
+  } finally {
+    await racing.stop();
+    concurrent.kill();
   }
 });
 
@@ -718,7 +778,10 @@ test("a daemon that cannot start is reported by what it said, not by where it wr
   try {
     const opened = await cli([fixture], { ...blocked.env, POINTBACK_PORT: String(port) });
     assert.equal(opened.code, 1);
-    assert.match(opened.stderr, /server did not start: it exited \d+ after \d+ ms and \d+ probes/);
+    assert.match(
+      opened.stderr,
+      /server did not start: the daemon it started exited \d+ after \d+ ms and \d+ probes/,
+    );
     assert.match(opened.stderr, /EADDRINUSE/, opened.stderr);
   } finally {
     squatter.close();
