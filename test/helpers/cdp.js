@@ -54,14 +54,15 @@ const LOG_LINES_KEPT = 10;
 export const LAUNCH_BOUND_MS = LAUNCH_MS + COMMAND_MS + TERMINATE_MS + PROFILE_REMOVE_MS;
 
 /**
- * Every path this repository knows a browser by, most specific first, and the one list of
+ * Every path this repository knows a browser by, Google Chrome first, and the one list of
  * them: the CI workflows resolve through `findBrowser` rather than naming a path of their
  * own, so a runner image that moves Chrome is a one-line change here and not a red release.
+ * CI drives Google Chrome, so a machine that has it runs the suite in what CI runs.
  */
 export const KNOWN_BROWSERS = [
-  "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
   "/usr/bin/google-chrome",
   "/usr/bin/chromium",
   "/usr/bin/chromium-browser",
@@ -70,10 +71,10 @@ export const KNOWN_BROWSERS = [
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
 ];
 
-export function findBrowser(environment = process.env) {
+export function findBrowser(environment = process.env, installed = existsSync) {
   const configured = env("BROWSER", environment);
   if (configured) return configured === "none" ? null : configured;
-  return KNOWN_BROWSERS.find((path) => existsSync(path)) ?? null;
+  return KNOWN_BROWSERS.find((path) => installed(path)) ?? null;
 }
 
 /** SIGTERM, then SIGKILL, then done: nothing this module spawns outlives the call that spawned it. */
@@ -294,6 +295,7 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
         browser.crashes.push(`${urls.get(params.targetId) ?? params.targetId} (${params.status})`);
     });
     await browser.send("Target.setDiscoverTargets", { discover: true });
+    ({ product: browser.product } = await browser.send("Browser.getVersion"));
   } catch (error) {
     // The one line the incident turned on: a browser nobody kills keeps the suite alive
     // long after it has a verdict, and the verdict never gets printed.
@@ -302,6 +304,8 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
   }
   return {
     pid: child.pid,
+    /** The build the browser reports, `Chrome/155.0.8059.40` for Brave 1.97.56: the path names no build. */
+    product: browser.product,
     /** A tab at the launch size, or at `viewport` for a case about one width. */
     async page(url, viewport = { width, height }) {
       const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });

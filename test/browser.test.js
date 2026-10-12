@@ -82,6 +82,17 @@ test("the browser suite has a browser to run against", () => {
   );
 });
 
+// CI drives Google Chrome on every runner, so a developer machine with Chrome beside Brave runs the
+// suite in the browser CI does, and its transcripts compare with CI's.
+test("where Chrome is installed beside Brave, the suite drives Chrome, as CI does", () => {
+  const brave = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser";
+  const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  assert.equal(
+    findBrowser({}, (path) => path === brave || path === chrome),
+    chrome,
+  );
+});
+
 // Windows locks DevToolsActivePort while Chromium holds it, and the read then throws EBUSY
 // instead of returning a partial line. That threw straight out of the launcher's poll and
 // failed every browser test in 5 of 20 consecutive runs on windows-2025 (run 33864656156).
@@ -172,6 +183,7 @@ before(
   async () => {
     if (!executable) return;
     browser = await launchBrowser(executable, { width: 800, height: 600 });
+    console.log(`browser suite: ${executable} is ${browser.product}`);
     opened = (await cli([fixture], lab.env, { timeoutMs: OPEN_MS })).json();
   },
   { timeout: LAUNCH_BOUND_MS + OPEN_MS + MARGIN_MS },

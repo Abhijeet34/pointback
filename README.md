@@ -306,7 +306,8 @@ Coverage thresholds are enforced in `package.json`, not reported and forgotten.
 One case runs at 390x844, a phone held upright, where the bar takes two lines: it fails if anything in the chrome scrolls sideways or if Annotate, End review, the note card, the note or Send is off screen or covered where a press would land.
 The artifact runs in a sandboxed, opaque-origin iframe, which Chromium puts in a process of its own and leaves out of the page's frame tree, so the test reads its DOM through an auto-attached session and drives it with page-level input.
 A dispatched press, path and release does make a real DOM selection: the test asserts that with annotate off, before any passage assertion leans on it.
-It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROWSER=/path/to/binary`; `POINTBACK_BROWSER=none` skips it loudly.
+It finds Chrome, Chromium or Brave in the usual places, in that order since CI drives Chrome, or takes `POINTBACK_BROWSER=/path/to/binary`; `POINTBACK_BROWSER=none` skips it loudly.
+It prints the build the browser reports, which Brave 1.97.56 gives as `Chrome/155.0.8059.40`, so a local transcript says whether it ran what CI runs.
 
 The CLI opens the reviewer's default browser, which is Safari on an unconfigured Mac, so Chromium alone is not the whole audience.
 `npm run smoke -- webkit firefox` runs the core act in both engines: open the fixture through the CLI, point at the title, write a note, send it, and poll it back.
