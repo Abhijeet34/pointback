@@ -493,12 +493,12 @@ test(
       { dot: 0, loops: 0 },
     );
     await page.send("Emulation.setEmulatedMedia", { features: [] });
-    // The house roles arrived: the accent is the pinned brand's pencil, and dark is pinned.
+    // The house roles arrived: the accent is the pinned brand's pencil, and both schemes are offered.
     assert.equal(
       await page.eval("getComputedStyle(document.querySelector('.presence-dot')).backgroundColor"),
       "oklch(0.78 0.12 230)",
     );
-    assert.equal(await page.eval("getComputedStyle(document.body).colorScheme"), "dark");
+    assert.equal(await page.eval("getComputedStyle(document.body).colorScheme"), "light dark");
     // The house is vendored in order and actually parses: a commented-out link or a dead
     // rule would still pass a source grep, so read the CSSOM the browser built instead.
     assert.deepEqual(
@@ -7063,6 +7063,12 @@ function copyOfPlan() {
   return file;
 }
 
+/** The tab as it paints now, decoded. */
+async function screenshotOf(page) {
+  const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+  return decodePng(Buffer.from(data, "base64"));
+}
+
 /** The strongest contrast any pixel inside `rect` makes with `ground`: its text, where it has some. */
 function inkOf(shot, rect, ground) {
   let best = 1;
@@ -7123,15 +7129,18 @@ test(
         features: [{ name: "prefers-color-scheme", value: scheme }],
       });
       const prefers = `matchMedia("(prefers-color-scheme: ${scheme})").matches`;
-      await page.waitFor(prefers);
-      await artifact.waitFor(prefers);
-      await page.eval(SETTLED);
-      await artifact.eval(SETTLED);
-      const { data } = await page.send("Page.captureScreenshot", { format: "png" });
-      const shot = decodePng(Buffer.from(data, "base64"));
-      const bar = shot.pixel(gap.x, gap.y);
-      const ground = shot.pixel(Math.round(frame.left + 24), Math.round(frame.top + 24));
       const paper = scheme === "light" ? WHITE : BLACK;
+      const round = (n) => Number(n.toFixed(2));
+      // The chrome first: its bar sits within a shade of the scheme's own paper.
+      await page.waitFor(prefers);
+      await page.eval(SETTLED);
+      const bar = (await screenshotOf(page)).pixel(gap.x, gap.y);
+      assert.ok(contrast(bar, paper) < 1.25, `${scheme}: the chrome's bar is ${scheme}, ${bar}`);
+      // Then the page under review, once it has heard the preference too.
+      await artifact.waitFor(prefers);
+      await artifact.eval(SETTLED);
+      const shot = await screenshotOf(page);
+      const ground = shot.pixel(Math.round(frame.left + 24), Math.round(frame.top + 24));
       // The pin's edge is the strongest step at its boundary, the halo or the ring just inside it,
       // and its fill is read in the square corner, clear of the number.
       const pinsSeen = pins.map((pin) => {
@@ -7154,20 +7163,14 @@ test(
         ),
       );
       const seen = {
-        bar: contrast(bar, paper),
         ground: contrast(ground, paper),
         name: inkOf(shot, name, bar),
         prose: inkOf(shot, paragraph, ground),
-        pins: pinsSeen,
-        ring: ringEdge,
       };
-      const round = (n) => Number(n.toFixed(2));
       console.log(
-        `${scheme}: bar ${round(seen.bar)}:1 from ${scheme === "light" ? "white" : "black"}, ground ${round(seen.ground)}:1, file name ${round(seen.name)}:1, prose ${round(seen.prose)}:1, ` +
+        `${scheme}: bar ${round(contrast(bar, paper))}:1 and ground ${round(seen.ground)}:1 from ${scheme === "light" ? "white" : "black"}, file name ${round(seen.name)}:1, prose ${round(seen.prose)}:1, ` +
           `pins ${pinsSeen.map((p) => `edge ${round(p.edge)}:1 label ${round(p.label)}:1`).join("; ")}, highlight ${round(ringEdge)}:1`,
       );
-      // The chrome's bar and the page's ground sit within a shade of the scheme's own paper.
-      assert.ok(seen.bar < 1.25, `${scheme}: the chrome's bar is ${scheme}, ${bar}`);
       assert.ok(
         seen.ground < 1.25,
         `${scheme}: the Markdown page's ground is ${scheme}, ${ground}`,
