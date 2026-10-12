@@ -2584,6 +2584,66 @@ test(
 );
 
 test(
+  "a note card near the foot of the page stays inside the frame when its reason line shows, and the page keeps its width",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    // The width the defect was seen at, where the notes are a rail beside the page and nothing
+    // under the frame can take the card's overflow.
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+      width: 1440,
+      height: 900,
+    });
+    const FITS = `JSON.stringify((() => {
+      const root = document.scrollingElement;
+      const card = document.getElementById('card').getBoundingClientRect();
+      const mount = document.querySelector('.mount').getBoundingClientRect();
+      return {
+        page: document.getElementById('artifact').clientWidth,
+        chromeScrolls: root.scrollHeight > root.clientHeight || root.scrollWidth > root.clientWidth,
+        cardInFrame: card.top >= mount.top && card.bottom <= mount.bottom,
+      };
+    })())`;
+    const { page: width } = JSON.parse(await page.eval(FITS));
+    // #tail fills the foot of the frame, so the card is clamped to the frame's bottom edge.
+    await pointAt(page, artifact, "#tail");
+    await page.type("Say who owns the rollback");
+    assert.deepEqual(JSON.parse(await page.eval(FITS)), {
+      page: width,
+      chromeScrolls: false,
+      cardInFrame: true,
+    });
+    renameSync(file, `${file}.away`);
+    assert.equal((await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status, "gone");
+    await page.waitFor(noticeSays("The file was moved or deleted, so this review cannot go on."));
+    // The reason line is drawn in the notice's turn; two frames later the card has been laid out
+    // with it and anything that answers its new size has run.
+    await page.eval(
+      "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))",
+    );
+    const reach = JSON.parse(
+      await page.eval(reachability(["#cardText", "#cardCancel", "#cardAdd"])),
+    );
+    assert.deepEqual(
+      {
+        ...JSON.parse(await page.eval(FITS)),
+        reason: JSON.parse(await page.eval(CARD_SEEN)).reason,
+        offScreen: reach.controls.filter((c) => !c.reachable).map((c) => c.selector),
+      },
+      {
+        page: width,
+        chromeScrolls: false,
+        cardInFrame: true,
+        reason:
+          "The file was moved or deleted. Add note keeps this with your other notes, and Send opens again if the file comes back.",
+        offScreen: [],
+      },
+    );
+    await page.close();
+  },
+);
+
+test(
   "a note half-typed when another tab takes over stays in its card, and Add puts it in that tab too",
   { skip: !executable && "no browser found" },
   async () => {

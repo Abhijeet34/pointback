@@ -228,6 +228,9 @@ body {
   position: absolute;
   /* The house note's measure rather than the popover's, so a cell's row and column fit its line. */
   width: min(24rem, 100% - 2 * var(--hw-space-16));
+  /* A frame shorter than the card scrolls the card rather than the chrome. */
+  max-height: calc(100% - 2 * var(--hw-space-8));
+  overflow-y: auto;
   border: var(--hw-border-w) solid var(--hw-line-strong);
   z-index: var(--hw-z-dropdown);
 }
