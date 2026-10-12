@@ -3229,7 +3229,7 @@ function reloadOf(page) {
  */
 async function openWithOneRefused(
   path,
-  { copy = copyOfFixture, heading = "#title" } = {},
+  { copy = copyOfFixture, heading = "#title", times = 1 } = {},
   navigation = "navigate",
 ) {
   const own = isolatedEnv();
@@ -3261,7 +3261,7 @@ async function openWithOneRefused(
     const { port } = own.serverInfo();
     const at = (where) => where.replace("<port>", String(port));
     const planned = typeof path === "string" ? 1 : (path?.length ?? 0);
-    if (typeof path === "string") refused = await refuseLoads(page, at(path));
+    if (typeof path === "string") refused = await refuseLoads(page, at(path), times);
     else if (path)
       refused = await refuseLoads(
         page,
@@ -3286,7 +3286,8 @@ async function openWithOneRefused(
     // Counted before the look is read: DevTools fetches the chrome's sheets again for the CSS domain.
     const counts = { ...(refused?.counts ?? { asked: 0, refused: 0 }) };
     const refusedLoads = refusedIn.size;
-    return { seen, look: await lookOf(page, artifact), reloads, refusedLoads, ...counts };
+    const look = await lookOf(page, artifact);
+    return { seen, look, reloads, refusedLoads, ...counts, described: await page.describe() };
   } finally {
     page.browser.listeners.splice(page.browser.listeners.indexOf(asksToReload), 1);
     await refused?.stop();
@@ -3303,6 +3304,47 @@ const healthyReview = (fixture) => {
   return healthy.get(fixture);
 };
 
+/**
+ * Asserts a review's look and counts against what they should be. A look that differs is most often
+ * a load that failed, which the diff alone never names, so a mismatch also says what the tab saw:
+ * `tab` is the tab, or the description it gave before it closed (`describe`).
+ */
+async function sameReview(actual, expected, tab) {
+  try {
+    assert.deepEqual(actual, expected);
+  } catch (error) {
+    error.message += `\n  ${typeof tab === "string" ? tab : await tab.describe()}`;
+    throw error;
+  }
+}
+
+// A face refused at every ask leaves the chrome in its fallback face for good: a look that differs
+// for a reason a hunt log has to name.
+test(
+  "a look that differs from the healthy review's names the load that failed it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { seen, look } = await healthyReview();
+    const refused = await openWithOneRefused(
+      "http://127.0.0.1:<port>/house/fonts/ibm-plex-mono/*",
+      { times: Infinity },
+      "reload",
+    );
+    const message = await sameReview(
+      { seen: refused.seen, look: refused.look },
+      { seen, look },
+      refused.described,
+    ).then(
+      () => assert.fail("a chrome with its code face refused for good looked healthy"),
+      (error) => error.message,
+    );
+    assert.match(
+      message,
+      /loads failed:(?:\n {4}.*)*\n {4}chrome: net::ERR_CONNECTION_REFUSED Font http:\/\/127\.0\.0\.1:\d+\/house\/fonts\/ibm-plex-mono\//,
+    );
+  },
+);
+
 test(
   "a review whose loads all answer is loaded once, with the help line, and the review it opens is the look the refused ones are held to",
   { skip: !executable && "no browser found" },
@@ -3311,8 +3353,9 @@ test(
       [undefined, "plan.html"],
       [MARKDOWN, "README.md"],
     ]) {
-      const { seen, reloads, refusedLoads, asked, refused } = await healthyReview(fixture);
-      assert.deepEqual(
+      const { seen, reloads, refusedLoads, asked, refused, described } =
+        await healthyReview(fixture);
+      await sameReview(
         { seen, reloads, asked, refused },
         {
           seen: { cover: null, status: HELP_LINE, file },
@@ -3321,6 +3364,7 @@ test(
           asked: 0,
           refused: 0,
         },
+        described,
       );
     }
   },
@@ -3351,13 +3395,17 @@ for (const [what, path, navigation, fixture] of [
     `a refused first load of ${what} is asked for again, and the reviewer gets a working review, never a dead end`,
     { skip: !executable && "no browser found" },
     async () => {
-      const { asked, refusedLoads, ...rest } = await openWithOneRefused(path, fixture, navigation);
+      const { asked, refusedLoads, described, ...rest } = await openWithOneRefused(
+        path,
+        fixture,
+        navigation,
+      );
       const { seen, look } = await healthyReview(fixture);
       // One reload for the refusal here when it is the chrome's own file, and one more for each load
       // in which the network refused one itself, which the chrome recovers the same way.
       const own = navigation === "reload" ? 1 : 0;
       assert.ok(refusedLoads >= own, `${refusedLoads} of the chrome's loads met a refused file`);
-      assert.deepEqual(rest, { seen, look, reloads: refusedLoads, refused: 1 });
+      await sameReview(rest, { seen, look, reloads: refusedLoads, refused: 1 }, described);
       // A refused face is asked for again on the reloaded chrome: measured as 3 asks (the refused one,
       // then two on the reloaded chrome) in 1200 of 1200 windows-2025 samples for Plex Mono. Not pinned
       // at 3, since how often Chrome requests a face can change with its version, not with this code.
@@ -3376,10 +3424,10 @@ test(
   { skip: !executable && "no browser found" },
   async () => {
     const { seen, look } = await healthyReview();
-    const { refusedLoads, ...rest } = await openWithOneRefused(
+    const { refusedLoads, described, ...rest } = await openWithOneRefused(
       "http://127.0.0.1:<port>/recover.js*",
     );
-    assert.deepEqual(rest, { seen, look, reloads: refusedLoads, asked: 1, refused: 1 });
+    await sameReview(rest, { seen, look, reloads: refusedLoads, asked: 1, refused: 1 }, described);
   },
 );
 
@@ -3390,7 +3438,7 @@ test(
     const { seen, look } = await healthyReview();
     // The house's roles on the first load, then its components on the load the reload for them made:
     // on windows-2025 (hunt 38168177233, attempt 20) the second left Send in the browser's own style.
-    const { refusedLoads, asked, ...rest } = await openWithOneRefused(
+    const { refusedLoads, asked, described, ...rest } = await openWithOneRefused(
       [
         ["http://127.0.0.1:<port>/house/roles.css*", 1],
         ["http://127.0.0.1:<port>/house/components.css*", 2],
@@ -3400,7 +3448,7 @@ test(
     );
     // Two, or one more for each load in which the network refused a file of the chrome's itself.
     assert.ok(refusedLoads >= 2, `${refusedLoads} of the chrome's loads met a refused file`);
-    assert.deepEqual(rest, { seen, look, reloads: refusedLoads, refused: 2 });
+    await sameReview(rest, { seen, look, reloads: refusedLoads, refused: 2 }, described);
     // The roles on each of the three loads, the components on the last two at least.
     assert.ok(asked >= 5, `asked ${asked}: each refused file asked for again on a later load`);
   },
@@ -3430,9 +3478,10 @@ test(
       await noteOn(page, artifact, "#title", "Name the queue in the title");
       // Counted before the look is read: DevTools fetches the chrome's sheets again for the CSS domain.
       const counts = { ...refused.counts };
-      assert.deepEqual(
+      await sameReview(
         { look: await lookOf(page, artifact), counts },
         { look: (await healthyReview()).look, counts: { asked: 2, refused: 1 } },
+        page,
       );
     } finally {
       await refused?.stop();
@@ -3531,7 +3580,7 @@ test(
       await reloadOf(page);
       const reloaded = await reviewIn(page);
       await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
-      assert.deepEqual(
+      await sameReview(
         {
           note: await page.eval(
             "document.querySelector('.mark:not(.sent)').textContent.includes('Shorter title')",
@@ -3544,6 +3593,7 @@ test(
           look: (await healthyReview()).look,
           face: "IBM Plex Mono",
         },
+        page,
       );
     } finally {
       page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
@@ -3602,7 +3652,7 @@ test(
       await page.waitFor(
         "document.querySelectorAll('.mark:not(.sent)').length === 1 && document.querySelector('.mark:not(.sent)').textContent.includes('Shorter titleagain')",
       );
-      assert.deepEqual(
+      await sameReview(
         {
           look: await lookOf(page, reloaded.artifact),
           face: await paintedFace(page, "#fileName"),
@@ -3611,6 +3661,7 @@ test(
           look: (await healthyReview()).look,
           face: "IBM Plex Mono",
         },
+        page,
       );
     } finally {
       page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
