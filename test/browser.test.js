@@ -1988,6 +1988,57 @@ test(
 );
 
 test(
+  "a wheel run past the bottom of the page under review leaves the chrome where it is",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+      width: 1440,
+      height: 900,
+    });
+    // The row where the bar's bottom rule starts, down a column through the bar's empty middle,
+    // read from screenshot pixels: a rubber-banded chrome paints it higher or lower.
+    const x = Number(await page.eval("Math.round(innerWidth / 2)"));
+    assert.equal(
+      await page.eval(
+        `[4, 20, 36].every((y) => document.elementFromPoint(${x}, y).matches('.bar, .bar-id'))`,
+      ),
+      true,
+      "the column crosses the bar where it draws nothing",
+    );
+    const ruleAt = async () => {
+      const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+      const shot = decodePng(Buffer.from(data, "base64"));
+      const ground = shot.pixel(x, 2).join();
+      for (let y = 3; y < 120; y += 1) if (shot.pixel(x, y).join() !== ground) return y;
+      return null;
+    };
+    const resting = await ruleAt();
+    await artifact.eval(
+      "scrollTo(0, document.documentElement.scrollHeight - innerHeight - 300), true",
+    );
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+    const point = { x: frameBox.left + 300, y: frameBox.top + 300 };
+    await page.pointerInto(artifact, point);
+    const seen = [];
+    for (let i = 0; i < 8; i += 1) {
+      await page.send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        ...point,
+        deltaX: 0,
+        deltaY: 400,
+      });
+      seen.push((await ruleAt()) - resting);
+    }
+    // The wheel reached the page: it ran it to its bottom, past which the rest of the wheel went.
+    await artifact.waitFor("scrollY + innerHeight >= document.documentElement.scrollHeight - 1");
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+    assert.deepEqual(seen, Array(8).fill(0), `the bar's rule moved by ${seen} px`);
+  },
+);
+
+test(
   "eight review tabs all load, and a note added in the eighth reaches the agent",
   { skip: !executable && "no browser found" },
   async () => {

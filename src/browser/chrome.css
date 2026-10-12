@@ -52,6 +52,12 @@ body {
   margin: 0;
 }
 
+/* The chrome never scrolls as a whole, so a wheel run past the end of the page under review or of
+   the notes stops there rather than rubber-banding the whole review, as macOS does. */
+html {
+  overscroll-behavior: none;
+}
+
 body {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
