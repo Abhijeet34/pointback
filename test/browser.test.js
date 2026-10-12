@@ -1103,9 +1103,14 @@ function hearKeys(page) {
 
 /**
  * Waits for the page to report that its own field holds the focus. The chrome can unload the page for
- * that move before the window comes back, which removes the page's target, so the page is never asked.
+ * that move before the window comes back, which removes the page's target, so the page is never asked;
+ * and that removal can outrun the report, which then never arrives (windows-2025, hunt 38285518351),
+ * so the page's target gone is the move handled too: only the chrome's unload for it removes the page.
  */
-const pageTookFocus = (what) => until(() => focusReports.at(-1)?.id === "field", { what });
+const pageTookFocus = (page, artifact, what) =>
+  until(() => focusReports.at(-1)?.id === "field" || !page.children.has(artifact.sessionId), {
+    what,
+  });
 
 /** Real key presses, which go wherever the browser has the focus. */
 async function press(page, word, { native } = {}) {
@@ -1510,7 +1515,11 @@ test(
     // late on a loaded runner (windows-2025 and macos-15, hunts 38271034344 and 38271044651), so the
     // call is made from a task of its own; the answer to this request comes before the call is made.
     await artifact.eval("takeFocusSoon()");
-    await pageTookFocus("the page to take the focus in its own field while the window is inactive");
+    await pageTookFocus(
+      page,
+      artifact,
+      "the page to take the focus in its own field while the window is inactive",
+    );
     await page.front();
     const result = await writeNote(
       page,
@@ -1697,7 +1706,11 @@ for (const late of [false, true]) {
       await until(async () => !(await page.eval("document.hasFocus()")), {
         what: "the review window to lose focus",
       });
-      await pageTookFocus("the page to take the focus in its own field as the window leaves");
+      await pageTookFocus(
+        page,
+        artifact,
+        "the page to take the focus in its own field as the window leaves",
+      );
       if (late) {
         await page.waitFor("document.activeElement === document.getElementById('artifact')", {
           what: "the chrome to hold the page's move while the window is away",
