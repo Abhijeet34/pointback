@@ -101,9 +101,10 @@ export async function api(info, method, path, body, { signal, holdMs = 0 } = {})
 export async function ensureServer(stateDir, environment = process.env, wallMs = START_WALL_MS) {
   const began = performance.now();
   const left = () => Math.max(0, began + wallMs - performance.now());
-  const older = ({ port, pid }) =>
+  // The record's pid is never named as the process to end: after a crash it can belong to anything.
+  const refusal = ({ port, pid, silent }) =>
     new Error(
-      `an older ${name} daemon${Number.isInteger(pid) ? ` (pid ${pid})` : ""} on port ${port} did not stop; end that process and retry`,
+      `the server on port ${port} ${silent ? `accepts connections but never answers, so it may be a stalled ${name} daemon` : `answers as ${name} but did not stop`}, and a second daemon beside it would split this state directory; end the process listening on port ${port} and retry${Number.isInteger(pid) ? ` (the record names pid ${pid}, which may since belong to another process)` : ""}`,
     );
   const serves = (status) => status?.proven && status.version === version;
   const existing = readServerInfo(stateDir);
@@ -120,7 +121,7 @@ export async function ensureServer(stateDir, environment = process.env, wallMs =
   if (holding) {
     const info = readServerInfo(stateDir);
     if (info && serves(await health(info, left()))) return info;
-    throw older(holding);
+    throw refusal(holding);
   }
   const log = openSync(join(stateDir, "server.log"), "a", 0o600);
   const start = () => {
@@ -240,7 +241,7 @@ export function recordHolds(record, status) {
 
 /**
  * The recorded server when it still holds its port: its port answers as this app, or accepts the
- * connection and is too busy to answer, with its token or with the token retired. A server that was
+ * connection and is too busy to answer (`silent`), with its token or with the token retired. A server that was
  * asked to stop and did not is still there, so a start and `stop` both need to name it.
  */
 export async function refusingServer(stateDir, ceiling) {
@@ -256,7 +257,7 @@ export async function refusingServer(stateDir, ceiling) {
     return status?.app === name && recordHolds(record, status) ? record : null;
   } catch (error) {
     const busy = error.name === "TimeoutError" || error.name === "AbortError";
-    return busy ? record : null;
+    return busy ? { ...record, silent: true } : null;
   } finally {
     probe.done();
   }

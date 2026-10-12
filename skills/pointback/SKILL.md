@@ -28,7 +28,8 @@ If it exits 1 saying all the reviews held are in use, none can make room for thi
 3. Open the file again.
 
 Opening a file whose review is already held needs no free slot, so `pointback plan.html` on one of the listed files still works.
-If it exits 1 saying an older pointback daemon did not stop, the process on that port is one `pointback stop` does not signal: ask the user to end that process, then open the file again.
+If it exits 1 saying the server on a port did not stop or never answers, the process listening on that port is one `pointback stop` does not signal: ask the user to end the process listening on that port, then open the file again.
+The pid that message names is only what the record says and may belong to an unrelated process, so never end a process by that pid.
 
 ## 2. Poll
 
