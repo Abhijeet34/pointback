@@ -1505,7 +1505,11 @@ test(
     await until(async () => !(await page.eval("document.hasFocus()")), {
       what: "the review window to lose focus",
     });
-    await artifact.eval("globalThis.calling = true");
+    // Headless Chromium leaves a window the focus while another window has it, so the window is left
+    // for another tab, which hides the page. A hidden page's timers ran its 20 ms call more than 10 s
+    // late on a loaded runner (windows-2025 and macos-15, hunts 38271034344 and 38271044651), so the
+    // call is made from a task of its own; the answer to this request comes before the call is made.
+    await artifact.eval("takeFocusSoon()");
     await pageTookFocus("the page to take the focus in its own field while the window is inactive");
     await page.front();
     const result = await writeNote(
