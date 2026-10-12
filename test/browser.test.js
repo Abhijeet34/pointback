@@ -2537,6 +2537,26 @@ test(
 );
 
 test(
+  "the card opened after a note was added and sent starts empty",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.waitFor(FOLLOWING);
+    await noteOn(page, artifact, "#title", "Cut the title to four words");
+    await clickOn(page, "document.getElementById('send')");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    await pointAt(page, artifact, "#p1");
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: "", reason: null });
+    assert.deepEqual(
+      (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts.map((p) => p.prompt),
+      ["Cut the title to four words"],
+    );
+    await page.close();
+  },
+);
+
+test(
   "a card the agent's end held open loses its reason when the reviewer deletes its words, and gets it back on typing",
   { skip: !executable && "no browser found" },
   async () => {
