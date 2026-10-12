@@ -1988,6 +1988,57 @@ test(
 );
 
 test(
+  "a wheel run past the bottom of the page under review leaves the chrome where it is",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+      width: 1440,
+      height: 900,
+    });
+    // The row where the bar's bottom rule starts, down a column through the bar's empty middle,
+    // read from screenshot pixels: a rubber-banded chrome paints it higher or lower.
+    const x = Number(await page.eval("Math.round(innerWidth / 2)"));
+    assert.equal(
+      await page.eval(
+        `[4, 20, 36].every((y) => document.elementFromPoint(${x}, y).matches('.bar, .bar-id'))`,
+      ),
+      true,
+      "the column crosses the bar where it draws nothing",
+    );
+    const ruleAt = async () => {
+      const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+      const shot = decodePng(Buffer.from(data, "base64"));
+      const ground = shot.pixel(x, 2).join();
+      for (let y = 3; y < 120; y += 1) if (shot.pixel(x, y).join() !== ground) return y;
+      return null;
+    };
+    const resting = await ruleAt();
+    await artifact.eval(
+      "scrollTo(0, document.documentElement.scrollHeight - innerHeight - 300), true",
+    );
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+    const point = { x: frameBox.left + 300, y: frameBox.top + 300 };
+    await page.pointerInto(artifact, point);
+    const seen = [];
+    for (let i = 0; i < 8; i += 1) {
+      await page.send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        ...point,
+        deltaX: 0,
+        deltaY: 400,
+      });
+      seen.push((await ruleAt()) - resting);
+    }
+    // The wheel reached the page: it ran it to its bottom, past which the rest of the wheel went.
+    await artifact.waitFor("scrollY + innerHeight >= document.documentElement.scrollHeight - 1");
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+    assert.deepEqual(seen, Array(8).fill(0), `the bar's rule moved by ${seen} px`);
+  },
+);
+
+test(
   "eight review tabs all load, and a note added in the eighth reaches the agent",
   { skip: !executable && "no browser found" },
   async () => {
@@ -5855,8 +5906,9 @@ test(
 
 /**
  * The first line of an element as it paints: every run of its text on the line its first text sits
- * on, and the right edge of the inline code that opens it, if one does. Measured from text nodes,
- * never from element boxes, so a padded code chip cannot stand in for the line.
+ * on, and the right edge of the inline code that opens it, bare or in its Markdown chip, if one
+ * does. Measured from text nodes, never from element boxes, so a padded code chip cannot stand in
+ * for the line.
  */
 const firstLine = (selector) => `JSON.stringify((() => {
   const element = document.querySelector(${JSON.stringify(selector)});
@@ -5873,7 +5925,7 @@ const firstLine = (selector) => `JSON.stringify((() => {
     top: Math.min(...line.map((r) => r.top)),
     bottom: Math.max(...line.map((r) => r.bottom)),
     right: Math.max(...line.map((r) => r.right)),
-    code: element.firstElementChild?.tagName === "CODE" ? element.firstElementChild.getBoundingClientRect().right : null,
+    code: element.firstElementChild?.matches("code, .chip") ? element.querySelector("code").getBoundingClientRect().right : null,
   };
 })())`;
 
@@ -6187,6 +6239,203 @@ test(
       "markdown at 800": [],
       "html at 1440": [],
       "markdown at 1440": [],
+    });
+  },
+);
+
+test(
+  "more notes on one heading than fit across the frame stand in lines inside it, off every word",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const covered = {};
+    // Enough pins, with their gaps, to run wider than the page's frame at each width.
+    for (const [viewport, count] of [
+      [{ width: 390, height: 844 }, 14],
+      [{ width: 1440, height: 900 }, 40],
+    ]) {
+      const { file } = copyOfFixture();
+      const session = (await cli([file], lab.env)).json().session;
+      for (let i = 1; i <= count; i += 1) {
+        await api(session, "POST", "drafts", {
+          draft: {
+            prompt: `Note ${i}`,
+            selector: "#title",
+            tag: "h1",
+            text: "Rollout plan for the queue worker",
+          },
+        });
+      }
+      const { page, artifact } = await openReview(session.url, viewport);
+      const pins = await until(
+        async () => {
+          const shown = await pinsOn(artifact);
+          return shown.length === count ? shown : null;
+        },
+        { what: `${count} pins on the title at ${viewport.width}` },
+      );
+      covered[viewport.width] = [
+        ...(await wordsUnderPins(artifact, pins)),
+        ...(await pinsOffFrame(artifact, pins)),
+      ];
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(covered, { 390: [], 1440: [] });
+  },
+);
+
+/**
+ * How far a pin's number runs past the shape the pin paints, in whole px: a pin is an ellipse of half
+ * its width and height (its 2 px corner only adds to that), so at the top and bottom of the number's
+ * text box the shape is narrower than the box, and the number must fit that chord there.
+ */
+function pastPin(box, text) {
+  const rx = (box.right - box.left) / 2;
+  const ry = (box.bottom - box.top) / 2;
+  const cx = box.left + rx;
+  const cy = box.top + ry;
+  return Math.max(
+    0,
+    ...[text.top, text.bottom].map((y) => {
+      const half = rx * Math.sqrt(Math.max(0, 1 - ((y - cy) / ry) ** 2));
+      return Math.round(Math.max(cx - half - text.left, text.right - (cx + half)));
+    }),
+  );
+}
+
+const BOX_AND_TEXT = `function () {
+  const range = document.createRange();
+  range.selectNodeContents(this);
+  const rect = (r) => ({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+  return JSON.stringify({ box: rect(this.getBoundingClientRect()), text: rect(range.getBoundingClientRect()) });
+}`;
+
+test(
+  "a three-digit note number stays inside its pin, on the page and in the margin",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    // Fifty notes at a time is all a review keeps unsent, so the hundred go in two sends.
+    for (let i = 1; i <= 100; i += 1) {
+      await api(session, "POST", "drafts", {
+        draft: {
+          prompt: `Note ${i}`,
+          selector: "#title",
+          tag: "h1",
+          text: "Rollout plan for the queue worker",
+        },
+      });
+      if (i % 50 === 0) await api(session, "POST", "prompts", {});
+    }
+    const { page, artifact } = await openReview(session.url, { width: 1440, height: 900 });
+    const pin = await until(
+      async () => (await pinsOn(artifact)).find((p) => p.name === "Note 100, sent"),
+      { what: "the pin of note 100" },
+    );
+    const { object } = await artifact.send("DOM.resolveNode", { backendNodeId: pin.node });
+    const { result } = await artifact.send("Runtime.callFunctionOn", {
+      objectId: object.objectId,
+      functionDeclaration: BOX_AND_TEXT,
+      returnByValue: true,
+    });
+    const onPage = JSON.parse(result.value);
+    const inMargin = JSON.parse(
+      await page.eval(`(${BOX_AND_TEXT}).call(
+        [...document.querySelectorAll('.mark-number')].find((n) => n.textContent === '100'),
+      )`),
+    );
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+    assert.deepEqual(
+      { page: pastPin(onPage.box, onPage.text), margin: pastPin(inMargin.box, inMargin.text) },
+      { page: 0, margin: 0 },
+      JSON.stringify({ onPage, inMargin }),
+    );
+  },
+);
+
+/**
+ * The inner edge of each ring the review script draws over the page, read through its closed shadow
+ * root, or null when one is redrawn between the two reads, as a scroll or a resize redraws them.
+ */
+async function ringsOn(artifact) {
+  const found = [];
+  const walk = (node) => {
+    if (node.attributes?.[node.attributes.indexOf("class") + 1] === "box") found.push(node);
+    for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? [])]) walk(child);
+  };
+  walk(
+    artifact.frameId
+      ? await artifact.document()
+      : (await artifact.send("DOM.getDocument", { depth: -1, pierce: true })).root,
+  );
+  const rings = [];
+  for (const node of found) {
+    const box = await artifact
+      .send("DOM.getBoxModel", { backendNodeId: node.backendNodeId })
+      .catch(() => null);
+    if (!box) return null;
+    const [left, top, , , right, bottom] = box.model.padding;
+    rings.push({ left, top, right, bottom });
+  }
+  return rings;
+}
+
+test(
+  "the ring round a pointed heading or paragraph stands clear of its words",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfReadme();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+      width: 1440,
+      height: 900,
+    });
+    const clear = {};
+    for (const selector of ["main > h2:nth-of-type(1)", "main > p:nth-of-type(2)"]) {
+      // At the top of the frame, so the card opens under the target with room to spare.
+      await artifact.eval(
+        `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: "start" })`,
+      );
+      await pointAt(page, artifact, selector);
+      // The ring against the words' own boxes, every line of them, read until it is clear of them on
+      // every side by the house focus ring's offset, 2 px; a miss reports the nearest it came.
+      let gap = null;
+      await until(
+        async () => {
+          const rings = await ringsOn(artifact);
+          if (rings?.length !== 1) return false;
+          const [ring] = rings;
+          const words = JSON.parse(
+            await artifact.eval(`(() => {
+              const range = document.createRange();
+              range.selectNodeContents(document.querySelector(${JSON.stringify(selector)}));
+              return JSON.stringify(range.getBoundingClientRect());
+            })()`),
+          );
+          gap = Math.min(
+            words.left - ring.left,
+            words.top - ring.top,
+            ring.right - words.right,
+            ring.bottom - words.bottom,
+          );
+          return Math.round(gap * 10) / 10 >= 2;
+        },
+        { what: `the ring round ${selector} clear of its words` },
+      ).catch((error) => {
+        if (!error.message.startsWith("timed out")) throw error;
+      });
+      clear[selector] = Math.round(gap * 10) / 10 >= 2 ? "clear" : `${gap?.toFixed(1)} px`;
+      await clickOn(page, "document.getElementById('cardCancel')");
+      await page.waitFor(
+        "document.getElementById('card').hidden && document.body.dataset.handoff === 'settled'",
+      );
+    }
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+    assert.deepEqual(clear, {
+      "main > h2:nth-of-type(1)": "clear",
+      "main > p:nth-of-type(2)": "clear",
     });
   },
 );
@@ -7058,7 +7307,8 @@ const CHIPS = `JSON.stringify((() => {
     const block = code.closest("p, li, td, th, blockquote");
     const style = getComputedStyle(block);
     const room = block.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-    const probe = code.cloneNode(true);
+    // What has to fit to stay whole: the code with the characters set beside it, where there are any.
+    const probe = (code.closest(".chip") ?? code).cloneNode(true);
     probe.style.cssText = "position: absolute; white-space: nowrap; display: inline-block; max-width: none";
     block.append(probe);
     const natural = probe.getBoundingClientRect().width;
@@ -7093,6 +7343,71 @@ test(
     }
     const whole = { split: [], spaced: [], of: 0 };
     assert.deepEqual(chips, { 390: whole, 800: whole, 1440: whole });
+  },
+);
+
+/**
+ * Every inline code chip that breaks badly as it paints, read from the glyph boxes of its text: one
+ * whose lines run into each other, one left on a line apart from the bracket before it or the
+ * punctuation after it, and a single word broken across lines though the page's column had room for it.
+ */
+const CHIP_BREAKS = `JSON.stringify((() => {
+  const rectsOf = (node, start = 0, end = node.data.length) => {
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, end);
+    return [...range.getClientRects()].filter((r) => r.width > 0);
+  };
+  const out = { overlapping: [], orphaned: [], stranded: [], broken: [] };
+  const main = getComputedStyle(document.querySelector("main"));
+  const room = document.querySelector("main").clientWidth - parseFloat(main.paddingLeft) - parseFloat(main.paddingRight);
+  for (const code of document.querySelectorAll(":not(pre) > code")) {
+    const text = code.firstChild;
+    if (!(text instanceof Text)) continue;
+    const lines = [];
+    for (const r of rectsOf(text)) {
+      const line = lines.find((l) => Math.abs(l.top - r.top) < 1);
+      if (line) line.bottom = Math.max(line.bottom, r.bottom);
+      else lines.push({ top: r.top, bottom: r.bottom });
+    }
+    lines.sort((a, b) => a.top - b.top);
+    for (let i = 1; i < lines.length; i += 1)
+      if (lines[i - 1].bottom > lines[i].top + 0.5)
+        out.overlapping.push(code.textContent + " by " + (lines[i - 1].bottom - lines[i].top).toFixed(1) + " px");
+    const before = code.previousSibling;
+    if (before instanceof Text && /[(\\[{“‘]$/.test(before.data)) {
+      if (rectsOf(before, before.data.length - 1).at(-1).bottom <= rectsOf(text)[0].top + 1)
+        out.orphaned.push(before.data.at(-1) + code.textContent);
+    }
+    const after = code.nextSibling;
+    if (after instanceof Text && /^[,.;:)!?\\]}”’]/.test(after.data)) {
+      if (rectsOf(after, 0, 1)[0].top >= rectsOf(text).at(-1).bottom - 1)
+        out.stranded.push(code.textContent + after.data[0]);
+    }
+    const width = rectsOf(text).reduce((sum, r) => sum + r.width, 0);
+    if (!/\\s/.test(code.textContent) && lines.length > 1 && width <= room) out.broken.push(code.textContent);
+  }
+  return out;
+})())`;
+
+test(
+  "inline code in Markdown wraps without its lines touching, a bracket or comma left apart, or a word broken",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const breaks = {};
+    for (const width of [390, 800, 1440]) {
+      const { file } = copyOfReadme();
+      const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+        width,
+        height: 900,
+      });
+      await artifact.eval("document.fonts.ready.then(() => true)");
+      breaks[width] = JSON.parse(await artifact.eval(CHIP_BREAKS));
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    const clean = { overlapping: [], orphaned: [], stranded: [], broken: [] };
+    assert.deepEqual(breaks, { 390: clean, 800: clean, 1440: clean });
   },
 );
 
