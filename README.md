@@ -72,7 +72,7 @@ Opening a file prints where the review is and what to do next:
 
 The page loads its own stylesheets, scripts and images from the review's root, which is the file's own folder unless `--root <dir>` names a wider one that holds it.
 A page that links `../components.css` and `../../exports/variables.css`, as a design system's component sheet does, renders unstyled under the default because both files sit above its folder; `--root` at the repository's top makes them reachable.
-When the page's markup loads anything from outside the root, the open output lists it under `refused_assets` and its `next_step` says to open again with `--root`, and the tab says the same to the reviewer once, above the status line.
+When the page loads anything from outside the root, named in its markup or in a CSS `url()` or `@import` in the page or in a stylesheet under the root, the open output lists it under `refused_assets` and its `next_step` says to open again with `--root`, and the tab says the same to the reviewer once, above the status line.
 The root is resolved to its real path when the review opens, so a symlinked spelling cannot stretch it, and nothing outside it is served: not by `../`, not by an encoding, not by a symlink inside it that points out.
 Every open sets the root again, so opening the file without `--root` goes back to its folder.
 The root is also everything the page under review can load, so name the narrowest folder that holds its assets.
@@ -249,7 +249,7 @@ The frame can leave the page under review too: a link followed with Annotate off
 Only the page under review announces itself to the chrome, so a page that loads without doing so is covered, where the reviewer is looking, by a notice saying the frame went to a page that is missing or is not the file, with a button back to it.
 A first load that comes back unannounced is asked for once more before that, and so is a first load of the frame the page sits in, because a load the network refused looks exactly like a page that went elsewhere.
 While a note being written holds a reload back, a refused first load of the page gets the cover at once, without the second ask.
-A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
+A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled; it also waits while the browser is offline or the tab is not connected, since the browser would refuse that reload too, and runs once both are back. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
 A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
 The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
 A note opened before the page has heard the last card close unloads the page at once, with a line saying why, and the page comes back when that note is done; that unload is not counted against the page.

@@ -22,14 +22,12 @@ import {
 import { claimDaemon } from "./daemon-lock.js";
 import { EventStreams } from "./events.js";
 import { name, version } from "./identity.js";
-import { injectSdk } from "./inject.js";
 import { limits } from "./limits.js";
-import { artifactKind, renderMarkdown } from "./markdown.js";
+import { artifactKind } from "./markdown.js";
 import { DRAFT_ID_PATTERN, EPOCH_PATTERN, SessionStore } from "./session-store.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
 import { acceptWebSocket, isWebSocketHandshake, offeredProtocols } from "./websocket.js";
 
-const SDK_PATH = "/sdk.js";
 const browserDir = new URL("./browser/", import.meta.url);
 // Read once at startup like the chrome page itself: these bytes never change while the
 // daemon runs, and a Map keeps a request for "__proto__" from finding anything.
@@ -444,12 +442,10 @@ function serveArtifact(res, store, match) {
   const type = contentTypes[extname(file).toLowerCase()] ?? "application/octet-stream";
   if (file === session.file) {
     // A session opened before other files were refused still names one; it shows nothing.
-    const kind = artifactKind(file);
-    if (!kind) throw new HttpError(404, "not found");
-    const source = readFileSync(file, "utf8");
-    const page = kind === "markdown" ? renderMarkdown(source, file) : source;
+    if (!artifactKind(file)) throw new HttpError(404, "not found");
+    const { body } = store.page(session.key);
     res.writeHead(200, { ...ARTIFACT_HEADERS, "content-type": contentTypes[".html"] });
-    return res.end(injectSdk(page, SDK_PATH));
+    return res.end(body);
   }
   const headers = type.startsWith("font/") ? FONT_HEADERS : ARTIFACT_HEADERS;
   res.writeHead(200, { ...headers, "content-type": type });
