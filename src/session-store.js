@@ -9,6 +9,7 @@ import {
   canonicalFile,
   canonicalPath,
   isOutside,
+  resolveAsset,
   sessionKey,
 } from "./artifact-path.js";
 import { HttpError } from "./http-guard.js";
@@ -333,7 +334,15 @@ export class SessionStore {
     const markdown = artifactKind(session.file) === "markdown";
     const { artifactUrl } = this.status(key);
     const rootUrl = `/artifact/${key}/${session.assetToken}/`;
-    return assetsOutside(loads, rootUrl, artifactUrl).filter(
+    const readSheet = (path) => {
+      try {
+        const file = resolveAsset(session.root, path);
+        return file && readFileSync(file, "utf8");
+      } catch {
+        return null;
+      }
+    };
+    return assetsOutside(loads, rootUrl, artifactUrl, readSheet).filter(
       (ref) => !(markdown && MARKDOWN_STYLES.includes(ref)),
     );
   }

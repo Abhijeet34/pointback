@@ -445,6 +445,50 @@ test("a file that is neither HTML nor Markdown is refused with a message and exi
   assert.equal(opened.json().session.status, "opened");
 });
 
+test("what a page's CSS loads from outside its folder is refused by name, through the sheets it links too", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-css-"));
+  const site = join(dir, "site");
+  mkdirSync(join(site, "css"), { recursive: true });
+  const page = join(site, "peers.html");
+  writeFileSync(
+    page,
+    `<!doctype html><style>
+/* url(../commented.png) names nothing */
+@font-face { font-family: Peer; src: url("/fonts/peer.woff2") format("woff2"); }
+@font-face { font-family: Kept; src: url(kept.woff2); }
+</style>
+<link rel="stylesheet" href="css/site.css">
+<h1 style="background-image: url('../banner.png')">Peers</h1>`,
+  );
+  // Two sheets that import each other: each is read once, and resolves from its own address.
+  writeFileSync(
+    join(site, "css", "site.css"),
+    `@import "../../theme.css";
+@import url(more.css);
+h1 { border-image: url(../../border.png) 30; }
+p { background: url(data:image/png;base64,AAAA); }`,
+  );
+  writeFileSync(
+    join(site, "css", "more.css"),
+    `@import "site.css";
+p { background: url(../kept.png); }
+h2 { background: URL( "../../more (2).png" ); }`,
+  );
+  const opened = await cli([page], lab.env);
+  assert.equal(opened.code, 0, opened.stderr);
+  assert.deepEqual(opened.json().refused_assets, [
+    "/fonts/peer.woff2",
+    "../banner.png",
+    "../../border.png",
+    "../../theme.css",
+    "../../more (2).png",
+  ]);
+  // A root that holds the page's folder and its parent serves all but the absolute path.
+  const rooted = await cli([page, "--root", dir], lab.env);
+  assert.equal(rooted.code, 0, rooted.stderr);
+  assert.deepEqual(rooted.json().refused_assets, ["/fonts/peer.woff2"]);
+});
+
 test("--root resolves relative to where the agent is, and is refused where it means nothing", async () => {
   const repo = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-cli-root-"));
   mkdirSync(join(repo, "sheets"));
