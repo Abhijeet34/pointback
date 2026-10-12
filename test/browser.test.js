@@ -622,8 +622,13 @@ test(
   { skip: !executable && "no browser found" },
   async () => {
     const page = await browser.page(opened.session.url.replace(/#.*$/, "#wrongtoken"));
-    const text = await page.waitFor("document.getElementById('status').textContent");
-    assert.match(text, /no longer works/);
+    const text = await page.waitFor(
+      "document.getElementById('notice').checkVisibility() && document.getElementById('noticeText').textContent",
+    );
+    assert.match(
+      text,
+      /can no longer reach its review\. Run .+ on this file again for a fresh page/,
+    );
   },
 );
 
@@ -4340,6 +4345,12 @@ const CARD_PAINT = `JSON.stringify({
 })`;
 const unsentNotes =
   "JSON.stringify([...document.querySelectorAll('.mark:not(.sent) .mark-note')].map((e) => e.textContent))";
+/** The Annotate switch as it paints: on or off, whether it can be pressed, and the cursor that says so. */
+const ANNOTATE_PAINT = `JSON.stringify({
+  on: document.getElementById('annotate').checked,
+  disabled: document.getElementById('annotate').disabled,
+  cursor: getComputedStyle(document.getElementById('annotate')).cursor,
+})`;
 /** End review as it paints: whether it can be pressed, and the cursor that says so. */
 const END_PAINT = `JSON.stringify({
   disabled: document.getElementById('end').disabled,
@@ -4547,6 +4558,8 @@ test(
       const session = (await cli([file], own.env)).json().session;
       const { page, artifact } = await openReview(session.url);
       await noteOn(page, artifact, "#title", "Name the queue in the title");
+      await pointAt(page, artifact, "#p1");
+      await page.type("Say how long each step takes");
       const { port } = own.serverInfo();
       assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
       // Something else answers on the port now, and cannot prove it holds the page's token.
@@ -4576,8 +4589,14 @@ test(
         { label: "Notes wait for a fresh page", off: true },
         "Send offers nothing this page can do, and says where the notes go",
       );
-      await pointAt(page, artifact, "#p1");
-      await page.type("Say how long each step takes");
+      // Nothing can be added from here on, so pointing at the page is over: the page itself says so.
+      await page.waitFor("document.body.dataset.annotate === '0'");
+      assert.deepEqual(
+        JSON.parse(await page.eval(ANNOTATE_PAINT)),
+        { on: false, disabled: true, cursor: "not-allowed" },
+        "Annotate is off, and paints as a switch that cannot be turned on",
+      );
+      // The words typed before the link was spent stay in their card, with the reason beside them.
       await page.enter();
       assert.deepEqual(JSON.parse(await page.eval(CARD_PAINT)), {
         open: true,
@@ -4660,24 +4679,26 @@ test(
       const { port, token } = own.serverInfo();
       watched = await tokenRequests(page, port, token, { app: "stand-in" });
       await page.navigate(url);
-      await page.waitFor(
-        "document.getElementById('status').textContent.includes('no longer works')",
-      );
-      // A press on End review would only ever have been refused: it paints as off from the start.
+      await page.waitFor("document.getElementById('notice').checkVisibility()");
+      // A press on End review would only ever have been refused, and nothing pointed at could be
+      // added: both paint as off from the start.
       assert.deepEqual(
         {
           carried: watched.carried,
           seen: JSON.parse(await page.eval(BOOT_SEEN)),
           end: JSON.parse(await page.eval(END_PAINT)),
+          annotate: JSON.parse(await page.eval(ANNOTATE_PAINT)),
         },
         {
           carried: [],
           seen: {
             presence: "Disconnected",
-            status: "This link no longer works. Run the command on the file again to get a fresh one.",
-            notice: null,
+            status: "",
+            notice:
+              "This page can no longer reach its review. Run the command on this file again for a fresh page; your notes are kept there.",
           },
           end: { disabled: true, cursor: "not-allowed" },
+          annotate: { on: false, disabled: true, cursor: "not-allowed" },
         },
       );
     } finally {

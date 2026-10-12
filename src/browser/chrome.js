@@ -178,13 +178,7 @@ async function boot() {
       // idle-out and the agent's next command, or one connect Windows refused
       // (docs/ENGINEERING-NOTES.md); the review is still there, so the page waits for it, and the
       // bar and Send say it is not connected rather than offering what cannot work yet.
-      if (error.answered) {
-        connection = "gone";
-        renderPresence();
-        statusLine.textContent =
-          "This link no longer works. Run the command on the file again to get a fresh one.";
-        return;
-      }
+      if (error.answered) return spent();
       connection = "lost";
       renderPresence();
       setText(sendButton, "Not connected");
@@ -306,7 +300,13 @@ async function listen() {
     render();
     await pause(failures);
   }
+  spent();
+}
+
+/** This page's link is spent: nothing can be added or sent from it again, and it says so once. */
+function spent() {
   connection = "gone";
+  followAnnotate();
   render();
 }
 
@@ -449,7 +449,7 @@ function render() {
             ? "Review ended"
             : "Send to agent"
           : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
-  annotateSwitch.disabled = ended !== null || fileGone;
+  annotateSwitch.disabled = ended !== null || fileGone || connection === "gone";
   // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
   cardAdd.disabled = offline;
   renderReason();
@@ -981,9 +981,9 @@ function setAnnotate(on) {
   render();
 }
 
-/** Puts Annotate where the reviewer left it, unless a gone file or an ended review rules it out. */
+/** Puts Annotate where the reviewer left it, unless a gone file, an ended review or a spent link rules it out. */
 function followAnnotate() {
-  const on = wantAnnotate && !fileGone && ended === null;
+  const on = wantAnnotate && !fileGone && ended === null && connection !== "gone";
   if (on === annotate) return;
   if (!on) letCardGo();
   setAnnotate(on);
