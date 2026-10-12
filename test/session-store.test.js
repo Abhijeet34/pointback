@@ -61,25 +61,28 @@ test("a key that names an inherited property never resolves to an object", () =>
 });
 
 test("a poisoned state file is skipped entry by entry, not trusted", () => {
-  const { dir } = lab();
+  const { dir, artifact } = lab();
   // Repeated digit rather than a written-out 16-hex literal: a session key's
   // shape reads as a credential to a secret scanner, and this is a fixture.
   const key = "0".repeat(16);
-  writeFileSync(
-    join(dir, "state.json"),
-    JSON.stringify({
-      sessions: {
-        __proto__: { assetToken: "0".repeat(32), chat: [] },
-        zzzz: { assetToken: "0".repeat(32) },
-        [key]: { key, assetToken: "not-a-token" },
-      },
-    }),
+  const good = "2".repeat(16);
+  const token = "0".repeat(32);
+  // Parsed rather than written as a literal, where `__proto__` would set the prototype and
+  // JSON.stringify would drop it, so the file would never carry the entry this test is about.
+  const sessions = JSON.parse(
+    `{"__proto__": ${JSON.stringify({ key: "__proto__", assetToken: token, file: artifact })}}`,
   );
+  Object.assign(sessions, {
+    zzzz: { key: "zzzz", assetToken: token, file: artifact },
+    [key]: { key, assetToken: "not-a-token" },
+    [good]: { key: good, assetToken: token, file: artifact, pending: [], chat: [] },
+  });
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ sessions }));
   // A session's own file is held to the same: its name must be a key, and the key it records.
   const other = "1".repeat(16);
   mkdirSync(join(dir, "sessions"));
-  writeFileSync(sessionFile(dir, "__proto__"), JSON.stringify({ assetToken: "0".repeat(32) }));
-  writeFileSync(sessionFile(dir, other), JSON.stringify({ key, assetToken: "0".repeat(32) }));
+  writeFileSync(sessionFile(dir, "__proto__"), JSON.stringify({ assetToken: token }));
+  writeFileSync(sessionFile(dir, other), JSON.stringify({ key, assetToken: token }));
   const store = new SessionStore(dir);
   for (const missing of [key, other])
     assert.throws(
@@ -87,6 +90,13 @@ test("a poisoned state file is skipped entry by entry, not trusted", () => {
       (e) => e.status === 404,
     );
   assert.equal(Object.prototype.assetToken, undefined);
+  // Only the well-formed entry was split out, and it survives a restart.
+  assert.deepEqual(readdirSync(join(dir, "sessions")).sort(), [
+    `${other}.json`,
+    `${good}.json`,
+    "__proto__.json",
+  ]);
+  assert.equal(new SessionStore(dir).get(good).file, artifact);
 });
 
 test("opening the same file twice yields one session, and it survives a restart", () => {
@@ -219,8 +229,7 @@ test("a session file with no write count loads, keeps its notes, and is counted 
     store.get(key).pending.map((p) => p.prompt),
     ["kept from before the count"],
   );
-  const counted = JSON.parse(readFileSync(sessionFile(dir, key), "utf8")).writes;
-  assert.ok(Number.isSafeInteger(counted) && counted >= 1, `counted: ${counted}`);
+  assert.equal(JSON.parse(readFileSync(sessionFile(dir, key), "utf8")).writes, 1);
 });
 
 test("a session file deleted by hand is written again from memory, so an unsent note survives", () => {

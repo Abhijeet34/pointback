@@ -1208,7 +1208,10 @@ test("a reply that meets a session another process rewrote is made once more and
   await daemon(lab).note(key, "the note the reply answers");
   const [{ uid }] = (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json().prompts;
   const path = join(lab.dir, "sessions", `${key}.json`);
-  writeFileSync(`${path}.tmp`, readFileSync(path));
+  // Written once more than the daemon's copy, so the daemon refuses the first reply with a 409.
+  const newer = JSON.parse(readFileSync(path, "utf8"));
+  newer.writes += 1;
+  writeFileSync(`${path}.tmp`, JSON.stringify(newer));
   renameSync(`${path}.tmp`, path);
   const replied = await cli(["reply", file, String(uid), "--done"], lab.env);
   assert.equal(replied.code, 0, replied.stderr);
