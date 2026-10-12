@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { after, test } from "node:test";
 import { pidAlive } from "../src/daemon-lock.js";
 import { tokenProof } from "../src/http-guard.js";
@@ -697,18 +697,25 @@ test(
     const env = loading(warm.env, "count-icacls.js", { TEST_ICACLS_LOG: log });
     try {
       assert.equal((await cli([fixture], env)).code, 0);
-      assert.deepEqual((await cli(["stop"], env)).json(), { status: "stopped" });
-      writeFileSync(log, "");
-      const opened = await cli([fixture], env);
-      assert.equal(opened.code, 0, opened.stderr);
-      const runs = readFileSync(log, "utf8").trim().split("\n");
-      console.log(`icacls runs for an open on a private directory: ${runs.join(", ")}`);
-      assert.deepEqual(
-        runs.filter((run) => run.endsWith("write")),
-        [],
-        "no ACL was written",
-      );
-      assert.equal(runs.length, 3, "the CLI read the state directory, the daemon it and sessions");
+      // A trailing separator once cost the daemon a second read of the same directory.
+      for (const spelled of [warm.dir, warm.dir + sep]) {
+        assert.deepEqual((await cli(["stop"], env)).json(), { status: "stopped" });
+        writeFileSync(log, "");
+        const opened = await cli([fixture], { ...env, POINTBACK_STATE_DIR: spelled });
+        assert.equal(opened.code, 0, opened.stderr);
+        const runs = readFileSync(log, "utf8").trim().split("\n");
+        console.log(`icacls runs for an open on ${spelled}: ${runs.join(", ")}`);
+        assert.deepEqual(
+          runs.filter((run) => run.endsWith("write")),
+          [],
+          "no ACL was written",
+        );
+        assert.equal(
+          runs.length,
+          3,
+          "the CLI read the state directory, the daemon it and sessions",
+        );
+      }
       assertPrivate(warm.dir, 0o700);
     } finally {
       await warm.stop();
