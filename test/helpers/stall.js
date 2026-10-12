@@ -13,7 +13,7 @@ export async function closedPort() {
 /**
  * A pid no process can have, standing for a daemon that exited: Windows hands out multiples of 4, Linux
  * caps pids at 2^22 and macOS at 99999, so this odd int32 is refused as ESRCH on all three. An exited
- * process's own pid would not do, since Windows gives it to the next process it starts.
+ * process's own pid would not do, since Windows can give it to the next process it starts.
  */
 export const DEAD_PID = 2 ** 31 - 1;
 
