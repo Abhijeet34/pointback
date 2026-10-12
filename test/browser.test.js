@@ -2805,8 +2805,7 @@ test(
     await tasks;
     // The chrome covers the page in the task it takes it out in; a page out of the wrapper's document
     // has nothing left to hear.
-    if (await page.eval("document.getElementById('cover').hidden"))
-      await artifact.eval("hearNow()");
+    if (await page.eval("document.getElementById('cover').hidden")) await hearClose(artifact);
     else
       await until(async () => (await pageAddress(page)) === "about:blank", {
         what: "the page out",
@@ -3020,7 +3019,7 @@ test(
     await page.tab();
     await page.waitFor("document.activeElement.classList.contains('mark-target')");
     // Synchronous: the page has handled the close once this returns.
-    await artifact.eval("hearNow()");
+    await hearClose(artifact);
     await page.waitFor("document.body.dataset.handoff === 'settled'");
     assert.equal(await page.eval("document.activeElement.className"), "mark-target");
     await page.close();
@@ -3041,7 +3040,7 @@ test(
     await page.waitFor(
       "document.getElementById('card').hidden && document.activeElement.id === 'annotate'",
     );
-    await artifact.eval("hearNow()");
+    await hearClose(artifact);
     // The page's acknowledgement settles the hand-off, and a pull taken back settles it after the put-back.
     await page.waitFor("document.body.dataset.handoff === 'settled'");
     assert.equal(await page.eval("document.activeElement.id"), "annotate");
@@ -4928,8 +4927,8 @@ async function holdCloseRelay(page) {
 /**
  * Has the page hear the chrome late, as a busy page does, without pausing it: the SDK hears the chrome
  * only from the real `parent`, so with a stand-in there every message the chrome sends waits until
- * `hearNow()` hands it on. The stand-in also reports what a key in the page made it propose, since the
- * SDK stops a key it acts on before any listener added after it.
+ * `hearNow()` hands it on, and `unheard()` names what waits. The stand-in also reports what a key in
+ * the page made it propose, since the SDK stops a key it acts on before any listener added after it.
  */
 const HEARS_LATE = `(() => {
   const realParent = window.parent;
@@ -4946,6 +4945,7 @@ const HEARS_LATE = `(() => {
     },
   };
   window.parent = standIn;
+  globalThis.unheard = () => waiting.map((event) => event.data?.type);
   globalThis.hearNow = () => {
     window.parent = realParent;
     replaying = true;
@@ -4955,6 +4955,16 @@ const HEARS_LATE = `(() => {
     window.parent = standIn;
   };
 })()`;
+
+/**
+ * Has a page that hears late (`HEARS_LATE`) hear the card close, once the close has reached it: it
+ * crosses the wrapper's process on its way, so the chrome can show the card closed while it is still
+ * in flight, and a hand-on before it arrives hands on nothing (windows-2025, hunt 38271034344).
+ */
+async function hearClose(artifact) {
+  await artifact.waitFor("unheard().includes('compose')");
+  await artifact.eval("hearNow()");
+}
 
 /** Collects what `HEARS_LATE` reports the page proposed, in the order the page posts it. */
 async function pageProposals(page, artifact) {
