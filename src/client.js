@@ -41,24 +41,54 @@ export async function health(info, ceiling) {
   }
 }
 
-export async function api(info, method, path, body, retried = false, signal) {
-  const res = await fetch(`http://127.0.0.1:${info.port}${path}`, {
-    method,
-    signal,
-    headers: { authorization: `Bearer ${info.token}`, "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const json = /** @type {any} */ (await res.json());
-  // A refused write left the daemon holding the copy another process wrote, so the same call made once
-  // more lands on it. The second refusal is the answer.
-  if (res.status === 409 && !retried) return api(info, method, path, body, true, signal);
-  // The body rides on the error, because a refusal such as a gone file is an answer to print.
-  if (!res.ok)
-    throw Object.assign(new Error(json.error ?? `${method} ${path} failed with ${res.status}`), {
-      answer: json,
-      status: res.status,
+/**
+ * How long the daemon gets to answer a request, beyond the `holdMs` a poll asks it to hold one. A
+ * daemon that proved its token and then stalled held an open for Node's own 300 s and a bare "fetch
+ * failed"; this keeps an open, start included, inside a two-minute tool call (START_WALL_MS).
+ */
+const REQUEST_MS = 30_000;
+
+/**
+ * Calls the daemon's API. A caller's `signal` replaces the REQUEST_MS bound.
+ * @param {any} info
+ * @param {string} method
+ * @param {string} path
+ * @param {unknown} [body]
+ * @param {{ signal?: AbortSignal, holdMs?: number }} [options]
+ */
+export async function api(info, method, path, body, { signal, holdMs = 0 } = {}) {
+  const bound = signal ? null : probeTimeout(holdMs + REQUEST_MS, holdMs + REQUEST_MS);
+  const call = async () => {
+    const res = await fetch(`http://127.0.0.1:${info.port}${path}`, {
+      method,
+      signal: signal ?? bound.signal,
+      headers: { authorization: `Bearer ${info.token}`, "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
-  return json;
+    return { res, json: /** @type {any} */ (await res.json()) };
+  };
+  try {
+    let { res, json } = await call();
+    // A refused write left the daemon holding the copy another process wrote, so the same call made
+    // once more lands on it. The second refusal is the answer.
+    if (res.status === 409) ({ res, json } = await call());
+    // The body rides on the error, because a refusal such as a gone file is an answer to print.
+    if (!res.ok)
+      throw Object.assign(new Error(json.error ?? `${method} ${path} failed with ${res.status}`), {
+        answer: json,
+        status: res.status,
+      });
+    return json;
+  } catch (error) {
+    if (!bound?.signal.aborted) throw error;
+    const route = path.split("?")[0];
+    throw new Error(
+      `the ${name} daemon on port ${info.port} did not answer ${method} ${route} within ${(holdMs + REQUEST_MS) / 1000} s, so it may be stalled; end the process listening on port ${info.port} and retry`,
+      { cause: error },
+    );
+  } finally {
+    bound?.done();
+  }
 }
 
 /**
@@ -139,7 +169,7 @@ export async function ensureServer(stateDir, environment = process.env, wallMs =
 export async function stopServer(stateDir, info, status, backstopMs = STOP_BACKSTOP_MS) {
   const backstop = Date.now() + backstopMs;
   const shutdown = probeTimeout(backstopMs, backstopMs);
-  const asked = await api(info, "POST", "/shutdown", undefined, false, shutdown.signal).then(
+  const asked = await api(info, "POST", "/shutdown", undefined, { signal: shutdown.signal }).then(
     () => true,
     () => false,
   );

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { test } from "node:test";
 import { pastSharingViolations, readJson, stateDir, writeJsonAtomic } from "../src/state-dir.js";
 import { assertPrivate, loosen, ownerOnly } from "./helpers/private.js";
@@ -16,6 +16,15 @@ test("the state directory is private to the user and re-tightened when it alread
   assert.equal(ownerOnly(dir), false, "the loosening this test re-tightens did nothing");
   stateDir({ POINTBACK_STATE_DIR: dir });
   assertPrivate(dir, 0o700);
+});
+
+// On Windows a write restricts its directory once per process, keyed by the write's dirname; "dir\\"
+// kept as given missed that key, so a process's first write paid one more icacls run (0.6 s on average).
+test("a state directory named with a trailing separator is the path every file in it names", () => {
+  const dir = join(scratch(), "state");
+  const named = stateDir({ POINTBACK_STATE_DIR: dir + sep });
+  assert.equal(named, dir);
+  assert.equal(dirname(join(named, "server.json")), named);
 });
 
 test("writes are atomic, owner-only, and leave no temp file behind", () => {
