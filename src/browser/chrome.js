@@ -532,6 +532,7 @@ function render() {
 
 // Rebuilt only on a change to the notes, and scrolled to the end only when one was added:
 // a presence flip or a reload must not yank a reviewer who scrolled up to reread a note.
+let rebuilding = false;
 function renderMarks() {
   marksDirty = false;
   // A rebuild must not take the words, the caret or the focus out of a note being edited.
@@ -542,7 +543,11 @@ function renderMarks() {
     editingNote = null;
   }
   const notes = allNotes();
+  // Removing the focused control, as the Edit pressed is, fires its focus-out naming nothing, which is
+  // the chrome's own move and not the page's (`movedToPage`).
+  rebuilding = true;
   marks.replaceChildren(...notes.map(({ entry, sent }, index) => mark(entry, sent, index + 1)));
+  rebuilding = false;
   if (shownNote > notes.length) shownNote = 0;
   const shown = notes.length;
   if (shown > shownMarks) marginBody.scrollTop = marginBody.scrollHeight;
@@ -1610,10 +1615,11 @@ function tabLanded() {
 // focus goes back there once the page is out.
 let left = /** @type {HTMLElement | null} */ (null);
 document.addEventListener("focusout", (event) => {
+  setTimeout(guard);
+  if (rebuilding) return;
   left = /** @type {HTMLElement} */ (event.target);
   const named = event.relatedTarget;
   if (named === null || named === frame) movedToPage();
-  setTimeout(guard);
 });
 window.addEventListener("blur", () => {
   if (tabbing) tabLanded();

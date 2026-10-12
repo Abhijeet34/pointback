@@ -2766,7 +2766,10 @@ test(
 // 37251442770 attempt 20, a busy page heard that only after the reviewer had opened a margin note to
 // edit it, and took the focus out of the editor; a key pressed before the chrome's next task then
 // reached the page. The page hears the close only once the reviewer has typed, and the chrome, should
-// the page take the focus, is held at the task that answers it while Enter is pressed.
+// the page take the focus, is held at the task that answers it while Enter is pressed. The hold is set
+// before the Edit press, whose margin rebuild the chrome once checked as a move of the page's; that
+// check's task can run after several commands to the chrome, and a hold set later then took it and
+// left every command unanswered (the local gate, and hunts 38260124603 and 38260138769).
 test(
   "a page that hears the card close late gets no key from a note being edited in the margin, and comes back once it is saved",
   { skip: !executable && "no browser found" },
@@ -2782,11 +2785,23 @@ test(
     await page.type("Shorter title");
     await page.enter();
     await page.waitFor("document.getElementById('card').hidden");
+    const answer = await holdChromeAt(page, "if ((now || document.activeElement === frame)");
     await clickOn(page, "document.querySelector('.mark-edit')");
     await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
     await page.type(", four words at most");
     await page.eval("delete document.body.dataset.revision");
-    const answer = await holdChromeAt(page, "if ((now || document.activeElement === frame)");
+    // Every task the Edit press queued has run, and none checked a move of the page's, which has not
+    // heard the close yet. A held chrome answers nothing, so the wait for its tasks is raced with the hold.
+    let ran = false;
+    const tasks = page
+      .eval("new Promise((resolve) => setTimeout(resolve, 0))")
+      .then(() => (ran = true));
+    await until(() => ran || answer.held, { what: "the chrome to run the Edit press's tasks" });
+    if (answer.held) {
+      await answer.release();
+      assert.fail("the chrome took its own margin rebuild for a move of the page's");
+    }
+    await tasks;
     // The chrome covers the page in the task it takes it out in; a page out of the wrapper's document
     // has nothing left to hear.
     if (await page.eval("document.getElementById('cover').hidden"))
