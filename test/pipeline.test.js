@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { envPrefix, name } from "../src/identity.js";
 
@@ -493,16 +493,57 @@ test("the setting that lets release-please open its pull request is a committed 
   assert.equal(settings.default_workflow_permissions, "read");
 });
 
-test("the setting that parks the release pull request's CI is a committed file", () => {
-  // Measured on run 33816315115: a `pull_request` run on release-please's own
-  // branch completes as `action_required` with no check runs at all, because
-  // GitHub classifies a github-actions[bot] pull request as an external
-  // contribution even from a branch in this repository. No value of this policy
-  // is known to exempt it, so the export is here to be diffable rather than to
-  // be changed - docs/GIT-WORKFLOW.md, "Releasing", carries the approval step
-  // that a release therefore needs.
+test("apply-repo-settings.sh sends every setting, and none looser than the live repository", () => {
+  // The fake gh-axi refuses -X and --input as the real one does ("unknown flag -X for
+  // gh-axi api"), and the fake gh records each write and the file it sent.
+  const bin = mkdtempSync(join(tmpdir(), "pipeline-test-"));
+  try {
+    const calls = join(bin, "calls");
+    writeFileSync(
+      join(bin, "gh-axi"),
+      `#!/bin/sh
+for a; do case "$a" in -X|--input) echo "unknown flag $a for gh-axi api" >&2; exit 2 ;; esac; done
+case "$*" in *'"main"'*) echo 101 ;; *'"release tags"'*) echo 102 ;; esac
+`,
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      join(bin, "gh"),
+      `#!/bin/sh
+while [ $# -gt 0 ]; do case "$1" in -X) m=$2; shift ;; --input) f=$2; shift ;; api) ;; *) p=$1 ;; esac; shift; done
+echo "$m $p $f" >> "$GH_CALLS"
+`,
+      { mode: 0o755 },
+    );
+    const { status, stderr } = spawnSync("sh", ["scripts/apply-repo-settings.sh", "o/r"], {
+      cwd: root,
+      env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, GH_CALLS: calls },
+      encoding: "utf8",
+    });
+    assert.equal(status, 0, stderr);
+    const sent = readFileSync(calls, "utf8").trim().split("\n");
+    assert.deepEqual(sent, [
+      "PUT repos/o/r/rulesets/101 .github/rulesets/main.json",
+      "PUT repos/o/r/rulesets/102 .github/rulesets/tags.json",
+      "PATCH repos/o/r .github/settings/repository.json",
+      "PUT repos/o/r/actions/permissions/workflow .github/settings/actions-workflow-permissions.json",
+      "PUT repos/o/r/actions/permissions .github/settings/actions-permissions.json",
+      "PUT repos/o/r/actions/permissions/fork-pr-contributor-approval .github/settings/actions-fork-pr-contributor-approval.json",
+    ]);
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+
+  // Live values read back on 2026-10-12. A PUT replaces the whole setting, so a
+  // tracked value looser than live would loosen it on the next apply.
+  // The approval policy parks the release pull request's CI at `action_required`
+  // (run 33816315115) whatever its value; docs/GIT-WORKFLOW.md, "Releasing".
   const approval = JSON.parse(read(".github/settings/actions-fork-pr-contributor-approval.json"));
-  assert.equal(approval.approval_policy, "first_time_contributors");
+  assert.equal(approval.approval_policy, "all_external_contributors");
+  const review = JSON.parse(read(".github/rulesets/main.json")).rules.find(
+    (rule) => rule.type === "pull_request",
+  );
+  assert.equal(review.parameters.require_extra_approval_for_unattributed_changes, true);
 });
 
 test("publishing is off unless a repository variable says otherwise", () => {
