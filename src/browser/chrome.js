@@ -190,7 +190,9 @@ async function boot() {
       setText(sendButton, "Not connected");
       setText(
         statusLine,
-        "Not connected. This page opens the review when your agent next runs its command.",
+        navigator.onLine
+          ? "Not connected. This page opens the review when your agent next runs its command."
+          : "Not connected. This browser is offline, and this page opens the review once it is back online.",
       );
       await pause(failures);
     }
