@@ -2292,6 +2292,8 @@ test(
 
     renameSync(away, file);
     await page.waitFor("!document.getElementById('notice').checkVisibility()");
+    // Under reduced motion the controls' colours still ease back over the house's 100 ms.
+    await page.eval(SETTLED);
     assert.deepEqual(JSON.parse(await page.eval(painted)), live, "the review is back as it was");
     await page.close();
   },
@@ -8110,6 +8112,56 @@ test(
     await clickOn(page, step("m"));
     await page.waitFor(`${checked} === "Medium"`);
     await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "under reduced motion a switch still changes colour as it flips, and its thumb jumps rather than travels",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.waitFor("document.body.dataset.annotate === '1'");
+    // The page's clock stands still, so every transition a flip starts is still there to be read,
+    // however late the read comes.
+    await page.send("Animation.enable");
+    await page.send("Animation.setPlaybackRate", { playbackRate: 0 });
+    const MOVES = `JSON.stringify(document.getAnimations()
+      .filter((a) => a.effect.target === document.getElementById('annotate'))
+      .map((a) => [a.effect.pseudoElement ?? '', a.transitionProperty, a.effect.getTiming().duration])
+      .sort())`;
+    const flip = async (motion, to) => {
+      await page.send("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-reduced-motion", value: motion }],
+      });
+      await clickOn(page, "document.getElementById('annotate')");
+      await page.waitFor(`document.body.dataset.annotate === '${to}'`);
+      const moves = JSON.parse(await page.eval(MOVES));
+      await page.eval("document.getAnimations().forEach((a) => a.finish())");
+      return moves;
+    };
+    try {
+      // With motion allowed the thumb travels, which shows a movement here is seen at all.
+      assert.deepEqual(await flip("no-preference", "0"), [
+        ["", "background-color", 120],
+        ["::after", "translate", 120],
+      ]);
+      // Reduced, the house's rule: the colours still change over its 100 ms and nothing travels.
+      assert.deepEqual(await flip("reduce", "1"), [
+        ["", "background-color", 100],
+        ["", "border-bottom-color", 100],
+        ["", "border-left-color", 100],
+        ["", "border-right-color", 100],
+        ["", "border-top-color", 100],
+        ["::after", "background-color", 100],
+      ]);
+    } finally {
+      await page.send("Animation.setPlaybackRate", { playbackRate: 1 });
+      await page.send("Animation.disable");
+      await page.send("Emulation.setEmulatedMedia", { features: [] });
+      await page.close();
+    }
     rmSync(dirname(file), { recursive: true, force: true });
   },
 );

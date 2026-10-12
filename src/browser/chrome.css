@@ -576,13 +576,3 @@ body {
     max-width: calc(100vw - 2 * var(--hw-gutter-sm));
   }
 }
-
-/* Stricter than the house's own block, which keeps colour transitions: nothing here moves at all. */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    transition: none !important;
-    animation: none !important;
-  }
-}
