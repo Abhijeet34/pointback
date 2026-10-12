@@ -17,19 +17,18 @@ function icacls(args) {
 }
 
 /**
- * The principals holding an ACE of the path's own, never one it inherits. icacls prints the
- * path on the first line and one `PRINCIPAL:(perms)` per line after it, marking an inherited
- * entry `(I)`; the inherited ones need no removing because `/inheritance:r` drops them all.
+ * Every ACE on the path as its principal and its permissions. icacls prints the path on the first
+ * line and one `PRINCIPAL:(perms)` per line after it, marking an inherited entry `(I)`.
  */
-function explicitPrincipals(path) {
-  const names = [];
+function aces(path) {
+  const entries = [];
   for (const line of icacls([path]).split(/\r?\n/)) {
     if (line.trim() === "" || line.startsWith("Successfully processed")) continue;
     const body = line.startsWith(path) ? line.slice(path.length) : line;
     const match = body.match(/^\s*(.+?):(\(.*)$/);
-    if (match && !match[2].includes("(I)")) names.push(match[1]);
+    if (match) entries.push({ principal: match[1], perms: match[2].trim() });
   }
-  return names;
+  return entries;
 }
 
 /**
@@ -48,6 +47,10 @@ function explicitPrincipals(path) {
  *
  * A failure throws rather than warns: the state directory holds the server token, and a
  * directory that could not be restricted is one the token must not be written into.
+ *
+ * Each icacls run costs 0.6 s on average and 4.4 s at most on windows-2025 (docs/ENGINEERING-NOTES.md),
+ * so a directory whose ACL reads as exactly what the grant leaves, this user's one entry and nothing
+ * inherited, is not written again: every start still reads it, so a loosened one is still re-tightened.
  */
 function restrictDir(dir, { onceOnly = false } = {}) {
   if (!windows) {
@@ -56,11 +59,18 @@ function restrictDir(dir, { onceOnly = false } = {}) {
   }
   if (onceOnly && restrictedDirs.has(dir)) return;
   const me = userInfo().username;
-  const foreign = explicitPrincipals(dir).filter(
-    (p) => p.split("\\").pop().toLowerCase() !== me.toLowerCase(),
-  );
-  if (foreign.length > 0) icacls([dir, ...foreign.flatMap((p) => ["/remove:g", p])]);
-  icacls([dir, "/inheritance:r", "/grant:r", `${me}:(OI)(CI)F`]);
+  const mine = (p) => p.split("\\").pop().toLowerCase() === me.toLowerCase();
+  const entries = aces(dir);
+  const restricted =
+    entries.length === 1 && mine(entries[0].principal) && entries[0].perms === "(OI)(CI)(F)";
+  if (!restricted) {
+    // An inherited entry needs no removing, because `/inheritance:r` drops them all.
+    const foreign = entries
+      .filter((e) => !e.perms.includes("(I)") && !mine(e.principal))
+      .map((e) => e.principal);
+    if (foreign.length > 0) icacls([dir, ...foreign.flatMap((p) => ["/remove:g", p])]);
+    icacls([dir, "/inheritance:r", "/grant:r", `${me}:(OI)(CI)F`]);
+  }
   restrictedDirs.add(dir);
 }
 
