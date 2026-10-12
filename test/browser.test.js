@@ -5845,8 +5845,9 @@ test(
 
 /**
  * The first line of an element as it paints: every run of its text on the line its first text sits
- * on, and the right edge of the inline code that opens it, if one does. Measured from text nodes,
- * never from element boxes, so a padded code chip cannot stand in for the line.
+ * on, and the right edge of the inline code that opens it, bare or in its Markdown chip, if one
+ * does. Measured from text nodes, never from element boxes, so a padded code chip cannot stand in
+ * for the line.
  */
 const firstLine = (selector) => `JSON.stringify((() => {
   const element = document.querySelector(${JSON.stringify(selector)});
@@ -5863,7 +5864,7 @@ const firstLine = (selector) => `JSON.stringify((() => {
     top: Math.min(...line.map((r) => r.top)),
     bottom: Math.max(...line.map((r) => r.bottom)),
     right: Math.max(...line.map((r) => r.right)),
-    code: element.firstElementChild?.tagName === "CODE" ? element.firstElementChild.getBoundingClientRect().right : null,
+    code: element.firstElementChild?.matches("code, .chip") ? element.querySelector("code").getBoundingClientRect().right : null,
   };
 })())`;
 
@@ -7245,7 +7246,8 @@ const CHIPS = `JSON.stringify((() => {
     const block = code.closest("p, li, td, th, blockquote");
     const style = getComputedStyle(block);
     const room = block.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-    const probe = code.cloneNode(true);
+    // What has to fit to stay whole: the code with the characters set beside it, where there are any.
+    const probe = (code.closest(".chip") ?? code).cloneNode(true);
     probe.style.cssText = "position: absolute; white-space: nowrap; display: inline-block; max-width: none";
     block.append(probe);
     const natural = probe.getBoundingClientRect().width;
@@ -7280,6 +7282,71 @@ test(
     }
     const whole = { split: [], spaced: [], of: 0 };
     assert.deepEqual(chips, { 390: whole, 800: whole, 1440: whole });
+  },
+);
+
+/**
+ * Every inline code chip that breaks badly as it paints, read from the glyph boxes of its text: one
+ * whose lines run into each other, one left on a line apart from the bracket before it or the
+ * punctuation after it, and a single word broken across lines though the page's column had room for it.
+ */
+const CHIP_BREAKS = `JSON.stringify((() => {
+  const rectsOf = (node, start = 0, end = node.data.length) => {
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, end);
+    return [...range.getClientRects()].filter((r) => r.width > 0);
+  };
+  const out = { overlapping: [], orphaned: [], stranded: [], broken: [] };
+  const main = getComputedStyle(document.querySelector("main"));
+  const room = document.querySelector("main").clientWidth - parseFloat(main.paddingLeft) - parseFloat(main.paddingRight);
+  for (const code of document.querySelectorAll(":not(pre) > code")) {
+    const text = code.firstChild;
+    if (!(text instanceof Text)) continue;
+    const lines = [];
+    for (const r of rectsOf(text)) {
+      const line = lines.find((l) => Math.abs(l.top - r.top) < 1);
+      if (line) line.bottom = Math.max(line.bottom, r.bottom);
+      else lines.push({ top: r.top, bottom: r.bottom });
+    }
+    lines.sort((a, b) => a.top - b.top);
+    for (let i = 1; i < lines.length; i += 1)
+      if (lines[i - 1].bottom > lines[i].top + 0.5)
+        out.overlapping.push(code.textContent + " by " + (lines[i - 1].bottom - lines[i].top).toFixed(1) + " px");
+    const before = code.previousSibling;
+    if (before instanceof Text && /[(\\[{“‘]$/.test(before.data)) {
+      if (rectsOf(before, before.data.length - 1).at(-1).bottom <= rectsOf(text)[0].top + 1)
+        out.orphaned.push(before.data.at(-1) + code.textContent);
+    }
+    const after = code.nextSibling;
+    if (after instanceof Text && /^[,.;:)!?\\]}”’]/.test(after.data)) {
+      if (rectsOf(after, 0, 1)[0].top >= rectsOf(text).at(-1).bottom - 1)
+        out.stranded.push(code.textContent + after.data[0]);
+    }
+    const width = rectsOf(text).reduce((sum, r) => sum + r.width, 0);
+    if (!/\\s/.test(code.textContent) && lines.length > 1 && width <= room) out.broken.push(code.textContent);
+  }
+  return out;
+})())`;
+
+test(
+  "inline code in Markdown wraps without its lines touching, a bracket or comma left apart, or a word broken",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const breaks = {};
+    for (const width of [390, 800, 1440]) {
+      const { file } = copyOfReadme();
+      const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+        width,
+        height: 900,
+      });
+      await artifact.eval("document.fonts.ready.then(() => true)");
+      breaks[width] = JSON.parse(await artifact.eval(CHIP_BREAKS));
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    const clean = { overlapping: [], orphaned: [], stranded: [], broken: [] };
+    assert.deepEqual(breaks, { 390: clean, 800: clean, 1440: clean });
   },
 );
 
