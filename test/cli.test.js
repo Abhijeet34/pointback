@@ -15,9 +15,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { after, test } from "node:test";
 import { pidAlive } from "../src/daemon-lock.js";
+import { tokenProof } from "../src/http-guard.js";
 import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { bin, cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
@@ -696,18 +697,25 @@ test(
     const env = loading(warm.env, "count-icacls.js", { TEST_ICACLS_LOG: log });
     try {
       assert.equal((await cli([fixture], env)).code, 0);
-      assert.deepEqual((await cli(["stop"], env)).json(), { status: "stopped" });
-      writeFileSync(log, "");
-      const opened = await cli([fixture], env);
-      assert.equal(opened.code, 0, opened.stderr);
-      const runs = readFileSync(log, "utf8").trim().split("\n");
-      console.log(`icacls runs for an open on a private directory: ${runs.join(", ")}`);
-      assert.deepEqual(
-        runs.filter((run) => run.endsWith("write")),
-        [],
-        "no ACL was written",
-      );
-      assert.equal(runs.length, 3, "the CLI read the state directory, the daemon it and sessions");
+      // A trailing separator once cost the daemon a second read of the same directory.
+      for (const spelled of [warm.dir, warm.dir + sep]) {
+        assert.deepEqual((await cli(["stop"], env)).json(), { status: "stopped" });
+        writeFileSync(log, "");
+        const opened = await cli([fixture], { ...env, POINTBACK_STATE_DIR: spelled });
+        assert.equal(opened.code, 0, opened.stderr);
+        const runs = readFileSync(log, "utf8").trim().split("\n");
+        console.log(`icacls runs for an open on ${spelled}: ${runs.join(", ")}`);
+        assert.deepEqual(
+          runs.filter((run) => run.endsWith("write")),
+          [],
+          "no ACL was written",
+        );
+        assert.equal(
+          runs.length,
+          3,
+          "the CLI read the state directory, the daemon it and sessions",
+        );
+      }
       assertPrivate(warm.dir, 0o700);
     } finally {
       await warm.stop();
@@ -1146,6 +1154,37 @@ test("a recorded server that accepts the connection but never answers blocks the
       opened.stderr,
     );
     assert.equal(existsSync(join(other.dir, "daemon.1.lock")), false, "no daemon claimed it");
+  } finally {
+    stalled.closeAllConnections();
+    stalled.close();
+    await other.stop();
+  }
+});
+
+// A daemon that proves its token and then never answers held the open for Node's own 300 s, past
+// any agent's tool call, and then said only "fetch failed".
+test("an open whose daemon proves its token and then never answers says so within its bound", async () => {
+  const other = isolatedEnv();
+  const stalled = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    if (url.pathname !== "/health") return;
+    const proof = tokenProof(RECORDED_TOKEN, url.searchParams.get("challenge"));
+    res.end(JSON.stringify({ app: name, version, pid: process.pid, proof }));
+  });
+  await new Promise((r) => stalled.listen(0, "127.0.0.1", r));
+  const port = stalled.address().port;
+  await recordServer(other.dir, port);
+  try {
+    const began = performance.now();
+    // Bounded at twice the CLI's 30 s, so a CLI that waits on Node's 300 s fails here by name.
+    const opened = await cli([fixture], other.env, { timeoutMs: 60_000 });
+    console.log(`the open answered in ${Math.round(performance.now() - began)} ms`);
+    assert.equal(opened.code, 1, opened.stdout);
+    assert.equal(
+      opened.stderr,
+      `error: the ${name} daemon on port ${port} did not answer POST /api/sessions within 30 s, so it may be stalled; end the process listening on port ${port} and retry\n`,
+    );
+    assert.equal(existsSync(join(other.dir, "daemon.1.lock")), false, "no daemon was started");
   } finally {
     stalled.closeAllConnections();
     stalled.close();

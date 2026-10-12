@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { env, stateDirName } from "./identity.js";
 
@@ -74,9 +74,12 @@ function restrictDir(dir, { onceOnly = false } = {}) {
   restrictedDirs.add(dir);
 }
 
-/** The state directory, created private to the user; the env override serves tests and isolation. */
+/**
+ * The state directory, created private to the user; the env override serves tests and isolation. It is
+ * resolved, so it is the same string as the dirname of every file in it, which `restrictDir` keys by.
+ */
 export function stateDir(environment = process.env) {
-  return privateDir(env("STATE_DIR", environment) ?? join(homedir(), stateDirName));
+  return privateDir(resolve(env("STATE_DIR", environment) ?? join(homedir(), stateDirName)));
 }
 
 /** Creates a directory only this user can reach, or re-tightens one that already exists. */

@@ -810,10 +810,10 @@
     const element = elementFor(anchor);
     const cell = element?.closest("td, th");
     if (cell) {
-      // Beside the words rather than above them, so it clears them by its widest ring, 5 px.
+      // Beside the words rather than above them, so it clears them by its widest ring.
       const box = cell.getBoundingClientRect();
       return {
-        left: Math.max(box.left, Math.min(right + 5, box.right - width)),
+        left: Math.max(box.left, Math.min(right + HALO, box.right - width)),
         top: Math.max(box.top, Math.min(lineTop - height, box.bottom - height)),
       };
     }
