@@ -4690,6 +4690,9 @@ async function handled(page, artifact, attempts) {
  * The nonce the chrome handed the page's SDK, which a page that does not listen for it never sees. It
  * is heard in the wrapper, which every message from the page passes through, on the report of the
  * page's place that a scroll event has the SDK post; that report changes nothing the chrome keeps.
+ * It is posted from an animation frame, so it is taken only behind a mark posted in the same task as
+ * the scroll: then no report is left to land behind the barrier and undo it, and a page posting with
+ * its own copy of the nonce cannot be heard first.
  */
 async function nonceOf(page, artifact) {
   const inWrapper = async (expression) => {
@@ -4705,16 +4708,66 @@ async function nonceOf(page, artifact) {
   await until(
     () =>
       inWrapper(`globalThis.heard = "";
+        globalThis.marked = false;
         globalThis.hearing ??= addEventListener("message", (event) => {
-          if (event.source !== parent && event.data?.nonce) heard = event.data.nonce;
+          if (event.source === parent) return;
+          if (event.data?.type === "handled-mark") marked = true;
+          else if (marked && event.data?.type === "scroll" && event.data.nonce) heard = event.data.nonce;
         }, true) ?? true`),
     { what: "the wrapper to listen for the page's messages" },
   );
-  await artifact.eval("dispatchEvent(new Event('scroll'))");
+  await artifact.eval(
+    `dispatchEvent(new Event("scroll")); parent.postMessage({ type: "handled-mark" }, "*")`,
+  );
   return page.explained(
     until(() => inWrapper("heard"), { what: "the page's SDK to post with its nonce" }),
   );
 }
+
+// On ubuntu-24.04 (hunt 38234772352) a page that posts with its nonce, as the hostile fixtures do,
+// was heard before the SDK's report of its place, which then landed behind the barrier and put
+// `data-scroll` back to the page's own offset. This page posts on the scroll at once and holds the
+// SDK's animation frames until its own next post, which is the latest that report can land.
+test(
+  "a barrier is not undone by the page's report of its place, however late that report lands",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-late-"));
+    const file = join(dir, "late.html");
+    writeFileSync(
+      file,
+      `<!doctype html><meta charset="utf-8"><title>Late</title>
+<script>
+let nonce = "";
+addEventListener("message", (e) => {
+  if (e.data && e.data.type === "init") nonce = e.data.nonce;
+});
+globalThis.lag = () => {
+  const real = parent;
+  const held = [];
+  globalThis.requestAnimationFrame = (callback) => held.push(callback);
+  globalThis.parent = {
+    postMessage(message, origin) {
+      real.postMessage(message, origin);
+      for (const callback of held.splice(0)) callback(performance.now());
+    },
+  };
+  addEventListener("scroll", () => real.postMessage({ type: "lagging", nonce }, "*"), true);
+};
+</script>
+<body><h1 id="t">Release notes</h1></body>`,
+    );
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    try {
+      await artifact.eval("lag()");
+      await handled(page, artifact);
+      assert.equal(await page.eval("document.body.dataset.scroll"), String(sentinel));
+    } finally {
+      await page.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 // The barrier a negative needs, on a page that knows nothing of the chrome's messages: with Annotate
 // off the reviewer's click is the page's own, and the chrome handles whatever the SDK made of it
