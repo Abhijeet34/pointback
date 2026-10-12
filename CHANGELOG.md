@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.7](https://github.com/Abhijeet34/pointback/compare/v0.1.6...v0.1.7) (2026-10-12)
+
+
+### Bug Fixes
+
+* **browser:** a target the gate drops hands the page back ([#95](https://github.com/Abhijeet34/pointback/issues/95)) ([ed2f167](https://github.com/Abhijeet34/pointback/commit/ed2f167c339034b70316b9c9be82d8ec5f3591ac))
+* **browser:** keep a half-typed note in its card when the review closes ([#66](https://github.com/Abhijeet34/pointback/issues/66)) ([5b45b3c](https://github.com/Abhijeet34/pointback/commit/5b45b3c9c5c182ff86743e87a64ba57be5168052))
+* **browser:** keep a margin note's focus when the page hears the card close late ([#70](https://github.com/Abhijeet34/pointback/issues/70)) ([4e449de](https://github.com/Abhijeet34/pointback/commit/4e449de3be72b60001f3a854cc824b7adb659b6b))
+* **browser:** keep the reading place on pages with a sticky or fixed box ([#65](https://github.com/Abhijeet34/pointback/issues/65)) ([e6b0f38](https://github.com/Abhijeet34/pointback/commit/e6b0f38e9571999065d47281582dbc20e08ba958))
+* **browser:** leave nothing focused in the page after a note made by mouse ([#97](https://github.com/Abhijeet34/pointback/issues/97)) ([3a0ed6e](https://github.com/Abhijeet34/pointback/commit/3a0ed6ed5df1e3e575725687e19ef233cb443f36))
+* **browser:** recover a refused load of the chrome's own files and the page's stylesheets ([#91](https://github.com/Abhijeet34/pointback/issues/91)) ([50e363a](https://github.com/Abhijeet34/pointback/commit/50e363ac5c5c6086ba60c94d5dddc278f6896705))
+* **browser:** recover the chrome from a second refused file after its own reload ([#94](https://github.com/Abhijeet34/pointback/issues/94)) ([30b4867](https://github.com/Abhijeet34/pointback/commit/30b486748669cd3cb1e626b285cf9b94f3e1123e))
+* **browser:** recover the review from a refused first load ([#79](https://github.com/Abhijeet34/pointback/issues/79)) ([fc93520](https://github.com/Abhijeet34/pointback/commit/fc93520b0838fb4b57f576f0103af8796d0e0784))
+* **browser:** require a proven health answer before the connection counts as live ([#81](https://github.com/Abhijeet34/pointback/issues/81)) ([47f6645](https://github.com/Abhijeet34/pointback/commit/47f6645b0da1856bc3c5957fcdbdde199e127968))
+* **browser:** unload a page that has not yet heard the card close ([#86](https://github.com/Abhijeet34/pointback/issues/86)) ([135235b](https://github.com/Abhijeet34/pointback/commit/135235b41e7e346c8ade13f484de5c5b5bb80e1f))
+* **browser:** unload a page that takes the keyboard from a note ([#71](https://github.com/Abhijeet34/pointback/issues/71)) ([4b93397](https://github.com/Abhijeet34/pointback/commit/4b9339720a9e3e41142442df1ade7a4f4a5955f3))
+* **client:** wait for a concurrent open's daemon while the lock calls it starting ([#89](https://github.com/Abhijeet34/pointback/issues/89)) ([96da8fb](https://github.com/Abhijeet34/pointback/commit/96da8fbd37c1488057ae3c98941afd4468cb6304))
+* **cli:** never name a concurrent start's daemon of this version as an older one that did not stop ([#69](https://github.com/Abhijeet34/pointback/issues/69)) ([648edaf](https://github.com/Abhijeet34/pointback/commit/648edaf35c5a1e1e3a2e0e9ca6bb48e52be5fa9b))
+* **cli:** never name a just-started daemon of this version as one stop could not stop ([#75](https://github.com/Abhijeet34/pointback/issues/75)) ([8a78d73](https://github.com/Abhijeet34/pointback/commit/8a78d73df386e015ee029bb7bca411f34a754cff))
+* **cli:** split long polls into bounded requests so --timeout-ms above 300000 answers ([#63](https://github.com/Abhijeet34/pointback/issues/63)) ([dcd5fa6](https://github.com/Abhijeet34/pointback/commit/dcd5fa603903a4e9e14649faeb5531336aa76f77))
+* **cli:** wait for the daemon to exit before reporting stopped ([#74](https://github.com/Abhijeet34/pointback/issues/74)) ([dfca4fd](https://github.com/Abhijeet34/pointback/commit/dfca4fd67cb65e742d2c887839cf39eeb190a3ed))
+* **lock:** a probe's timeout no longer counts this process's own stall against the peer ([#90](https://github.com/Abhijeet34/pointback/issues/90)) ([300c6d6](https://github.com/Abhijeet34/pointback/commit/300c6d6ce4d3c0aadd272b5aa5f916844f0f959f))
+* **server:** keep idle connections open so a reused add is not dropped ([#77](https://github.com/Abhijeet34/pointback/issues/77)) ([18a4814](https://github.com/Abhijeet34/pointback/commit/18a48140d27bacb4a83bf49a1e422ab72ec0287e))
+* **server:** never evict a review that has a tab open ([#60](https://github.com/Abhijeet34/pointback/issues/60)) ([504480c](https://github.com/Abhijeet34/pointback/commit/504480c98478d59f19520a29d4d59300806a5245))
+* **server:** run one daemon per state directory and guard session writes ([#62](https://github.com/Abhijeet34/pointback/issues/62)) ([93f404b](https://github.com/Abhijeet34/pointback/commit/93f404b322fb5f8780a36ec7ad8ba166920b715c))
+
 ## [0.1.6](https://github.com/Abhijeet34/pointback/compare/v0.1.5...v0.1.6) (2026-10-04)
 
 
