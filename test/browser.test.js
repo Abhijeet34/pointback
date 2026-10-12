@@ -2230,6 +2230,40 @@ test(
 );
 
 test(
+  "a card the agent's end held open has its target outlined again once the review is reopened",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#title");
+    await page.type("This title is long; I would cut it to");
+    assert.equal(await highlights(artifact), 1, "the card's target is outlined while it is open");
+    assert.equal((await cli(["end", file], lab.env)).json().ended_by, "agent");
+    await page.waitFor(noticeSays("Your agent ended this review."));
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    assert.equal(await highlights(artifact), 0, "Annotate is off, so nothing is outlined");
+    // The agent opens the file again, which takes up the review it ended, and Annotate with it.
+    assert.equal((await cli([file], lab.env)).json().session.status, "opened");
+    await page.waitFor("document.body.dataset.annotate === '1'");
+    assert.deepEqual(
+      {
+        outlined: await highlights(artifact),
+        card: JSON.parse(await page.eval(CARD_SEEN)),
+      },
+      { outlined: 1, card: { words: "This title is long; I would cut it to", reason: null } },
+      "the card still open on the title has the title outlined again",
+    );
+    await page.type(" four words");
+    await clickOn(page, "document.getElementById('cardAdd')");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
+    assert.equal(await highlights(artifact), 0, "the note added, its outline goes with the card");
+    await page.close();
+  },
+);
+
+test(
   "a file change held back by a half-typed note still shows once the agent ends the review, and Add loads it",
   { skip: !executable && "no browser found" },
   async () => {

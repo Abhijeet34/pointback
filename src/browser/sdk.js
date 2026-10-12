@@ -254,8 +254,9 @@
     annotate = on;
     for (const element of focusable) element.removeAttribute("tabindex");
     focusable = [];
+    // The target stays open while its card does: the chrome keeps a card holding words open through
+    // an end or a gone file that turns Annotate off, and outlines it again when Annotate comes back.
     if (!on) {
-      closeTarget(false);
       outlineRects([]);
       return;
     }
@@ -274,6 +275,8 @@
         focusable.push(element);
       }
     }
+    if (open)
+      outlineRects(open.tag === "text" ? open.rects : [open.element.getBoundingClientRect()]);
   }
 
   function outlineRects(rects) {
