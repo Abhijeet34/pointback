@@ -4712,8 +4712,16 @@ test(
     let poll;
     try {
       const { file } = copyOfFixture();
-      const { page } = await openReview((await cli([file], own.env)).json().session.url);
-      await page.waitFor("document.getElementById('presence').dataset.state === 'waiting'");
+      const { page, artifact } = await openReview((await cli([file], own.env)).json().session.url);
+      // Before the stop the agent is working on a note, a state only that daemon's memory holds.
+      await noteOn(page, artifact, "#title", "Name the queue in the title");
+      await page.eval("document.getElementById('send').click()");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+      assert.equal(
+        (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().status,
+        "feedback",
+      );
+      await page.waitFor("document.getElementById('presence').dataset.state === 'working'");
       // Every state the bar paints from here on, in order, whatever the tab does between two reads.
       await page.eval(`globalThis.presenceSeen = [];
         new MutationObserver(() => {
@@ -4727,10 +4735,13 @@ test(
       await page.waitFor("document.getElementById('presence').dataset.state === 'listening'", {
         timeoutMs: 20_000,
       });
-      assert.deepEqual(
-        JSON.parse(await page.eval("JSON.stringify(presenceSeen)")),
-        ["lost", "listening"],
-        "the bar goes from not connected straight to the agent the review has now",
+      // The restarted daemon truthfully says waiting to a tab that reconnects before the poll that
+      // started it attaches, as on a loaded windows-2025 runner, so the bar may pass through it; it
+      // never paints the working agent the stopped daemon last described.
+      assert.match(
+        JSON.parse(await page.eval("JSON.stringify(presenceSeen)")).join(" "),
+        /^lost (waiting )?listening$/,
+        "the bar goes from not connected to the agent the review has now, never to the one before the stop",
       );
       assert.equal((await cli(["end", file], own.env)).json().ended_by, "agent");
       assert.equal((await poll).json().status, "ended");
