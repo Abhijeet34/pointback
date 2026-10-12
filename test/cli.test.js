@@ -489,6 +489,18 @@ h2 { background: URL( "../../more (2).png" ); }`,
   assert.deepEqual(rooted.json().refused_assets, ["/fonts/peer.woff2"]);
 });
 
+test("a page whose <base> does not parse opens, its loads resolved from the page as the browser does", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-base-"));
+  const page = join(dir, "page.html");
+  writeFileSync(
+    page,
+    `<!doctype html><base href="http://["><img src="../above.png"><p>bad base</p>`,
+  );
+  const opened = await cli([page], lab.env);
+  assert.equal(opened.code, 0, opened.stderr);
+  assert.deepEqual(opened.json().refused_assets, ["../above.png"]);
+});
+
 test("--root resolves relative to where the agent is, and is refused where it means nothing", async () => {
   const repo = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-cli-root-"));
   mkdirSync(join(repo, "sheets"));

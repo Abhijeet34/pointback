@@ -131,7 +131,8 @@ function cssRefs(css) {
 export function assetsOutside({ base, refs }, rootUrl, pageUrl, readSheet = () => null) {
   const origin = "http://artifact.invalid";
   let page = new URL(pageUrl, origin);
-  if (base !== undefined) page = new URL(base, page);
+  // A <base> that does not parse is ignored, as the browser ignores it, never a failed open.
+  if (base !== undefined && URL.canParse(base, page)) page = new URL(base, page);
   const outside = new Set();
   const read = new Set();
   // Grows as each sheet is read, and a sheet is read once, so an @import cycle ends.
