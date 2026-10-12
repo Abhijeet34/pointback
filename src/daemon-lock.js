@@ -95,8 +95,8 @@ async function isDaemon(port, pid) {
 }
 
 /**
- * "live", "dead", or "gone" when the file vanished under the read and the scan must be redone, and
- * when the lock was last written, wherever that could be read.
+ * "live", "dead", or "gone" when the file vanished under the read and the scan must be redone, when
+ * the lock was last written, wherever that could be read, and when its holder was stopped, if it was.
  */
 async function holder(stateDir, generation) {
   let held;
@@ -115,10 +115,11 @@ async function holder(stateDir, generation) {
     // Created and not yet written, or written by a start that died in between.
     return starting;
   }
+  const { stoppedAt } = parsed;
   if (parsed.released || !Number.isInteger(parsed.pid) || !pidAlive(parsed.pid))
-    return { state: "dead", wroteAt };
+    return { state: "dead", wroteAt, stoppedAt };
   if (!Number.isInteger(parsed.port)) return starting;
-  return { state: (await isDaemon(parsed.port, parsed.pid)) ? "live" : "dead", wroteAt };
+  return { state: (await isDaemon(parsed.port, parsed.pid)) ? "live" : "dead", wroteAt, stoppedAt };
 }
 
 /**
@@ -134,17 +135,21 @@ export async function daemonHolds(stateDir) {
 }
 
 /**
- * Claims the state directory for this process, or returns null when a live daemon holds it. The
- * claim is published with the port once bound, which re-checks that a takeover did not happen
- * while this start was stalled; a claim that lost says so and clears its own file.
+ * Claims the state directory for this process, or returns null when a live daemon holds it, or when
+ * its holder was stopped after this process began (`begunAt`): a start spawned before a stop and still
+ * booting through it would otherwise revive the directory the stop freed. The claim is published with
+ * the port once bound, which re-checks that a takeover did not happen while this start was stalled; a
+ * claim that lost says so and clears its own file.
  */
-export async function claimDaemon(stateDir) {
+export async function claimDaemon(stateDir, begunAt = performance.timeOrigin) {
   for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
     const top = generations(stateDir)[0] ?? 0;
     if (top > 0) {
-      const { state } = await holder(stateDir, top);
+      const { state, stoppedAt } = await holder(stateDir, top);
       if (state === "live") return null;
       if (state === "gone") continue;
+      // A stop stamped later than now, by a clock set back since, is not one this start began before.
+      if (stoppedAt >= begunAt && stoppedAt <= Date.now()) return null;
     }
     const mine = top + 1;
     try {
@@ -168,16 +173,29 @@ export async function claimDaemon(stateDir) {
 }
 
 function claim(stateDir, generation) {
+  let port = null;
   const write = (fields) =>
-    writeJsonAtomic(lockPath(stateDir, generation), { pid: process.pid, ...fields });
+    writeJsonAtomic(lockPath(stateDir, generation), { pid: process.pid, port, ...fields });
   const held = () => generations(stateDir)[0] === generation;
   return {
     /** Records the bound port; false when another daemon has taken over since the claim. */
-    publish(port) {
-      write({ port });
+    publish(bound) {
+      port = bound;
+      write({});
       if (held()) return true;
       remove(stateDir, generation);
       return false;
+    },
+    /**
+     * Records that this daemon was asked to stop. The port stays named, so the directory is still held
+     * until this process exits and a start meanwhile comes back on the port once it is free.
+     */
+    stopped() {
+      try {
+        if (held()) write({ stoppedAt: Date.now() });
+      } catch {
+        // A stop never fails on its record; without it a start still booting may claim after.
+      }
     },
     /** Lets the next start take over at once, without waiting on this process to exit. */
     release() {

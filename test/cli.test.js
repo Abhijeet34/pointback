@@ -828,6 +828,38 @@ test("a daemon whose state directory is removed before it publishes exits instea
   }
 });
 
+// windows-2025, 3 of about 2160 traced rounds: a stop right after concurrent opens was followed by a
+// daemon one of those opens had spawned and that was still booting, which claimed the directory the
+// stop freed and ran on after it. Here such a start is held before any of its own code runs until the
+// stop has returned. An open after the stop still gets a daemon.
+test("a start that began before a stop steps aside after it, and an open after the stop starts one", async () => {
+  const stopping = isolatedEnv();
+  const bootGate = join(gates(), "boot");
+  const { daemon, said } = daemonProcess(
+    loading(stopping.env, "gated-start.js", { TEST_BOOT_GATE: bootGate }),
+  );
+  try {
+    assert.equal((await cli([fixture], stopping.env)).code, 0);
+    await until(() => existsSync(`${bootGate}.reached`), {
+      what: "the concurrent start to be booting",
+    });
+    assert.deepEqual((await cli(["stop"], stopping.env)).json(), { status: "stopped" });
+    writeFileSync(bootGate, "");
+    await until(() => daemon.exitCode !== null, {
+      what: "the start begun before the stop to exit",
+    });
+    assert.equal(daemon.exitCode, 0, said());
+    assert.match(said(), /stopped after this start began/);
+    assert.deepEqual((await cli(["stop"], stopping.env)).json(), { status: "not-running" });
+    const opened = await cli([fixture], stopping.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.ok(pidAlive(stopping.serverInfo().pid), "the open after the stop started a daemon");
+  } finally {
+    daemon.kill();
+    await stopping.stop();
+  }
+});
+
 /** A token in the shape the daemon mints, recorded for a test to watch where it travels. */
 const RECORDED_TOKEN = "ab".repeat(24);
 
