@@ -598,6 +598,26 @@ test("eight cold opens wait for a winning daemon that is slow to come up, while 
   }
 });
 
+// At background QoS beside a 128-thread CPU burn on macOS, an open said "server did not start: the
+// daemon it started is still running after 10096 ms and 43 probes" with nothing in the log: the daemon
+// took 72 to 147 s there to reach its listen, and an open gave a start 10 s and 20 looks however long
+// the machine held it before its claim. Here the daemon claims no sooner than 11 s after it began.
+test("an open waits for the daemon it started for as long as that daemon is alive and coming up", async () => {
+  const held = isolatedEnv();
+  try {
+    const started = Date.now();
+    const opened = await cli(
+      [copies(1)[0]],
+      loading(held.env, "slow-start.js", { TEST_CLAIM_AT_MS: "11000" }),
+    );
+    console.log(`the open answered after ${Date.now() - started} ms`);
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(new URL(opened.json().session.url).port, String(held.serverInfo().port));
+  } finally {
+    await held.stop();
+  }
+});
+
 // A start that fails before it claims the directory, as one the platform refuses does, ended the open's
 // wait at once even while a concurrent start's daemon was coming up. Now it ends it only once no live
 // start is left: here the concurrent start has claimed the directory and binds 5 s after it started.

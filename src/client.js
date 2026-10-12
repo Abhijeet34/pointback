@@ -5,7 +5,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { STARTING_MS, daemonHolds, pidAlive, probeTimeout } from "./daemon-lock.js";
+import { daemonHolds, pidAlive, probeTimeout } from "./daemon-lock.js";
 import { tokenProof } from "./http-guard.js";
 import { env, name, version } from "./identity.js";
 import { readJson, writeJsonAtomic } from "./state-dir.js";
@@ -104,35 +104,21 @@ export async function ensureServer(stateDir, environment = process.env, wallMs =
     return started;
   };
   let child = start();
-  // Bounded by attempts as well as by the clock. Every turn of this loop can cost a health probe its
-  // running-time budget of 1.5 s and a look at the lock's holder its CONNECT_MS, so a budget written
-  // only in milliseconds is really a budget in however many looks the machine can afford - and a busy
-  // windows-2025 runner affords few. Under sustained starvation each look could also take a probe's
-  // whole wall ceiling, so every look is capped at what is left of START_WALL_MS.
   // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
-  // directory; the rest exit 0. A start that stepped aside for a daemon that has since let go,
-  // one caught on its way out, is replaced.
-  // The clock runs from the latest start in progress: this CLI's own spawn, or a live holder's last
-  // write to the lock, so a holder the lock still calls starting is waited for (measurements in
-  // docs/ENGINEERING-NOTES.md). A failed start means "not coming" only once no live holder is left,
-  // and a write stamped later than now, by a clock set back since, extends nothing.
-  let since = Date.now();
+  // directory; the rest exit 0. While the daemon this CLI started is alive it is still starting,
+  // however long the machine holds it before its claim, so it is waited for. Once it has exited, a
+  // live holder of the lock is a start in progress to wait for; with none left, a start that stepped
+  // aside (exit 0), for a daemon caught on its way out, is replaced, and a failed one is reported.
+  // START_WALL_MS is the one bound on all of it (measurements in docs/ENGINEERING-NOTES.md).
   let probes = 0;
-  const lapsed = () => probes >= START_PROBES && Date.now() - since >= STARTING_MS;
-  for (;;) {
+  while (left() > 0) {
     probes += 1;
     const info = readServerInfo(stateDir);
     if (info && serves(await health(info, left()))) return info;
-    if (child.exitCode !== null || lapsed()) {
-      const held = await daemonHolds(stateDir, left());
-      if (held) {
-        if (held.wroteAt <= Date.now()) since = Math.max(since, held.wroteAt);
-      } else if (child.exitCode === 0) {
-        child = start();
-        since = Date.now();
-      } else if (child.exitCode !== null) break;
+    if (child.exitCode !== null && !(await daemonHolds(stateDir, left()))) {
+      if (child.exitCode !== 0) break;
+      child = start();
     }
-    if (lapsed() || left() === 0) break;
     await sleep(50);
   }
   throw new Error(startFailure(stateDir, child, Math.round(performance.now() - began), probes));
@@ -244,9 +230,6 @@ export async function refusingServer(stateDir, ceiling) {
   }
 }
 
-/** How many looks a start gets to answer, as well as STARTING_MS, before it is called dead. */
-const START_PROBES = 20;
-
 /**
  * Says why the daemon is not there, rather than naming a file to go and read. Pointing at
  * `server.log` is no help wherever the log cannot be reached afterwards, which is every CI
@@ -264,12 +247,14 @@ function startFailure(stateDir, child, elapsedMs, probes) {
   // Named as the daemon, because "it exited 0" was read as the CLI's own exit status.
   const state =
     child.exitCode === null
-      ? "the daemon it started is still running"
+      ? "the daemon it started is still starting"
       : child.exitCode === 0
         ? "the daemon it started stepped aside for one that never answered"
         : `the daemon it started exited ${child.exitCode}`;
+  // A start still going when the open gave up is not lost: the next open finds it once it is up.
+  const next = child.exitCode === null ? "; a later open uses it once it is up" : "";
   return (
-    `server did not start: ${state} after ${elapsedMs} ms and ${probes} probes. ` +
+    `server did not start: ${state} after ${elapsedMs} ms and ${probes} probes${next}. ` +
     `${log} says: ${said || "(nothing)"}`
   );
 }

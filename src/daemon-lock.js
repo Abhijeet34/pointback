@@ -18,7 +18,7 @@ import { pastSharingViolations, writeJsonAtomic } from "./state-dir.js";
  * sandboxes that deny AF_UNIX.
  */
 const LOCK_NAME = /^daemon\.(\d+)\.lock$/;
-export const STARTING_MS = 10_000;
+const STARTING_MS = 10_000;
 const CONNECT_MS = 1_000;
 const CLAIM_ATTEMPTS = 50;
 
@@ -95,8 +95,8 @@ async function isDaemon(port, pid, ceiling) {
 }
 
 /**
- * "live", "dead", or "gone" when the file vanished under the read and the scan must be redone, when
- * the lock was last written, wherever that could be read, and when its holder was stopped, if it was.
+ * "live", "dead", or "gone" when the file vanished under the read and the scan must be redone, and
+ * when its holder was stopped, if it was.
  */
 async function holder(stateDir, generation, ceiling) {
   let held;
@@ -105,9 +105,9 @@ async function holder(stateDir, generation, ceiling) {
     wroteAt = statSync(lockPath(stateDir, generation)).mtimeMs;
     held = readFileSync(lockPath(stateDir, generation), "utf8");
   } catch (error) {
-    return { state: error.code === "ENOENT" ? "gone" : "live", wroteAt };
+    return { state: error.code === "ENOENT" ? "gone" : "live" };
   }
-  const starting = { state: Date.now() - wroteAt < STARTING_MS ? "live" : "dead", wroteAt };
+  const starting = { state: Date.now() - wroteAt < STARTING_MS ? "live" : "dead" };
   let parsed;
   try {
     parsed = JSON.parse(held);
@@ -117,23 +117,21 @@ async function holder(stateDir, generation, ceiling) {
   }
   const { stoppedAt } = parsed;
   if (parsed.released || !Number.isInteger(parsed.pid) || !pidAlive(parsed.pid))
-    return { state: "dead", wroteAt, stoppedAt };
+    return { state: "dead", stoppedAt };
   if (!Number.isInteger(parsed.port)) return starting;
   const live = await isDaemon(parsed.port, parsed.pid, ceiling);
-  return { state: live ? "live" : "dead", wroteAt, stoppedAt };
+  return { state: live ? "live" : "dead", stoppedAt };
 }
 
 /**
- * When the live daemon holding the state directory, started or still starting, last wrote its lock
- * (its claim, then its port), or null when none holds it. The time is undefined when it could not be
- * read. A holder with no port yet is live for STARTING_MS from that time, and no longer. `ceiling`
- * caps the wall time of the look at its port.
+ * Whether a live daemon holds the state directory, started or still starting. A holder with no port
+ * yet is live for STARTING_MS from its last write to the lock, and no longer. `ceiling` caps the wall
+ * time of the look at its port.
  */
 export async function daemonHolds(stateDir, ceiling) {
   const top = generations(stateDir)[0];
-  if (top === undefined) return null;
-  const { state, wroteAt } = await holder(stateDir, top, ceiling);
-  return state === "live" ? { wroteAt } : null;
+  if (top === undefined) return false;
+  return (await holder(stateDir, top, ceiling)).state === "live";
 }
 
 /**
