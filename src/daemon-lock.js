@@ -18,7 +18,7 @@ import { pastSharingViolations, writeJsonAtomic } from "./state-dir.js";
  * sandboxes that deny AF_UNIX.
  */
 const LOCK_NAME = /^daemon\.(\d+)\.lock$/;
-export const STARTING_MS = 10_000;
+const STARTING_MS = 10_000;
 const CONNECT_MS = 1_000;
 const CLAIM_ATTEMPTS = 50;
 
@@ -81,8 +81,8 @@ export function probeTimeout(ms, ceiling = PROBE_CEILING_MS) {
  * or for another pid, is not it; a daemon too busy to answer within CONNECT_MS of running time is, so
  * a timeout counts as alive.
  */
-async function isDaemon(port, pid) {
-  const probe = probeTimeout(CONNECT_MS);
+async function isDaemon(port, pid, ceiling) {
+  const probe = probeTimeout(CONNECT_MS, ceiling);
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: probe.signal });
     const status = /** @type {any} */ (await res.json());
@@ -96,18 +96,18 @@ async function isDaemon(port, pid) {
 
 /**
  * "live", "dead", or "gone" when the file vanished under the read and the scan must be redone, and
- * when the lock was last written, wherever that could be read.
+ * when its holder was stopped, if it was.
  */
-async function holder(stateDir, generation) {
+async function holder(stateDir, generation, ceiling) {
   let held;
   let wroteAt;
   try {
     wroteAt = statSync(lockPath(stateDir, generation)).mtimeMs;
     held = readFileSync(lockPath(stateDir, generation), "utf8");
   } catch (error) {
-    return { state: error.code === "ENOENT" ? "gone" : "live", wroteAt };
+    return { state: error.code === "ENOENT" ? "gone" : "live" };
   }
-  const starting = { state: Date.now() - wroteAt < STARTING_MS ? "live" : "dead", wroteAt };
+  const starting = { state: Date.now() - wroteAt < STARTING_MS ? "live" : "dead" };
   let parsed;
   try {
     parsed = JSON.parse(held);
@@ -115,36 +115,41 @@ async function holder(stateDir, generation) {
     // Created and not yet written, or written by a start that died in between.
     return starting;
   }
+  const { stoppedAt } = parsed;
   if (parsed.released || !Number.isInteger(parsed.pid) || !pidAlive(parsed.pid))
-    return { state: "dead", wroteAt };
+    return { state: "dead", stoppedAt };
   if (!Number.isInteger(parsed.port)) return starting;
-  return { state: (await isDaemon(parsed.port, parsed.pid)) ? "live" : "dead", wroteAt };
+  const live = await isDaemon(parsed.port, parsed.pid, ceiling);
+  return { state: live ? "live" : "dead", stoppedAt };
 }
 
 /**
- * When the live daemon holding the state directory, started or still starting, last wrote its lock
- * (its claim, then its port), or null when none holds it. The time is undefined when it could not be
- * read. A holder with no port yet is live for STARTING_MS from that time, and no longer.
+ * Whether a live daemon holds the state directory, started or still starting. A holder with no port
+ * yet is live for STARTING_MS from its last write to the lock, and no longer. `ceiling` caps the wall
+ * time of the look at its port.
  */
-export async function daemonHolds(stateDir) {
+export async function daemonHolds(stateDir, ceiling) {
   const top = generations(stateDir)[0];
-  if (top === undefined) return null;
-  const { state, wroteAt } = await holder(stateDir, top);
-  return state === "live" ? { wroteAt } : null;
+  if (top === undefined) return false;
+  return (await holder(stateDir, top, ceiling)).state === "live";
 }
 
 /**
- * Claims the state directory for this process, or returns null when a live daemon holds it. The
- * claim is published with the port once bound, which re-checks that a takeover did not happen
- * while this start was stalled; a claim that lost says so and clears its own file.
+ * Claims the state directory for this process, or returns null when a live daemon holds it, or when
+ * its holder was stopped after this process began (`begunAt`): a start spawned before a stop and still
+ * booting through it would otherwise revive the directory the stop freed. The claim is published with
+ * the port once bound, which re-checks that a takeover did not happen while this start was stalled; a
+ * claim that lost says so and clears its own file.
  */
-export async function claimDaemon(stateDir) {
+export async function claimDaemon(stateDir, begunAt = performance.timeOrigin) {
   for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt += 1) {
     const top = generations(stateDir)[0] ?? 0;
     if (top > 0) {
-      const { state } = await holder(stateDir, top);
+      const { state, stoppedAt } = await holder(stateDir, top);
       if (state === "live") return null;
       if (state === "gone") continue;
+      // A stop stamped later than now, by a clock set back since, is not one this start began before.
+      if (stoppedAt >= begunAt && stoppedAt <= Date.now()) return null;
     }
     const mine = top + 1;
     try {
@@ -168,20 +173,38 @@ export async function claimDaemon(stateDir) {
 }
 
 function claim(stateDir, generation) {
+  let port = null;
   const write = (fields) =>
-    writeJsonAtomic(lockPath(stateDir, generation), { pid: process.pid, ...fields });
+    writeJsonAtomic(lockPath(stateDir, generation), { pid: process.pid, port, ...fields });
   const held = () => generations(stateDir)[0] === generation;
   return {
     /** Records the bound port; false when another daemon has taken over since the claim. */
-    publish(port) {
-      write({ port });
+    publish(bound) {
+      port = bound;
+      write({});
       if (held()) return true;
       remove(stateDir, generation);
       return false;
     },
+    /**
+     * Records that this daemon was asked to stop. The port stays named, so the directory is still held
+     * until this process exits and a start meanwhile comes back on the port once it is free.
+     */
+    stopped() {
+      try {
+        if (held()) write({ stoppedAt: Date.now() });
+      } catch {
+        // A stop never fails on its record; without it a start still booting may claim after.
+      }
+    },
     /** Lets the next start take over at once, without waiting on this process to exit. */
     release() {
-      if (held()) write({ port: null, released: true });
+      try {
+        if (held()) write({ port: null, released: true });
+      } catch {
+        // Only a speedup: where the write fails, as in a removed state directory, the next start
+        // takes over once this pid is gone, so a close never fails on it.
+      }
     },
   };
 }

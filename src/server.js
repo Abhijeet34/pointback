@@ -93,7 +93,8 @@ const contentTypes = {
  *
  * Resolves to null when another daemon already serves the state directory: two would each hold their
  * own copy of every session and overwrite the other's. A start that loses the race to publish its
- * port may already have loaded sessions and bound one before it steps aside.
+ * port may already have loaded sessions and bound one before it steps aside. It also resolves to null
+ * when the directory's daemon was stopped after this process began (`claimDaemon`).
  */
 export async function serve({
   stateDir,
@@ -121,7 +122,7 @@ export async function serve({
   const server = createServer(async (req, res) => {
     touch();
     try {
-      await route(req, res, { store, streams, token, port: boundPort(), idleMs });
+      await route(req, res, { store, streams, token, port: boundPort(), idleMs, lock });
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
       if (!(error instanceof HttpError)) console.error(error);
@@ -182,17 +183,19 @@ export async function serve({
     );
   }
   const bound = boundPort();
-  if (!lock.publish(bound)) {
-    await close();
-    return null;
-  }
   // The token is kept only with the port it was paired with: a tab can reach no other port, and a
   // fresh token on a fresh port is one fewer place an old one is still worth anything.
   const token =
     bound === previous?.port && SERVER_TOKEN_PATTERN.test(previous.token ?? "")
       ? previous.token
       : randomBytes(24).toString("hex");
+  // A listening server whose start failed has no idle-out yet, so it is closed here or it never
+  // exits; a state directory removed under the start makes either write throw.
   try {
+    if (!lock.publish(bound)) {
+      await close();
+      return null;
+    }
     writeJsonAtomic(recorded, {
       pid: process.pid,
       port: bound,
@@ -231,6 +234,7 @@ async function route(req, res, ctx) {
   if (req.method === "POST" && pathname === "/shutdown") {
     assertOrigin(req, ctx.port);
     assertBearer(req, ctx.token);
+    ctx.lock.stopped();
     sendJson(res, 200, { status: "stopping" });
     setImmediate(() => process.exit(0));
     return;
