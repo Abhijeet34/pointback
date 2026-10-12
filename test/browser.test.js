@@ -2917,6 +2917,31 @@ async function keyboardNoteHeardLate(page, artifact) {
   await page.type("Say which queue");
 }
 
+// Issue 57, first path: the page puts the focus back on an element noted by keyboard when it hears the
+// card close, which crosses the wrapper and can land after the reviewer's next key. In Chromium that
+// Tab never reaches the page, whose document holds no focus until its own refocus, and moves on to the
+// margin; Firefox takes it into the page (the engine smoke's `tabBeforeTheClose`).
+test(
+  "a Tab the reviewer presses before the page hears the card close is not undone",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await keyboardNoteHeardLate(page, artifact);
+    await page.enter();
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.activeElement === document.getElementById('artifact')",
+    );
+    await page.tab();
+    await page.waitFor("document.activeElement.classList.contains('mark-target')");
+    // Synchronous: the page has handled the close once this returns.
+    await artifact.eval("hearNow()");
+    await page.waitFor("document.body.dataset.handoff === 'settled'");
+    assert.equal(await page.eval("document.activeElement.className"), "mark-target");
+    await page.close();
+  },
+);
+
 // Issue 57, second path: the reviewer moves to a control of the chrome before the page hears the close.
 test(
   "a chrome control the reviewer moves to before the page hears the card close keeps the focus",

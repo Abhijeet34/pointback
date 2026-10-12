@@ -603,8 +603,11 @@
     focusShown = !pointed;
     if (pointed) pointedLast = element;
     // Not once the reviewer has pressed in the page: this close can land mid-drag, and moving focus
-    // then ends the drag, so the passage is recorded cut short or as its whole element.
+    // then ends the drag, so the passage is recorded cut short or as its whole element. Nor once they
+    // have moved the focus to another element here, as a Tab does in Firefox (issue 57).
     if (!refocus || !annotate || pressed) return;
+    const at = document.activeElement;
+    if (document.hasFocus() && at !== document.body && at !== element) return;
     // Focus goes back to a target reached by keyboard, so the next Tab starts from the note. One
     // reached by mouse was let go when it was noted (`selectTarget`), so the page takes the keys
     // back with nothing in it focused.
