@@ -501,6 +501,37 @@ test("a file that is neither HTML nor Markdown is refused with a message and exi
   assert.equal(opened.json().session.status, "opened");
 });
 
+test(
+  "a named pipe opened as the page is refused with a message, and the daemon goes on answering",
+  { skip: process.platform === "win32" && "Windows has no mkfifo" },
+  async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-fifo-"));
+    const pipe = join(dir, "pipe.html");
+    assert.equal(spawnSync("mkfifo", [pipe]).status, 0);
+    // A read of a pipe nobody writes never returns, so a daemon that reads it never answers again.
+    const refused = await cli([pipe, "--no-open"], lab.env, { timeoutMs: 10_000 });
+    assert.equal(refused.code, 1);
+    assert.equal(refused.stdout, "");
+    assert.equal(refused.stderr, "error: pipe.html cannot be reviewed: it is not a regular file\n");
+    writeFileSync(join(dir, "after.md"), "# After\n");
+    const opened = await cli([join(dir, "after.md"), "--no-open"], lab.env, { timeoutMs: 10_000 });
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(opened.json().session.status, "opened");
+    // A pipe put in place of a page already under review is refused when the review reads it.
+    const swapped = join(dir, "swapped.html");
+    writeFileSync(swapped, "<p>before</p>");
+    const key = new URL((await cli([swapped], lab.env)).json().session.url).pathname.split("/")[2];
+    rmSync(swapped);
+    assert.equal(spawnSync("mkfifo", [swapped]).status, 0);
+    const info = lab.serverInfo();
+    const session = await fetch(`http://127.0.0.1:${info.port}/api/${key}/session`, {
+      headers: { authorization: `Bearer ${info.token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    assert.equal(session.status, 200);
+  },
+);
+
 test("what a page's CSS loads from outside its folder is refused by name, through the sheets it links too", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-css-"));
   const site = join(dir, "site");
