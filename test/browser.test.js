@@ -2518,8 +2518,24 @@ test(
         fetch(`http://127.0.0.1:${port}/health`)
           .then((r) => r.ok)
           .catch(() => false);
-      const page = await browser.page(session.url);
-      await page.waitFor("document.body.dataset.ready === '1'");
+      // The idle starts at the open, and on windows-2025 the tab's first request came after it: the
+      // daemon had idled out and refused the review's own page (run 38189872095, job 114620117308).
+      // Until the tab follows its review, the test's own probes are the activity that holds it.
+      let opening = true;
+      const holding = (async () => {
+        while (opening) {
+          await alive();
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      })();
+      let page;
+      try {
+        page = await browser.page(session.url);
+        await page.waitFor(FOLLOWING);
+      } finally {
+        opening = false;
+        await holding;
+      }
       // With the tab's event stream open, the daemon does not idle out past its short idle.
       // Nothing here touches it in the meantime, or the probe would be the thing keeping it
       // alive: the tab's own heartbeat, every 500 ms against a 1500 ms window, is the claim. A
