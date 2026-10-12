@@ -1511,9 +1511,9 @@ test(
       what: "the review window to lose focus",
     });
     // Headless Chromium leaves a window the focus while another window has it, so the window is left
-    // for another tab, which hides the page. A hidden page's timers ran its 20 ms call more than 10 s
-    // late on a loaded runner (windows-2025 and macos-15, hunts 38271034344 and 38271044651), so the
-    // call is made from a task of its own; the answer to this request comes before the call is made.
+    // for another tab, which hides the page. A hidden page's timers ran its 20 ms call at a median of
+    // 5 s with a busy process per core (windows-2025, hunt 38282746167), so the call is made from a
+    // task of its own; the answer to this request comes before the call is made.
     await artifact.eval("takeFocusSoon()");
     await pageTookFocus(
       page,
