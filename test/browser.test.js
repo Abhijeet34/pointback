@@ -2919,6 +2919,47 @@ test(
   },
 );
 
+/**
+ * Opens a card by keyboard on `#p1`, the way a reviewer does, with the page hearing the chrome late
+ * from then on (`HEARS_LATE`), and types a note in it.
+ */
+async function keyboardNoteHeardLate(page, artifact) {
+  await pointAt(page, artifact, "#title");
+  await page.key("Escape", { keyCode: 27 });
+  await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
+  await page.tab();
+  await artifact.waitFor("document.activeElement.id === 'p1'");
+  await artifact.eval(HEARS_LATE);
+  await page.enter();
+  await page.waitFor(
+    "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+  );
+  await page.type("Say which queue");
+}
+
+// Issue 57, second path: the reviewer moves to a control of the chrome before the page hears the close.
+test(
+  "a chrome control the reviewer moves to before the page hears the card close keeps the focus",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await keyboardNoteHeardLate(page, artifact);
+    await page.eval(
+      "document.getElementById('cardCancel').click(); document.getElementById('annotate').focus()",
+    );
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.activeElement.id === 'annotate'",
+    );
+    await artifact.eval("hearNow()");
+    // The page's acknowledgement settles the hand-off, and a pull taken back settles it after the put-back.
+    await page.waitFor("document.body.dataset.handoff === 'settled'");
+    assert.equal(await page.eval("document.activeElement.id"), "annotate");
+    assert.notEqual(await pageAddress(page), "about:blank", "the page stays loaded");
+    await page.close();
+  },
+);
+
 // The page ignores what it is pointed at until it hears the card close, which crosses the wrapper and
 // can land after the chrome has hidden the card: on macos-15, hunts 37277309134 and 37299981095, a
 // test's next click reached the page first and opened no card. The close is held in the wrapper until
