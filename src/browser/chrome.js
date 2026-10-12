@@ -1627,12 +1627,14 @@ window.addEventListener("blur", () => {
   setTimeout(guard);
 });
 // A hidden frame the page moved the focus into gives it up to nothing at the next layout, so where the
-// focus is now counts as well as where it is a task later.
+// focus is now counts as well as where it is a task later. A loaded browser can run that task after the
+// reviewer has handed the page the focus, which the check then leaves alone.
 function movedToPage() {
   if (handed || !noteOpen()) return;
   const now = document.activeElement === frame;
   setTimeout(() => {
-    if ((now || document.activeElement === frame) && !unloaded && noteOpen()) pageTook(left);
+    if ((now || document.activeElement === frame) && !handed && !unloaded && noteOpen())
+      pageTook(left);
   });
 }
 /** Unloads the page for taking the focus, which goes back to `from` once it is out, or to the note. */

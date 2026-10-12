@@ -2831,6 +2831,52 @@ test(
   },
 );
 
+// On macos-15, hunt 38260129160 attempt 5, the chrome ran the tasks the Edit press queued only after
+// the reviewer's next press over the page had handed it the focus. Holding them until then makes that
+// order certain.
+test(
+  "a press over the page just after a press on Edit keeps the page loaded, however late the chrome runs its tasks",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Shorter title");
+    await holdTasks(page);
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+    await pressOverPage(page, false);
+    await page.eval("runHeld()");
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
+    await page.close();
+  },
+);
+
+test(
+  "a press over the page just after a press on the card's words keeps the page loaded, however late the chrome runs its tasks",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await holdTasks(page);
+    // The card's own words take no focus, so a press on them leaves the focus on the chrome's body.
+    const at = JSON.parse(
+      await page.eval(`JSON.stringify((() => {
+        const box = document.getElementById("cardTarget").getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      })())`),
+    );
+    await page.click(at.x, at.y);
+    await page.waitFor("document.activeElement === document.body");
+    await pressOverPage(page, false);
+    await page.eval("runHeld()");
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
+    await page.close();
+  },
+);
+
 test(
   "a margin edit after the page has heard the card close never covers or unloads the page",
   { skip: !executable && "no browser found" },
