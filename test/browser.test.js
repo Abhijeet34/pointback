@@ -4016,6 +4016,8 @@ test(
     // Ending turns annotate off, so the live switch is read off too, or the comparison is vacuous.
     await page.eval("document.getElementById('annotate').click()");
     await page.waitFor("String(document.getElementById('annotate').checked) === 'false'");
+    // Under reduced motion the switch's and End review's colours still ease over the house's 100 ms.
+    await page.eval(SETTLED);
     const live = JSON.parse(await page.eval(SWITCH_PAINT));
 
     // Ending with a note still queued offers to send it, and the agent gets it as the last batch.
@@ -4038,6 +4040,7 @@ test(
     assert.equal(await page.eval("document.getElementById('annotate').disabled"), true);
     // Disabled must also look it: the label dims like the other disabled controls, the cursor
     // stops promising a press, and the track and thumb no longer paint as a live switch.
+    await page.eval(SETTLED);
     const ended = JSON.parse(await page.eval(SWITCH_PAINT));
     assert.equal(ended.color, ended.quietDisabled, "the ended switch's label dims like End review");
     assert.notEqual(ended.color, live.color);
