@@ -194,7 +194,6 @@ async function boot() {
   document.title = `${session.fileName} · ${app.app}`;
   document.getElementById("fileName").textContent = session.fileName;
   sync(session);
-  tellOutside(session.outside);
   render();
   listen();
   startHeartbeat(typeof app.idleMs === "number" ? app.idleMs : 1_800_000);
@@ -203,8 +202,10 @@ async function boot() {
 /** Adopts the state the server just described, reloading the page under review if it moved on. */
 function sync(state) {
   revision = state.revision;
-  // A later open with another --root moves the page's own address, so a tab promoted back follows it.
+  // A later open with another --root moves the page's own address, so a tab promoted back follows it,
+  // and changes which of the page's files the review serves.
   session.artifactUrl = state.artifactUrl;
+  tellOutside(state.outside);
   presence = state.presence;
   ended = state.ended;
   // The sent notes come with every hello, so a reply that landed while this page was away shows.

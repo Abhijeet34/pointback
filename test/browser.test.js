@@ -678,6 +678,8 @@ test(
     const outsideLine =
       "(() => { const line = document.getElementById('outside'); return line?.checkVisibility() ? line.textContent : null; })()";
     await page.waitFor("document.body.dataset.ready === '1'");
+    // The reroot below reaches the tab on its stream.
+    await page.waitFor(FOLLOWING);
     assert.equal(
       await page.eval(outsideLine),
       null,
@@ -712,6 +714,35 @@ test(
     await page.front();
     await artifact.waitFor(unstyledAtNewAddress);
     await page.close();
+  },
+);
+
+test(
+  "a tab whose stream was down when its review lost the root that styled it says why once it is back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    try {
+      const { repo, file } = componentSheet();
+      const { page } = await openReview(
+        (await cli([file, "--root", repo], own.env)).json().session.url,
+      );
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      await page.waitFor("document.getElementById('presenceText').textContent === 'Not connected'");
+      // The agent opens the file again without the root, which starts the daemon the tab is waiting on.
+      const again = (await cli([file], own.env)).json();
+      assert.deepEqual(again.refused_assets, ["../../exports/variables.css", "../components.css"]);
+      await page.waitFor(FOLLOWING, { timeoutMs: 20_000 });
+      assert.equal(
+        await page.waitFor(
+          "(() => { const line = document.getElementById('outside'); return line.checkVisibility() && line.textContent; })()",
+        ),
+        "../../exports/variables.css, ../components.css are outside the folder this review serves, so the page shows without them. Your agent can open it with --root to include them.",
+      );
+      await page.close();
+    } finally {
+      await own.stop();
+    }
   },
 );
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
@@ -49,6 +49,7 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
     ended: null,
     gone: false,
     drafts: [],
+    outside: [],
   });
   await armed();
   writeFileSync(artifact, "<p>two</p>");
@@ -92,6 +93,7 @@ test("a second tab takes the review, and closing it hands the review back", () =
     ended: null,
     gone: false,
     drafts: [],
+    outside: [],
   });
   // A tab that was never current leaves without disturbing the one that is.
   const three = tab(streams, key);
@@ -118,6 +120,23 @@ test("an open under another root moves an open tab to the page's new address, an
     },
   );
   one.detach();
+});
+
+test("a tab that connects after an open under a narrower root is told what its page goes without", () => {
+  const { dir, store, streams } = lab();
+  mkdirSync(join(dir, "sheets"));
+  writeFileSync(join(dir, "house.css"), "p { color: red }");
+  const page = join(dir, "sheets", "actions.html");
+  writeFileSync(page, '<link rel="stylesheet" href="../house.css"><p>one</p>');
+  const { key } = store.open(page, dir);
+  const before = tab(streams, key);
+  assert.deepEqual(before.lines[0].outside, [], "the wider root serves the sheet");
+  // Opened again without the root while the tab's stream is down, so the reroot reaches no tab.
+  before.detach();
+  store.open(page);
+  const after = tab(streams, key);
+  assert.deepEqual(after.lines[0].outside, ["../house.css"]);
+  after.detach();
 });
 
 test("presence, unsent notes, the end and a reopen all reach every tab; feedback does not", async () => {
