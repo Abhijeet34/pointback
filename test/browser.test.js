@@ -298,6 +298,43 @@ test(
   },
 );
 
+// On windows-2025 a fresh tab's first load has stalled with its document answered 200 and the tab
+// answering nothing (hunt 38189872095, attempt 18), and the tab was left open for the rest of the suite.
+// A server that never answers stands in for it: the tab must go, and the failure must say whether the
+// navigation committed, since a tab answers nothing while one is in flight.
+test(
+  "a tab whose first load never finishes is closed, and its failure says nothing committed",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const held = [];
+    const server = createTcpServer((socket) => held.push(socket));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${server.address().port}/never`;
+    const other = await browser.page("about:blank");
+    try {
+      const listening = other.browser.listeners.length;
+      const message = await browser.page(url).then(
+        () => assert.fail("a load nothing answered finished"),
+        (error) => error.message,
+      );
+      const { targetInfos } = await other.browser.send("Target.getTargets");
+      assert.deepEqual(
+        {
+          open: targetInfos.filter((target) => target.url === url).length,
+          listening: other.browser.listeners.length,
+          committed: /\n {2}committed: (.*)/.exec(message)?.[1],
+        },
+        { open: 0, listening, committed: "none" },
+        message,
+      );
+    } finally {
+      for (const socket of held) socket.destroy();
+      server.close();
+      await other.close();
+    }
+  },
+);
+
 /** The reference implementation's snapshot: every element to depth 6 with 80 characters of text. */
 const REFERENCE_SNAPSHOT = `(() => {
   const lines = [];
@@ -4594,6 +4631,9 @@ test(
       );
       assert.ok(section(described, "frames").includes(frameLine));
       assert.ok(section(described, "loads failed").includes(loadLine));
+      // The review's address as the browser committed it, which carries no fragment.
+      const committed = url.split("#")[0];
+      assert.match(described, new RegExp(`\n {2}committed: ${RegExp.escape(committed)}\n`));
     } finally {
       await refusal.stop();
       await page.close();

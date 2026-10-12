@@ -314,14 +314,20 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
         flatten: true,
       });
       const page = new Page(browser, sessionId, targetId);
-      await page.send("Page.enable");
-      await page.watch();
-      await page.send("Emulation.setDeviceMetricsOverride", {
-        ...viewport,
-        deviceScaleFactor: 1,
-        mobile: false,
-      });
-      await page.navigate(url);
+      try {
+        await page.send("Page.enable");
+        await page.watch();
+        await page.send("Emulation.setDeviceMetricsOverride", {
+          ...viewport,
+          deviceScaleFactor: 1,
+          mobile: false,
+        });
+        await page.navigate(url);
+      } catch (error) {
+        // Nobody else holds this tab yet, so a failed first load would leave it open for good.
+        await page.close().catch(() => {});
+        throw error;
+      }
       return page;
     },
     async close() {
@@ -425,17 +431,17 @@ class Page {
     return this.browser.send(method, params, this.sessionId);
   }
 
+  /**
+   * Waits on the load and the command together: Chromium answers Page.navigate only once the
+   * document does, so a load that times out first would otherwise reject with nobody listening.
+   */
   async navigate(url) {
-    const loaded = this.loaded();
-    await this.send("Page.navigate", { url });
-    await this.explained(loaded);
+    await this.explained(Promise.all([this.loaded(), this.send("Page.navigate", { url })]));
   }
 
   /** A real reload, since navigating to the same URL with a different fragment loads nothing. */
   async reload() {
-    const loaded = this.loaded();
-    await this.send("Page.reload");
-    await this.explained(loaded);
+    await this.explained(Promise.all([this.loaded(), this.send("Page.reload")]));
   }
 
   loaded() {
@@ -601,7 +607,8 @@ class Page {
     const list = (items) =>
       items.length ? items.map((item) => `\n    ${item}`).join("") : " none";
     return (
-      `the chrome shows ${shown}\n  frames:${list(frames)}\n  documents answered:${list(this.documents)}` +
+      `the chrome shows ${shown}\n  committed: ${this.committed ?? "none"}` +
+      `\n  frames:${list(frames)}\n  documents answered:${list(this.documents)}` +
       `\n  loads failed:${list(this.failed)}\n  console errors:${list(this.errors)}` +
       `\n  crashed renderers:${list(this.browser.crashes)}`
     );
@@ -619,6 +626,10 @@ class Page {
       for (const command of ["Runtime.enable", "Page.enable", "Network.enable", "Log.enable"])
         this.browser.send(command, {}, params.sessionId).catch(() => {});
       this.browser.send("Target.setAutoAttach", ATTACH, params.sessionId).catch(() => {});
+    } else if (method === "Page.frameNavigated" && where === "chrome" && !params.frame.parentId) {
+      // A tab answers nothing while a navigation is in flight, so only this tells a document
+      // answered and never committed from a renderer that stopped after it committed.
+      this.committed = params.frame.url;
     } else if (method === "Network.responseReceived" && params.type === "Document") {
       keep(this.documents, `${params.response.status} ${params.response.url}`);
     } else if (method === "Network.requestWillBeSent") {
