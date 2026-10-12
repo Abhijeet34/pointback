@@ -6222,6 +6222,77 @@ test(
   },
 );
 
+/**
+ * How far a pin's number runs past the shape the pin paints, in whole px: a pin is an ellipse of half
+ * its width and height (its 2 px corner only adds to that), so at the top and bottom of the number's
+ * text box the shape is narrower than the box, and the number must fit that chord there.
+ */
+function pastPin(box, text) {
+  const rx = (box.right - box.left) / 2;
+  const ry = (box.bottom - box.top) / 2;
+  const cx = box.left + rx;
+  const cy = box.top + ry;
+  return Math.max(
+    0,
+    ...[text.top, text.bottom].map((y) => {
+      const half = rx * Math.sqrt(Math.max(0, 1 - ((y - cy) / ry) ** 2));
+      return Math.round(Math.max(cx - half - text.left, text.right - (cx + half)));
+    }),
+  );
+}
+
+const BOX_AND_TEXT = `function () {
+  const range = document.createRange();
+  range.selectNodeContents(this);
+  const rect = (r) => ({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+  return JSON.stringify({ box: rect(this.getBoundingClientRect()), text: rect(range.getBoundingClientRect()) });
+}`;
+
+test(
+  "a three-digit note number stays inside its pin, on the page and in the margin",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    // Fifty notes at a time is all a review keeps unsent, so the hundred go in two sends.
+    for (let i = 1; i <= 100; i += 1) {
+      await api(session, "POST", "drafts", {
+        draft: {
+          prompt: `Note ${i}`,
+          selector: "#title",
+          tag: "h1",
+          text: "Rollout plan for the queue worker",
+        },
+      });
+      if (i % 50 === 0) await api(session, "POST", "prompts", {});
+    }
+    const { page, artifact } = await openReview(session.url, { width: 1440, height: 900 });
+    const pin = await until(
+      async () => (await pinsOn(artifact)).find((p) => p.name === "Note 100, sent"),
+      { what: "the pin of note 100" },
+    );
+    const { object } = await artifact.send("DOM.resolveNode", { backendNodeId: pin.node });
+    const { result } = await artifact.send("Runtime.callFunctionOn", {
+      objectId: object.objectId,
+      functionDeclaration: BOX_AND_TEXT,
+      returnByValue: true,
+    });
+    const onPage = JSON.parse(result.value);
+    const inMargin = JSON.parse(
+      await page.eval(`(${BOX_AND_TEXT}).call(
+        [...document.querySelectorAll('.mark-number')].find((n) => n.textContent === '100'),
+      )`),
+    );
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+    assert.deepEqual(
+      { page: pastPin(onPage.box, onPage.text), margin: pastPin(inMargin.box, inMargin.text) },
+      { page: 0, margin: 0 },
+      JSON.stringify({ onPage, inMargin }),
+    );
+  },
+);
+
 test(
   "a note in the margin leads to its place on the page, and a pin leads back to its note",
   { skip: !executable && "no browser found" },

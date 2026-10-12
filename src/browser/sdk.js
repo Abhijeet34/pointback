@@ -43,7 +43,8 @@
   // layer sits in document coordinates, so the pins ride the page's own scroll without a repaint.
   // The shape is the house pin's at the default text size, and the colours its dark roles, as literals:
   // this frame cannot load the chrome's sheets. Every pin and its focus ring carry a dark halo, so
-  // they read on a white page and a dark one.
+  // they read on a white page and a dark one. A number past two digits widens its pin rather than
+  // spilling out of it, with the house's 4 px either side.
   const PIN = 24;
   // A pin stands GAP clear of the line or box it is beside.
   const GAP = 4;
@@ -71,7 +72,7 @@
   const pinRoot = pinHost.attachShadow({ mode: "closed" });
   pinRoot.innerHTML = `
     <style>
-      .pin { position: absolute; box-sizing: border-box; display: grid; place-items: center; width: ${PIN}px; height: ${PIN}px; padding: 0; border: 0; border-radius: 50% 50% 50% 2px; background: oklch(0.78 0.12 230); color: oklch(0.165 0.012 260); font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; cursor: pointer; box-shadow: 0 0 0 2px oklch(0.165 0.012 260); }
+      .pin { position: absolute; box-sizing: border-box; display: grid; place-items: center; min-width: ${PIN}px; height: ${PIN}px; padding: 0 4px; border: 0; border-radius: 50% 50% 50% 2px; background: oklch(0.78 0.12 230); color: oklch(0.165 0.012 260); font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; cursor: pointer; box-shadow: 0 0 0 2px oklch(0.165 0.012 260); }
       .pin[hidden] { display: none; }
       .pin[data-state="queued"] { background: oklch(0.195 0.012 260); color: oklch(0.663 0.12 230); box-shadow: inset 0 0 0 1px oklch(0.78 0.12 230), 0 0 0 2px oklch(0.165 0.012 260); }
       .pin[data-state="done"] { background: oklch(0.55 0.14 150); color: #fff; }
@@ -890,6 +891,9 @@
       top: origin.top + HALO,
     };
     const avoid = obstacles();
+    // A row is laid out from its pins' painted widths; a pin the last placement hid shows for the
+    // measure, and nothing paints before this task decides again which pins have a spot.
+    for (const pin of pins) pin.button.hidden = false;
     const placed = [];
     const missing = [];
     for (const pin of pins) {
@@ -914,7 +918,7 @@
     for (const row of rows.values()) {
       const { anchor } = row[0];
       const { spots, size } = layRow(
-        row.map(() => PIN),
+        row.map((pin) => pin.button.getBoundingClientRect().width),
         bounds.right - bounds.left,
       );
       const { width, height } = size;
