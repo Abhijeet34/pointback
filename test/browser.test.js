@@ -4340,6 +4340,11 @@ const CARD_PAINT = `JSON.stringify({
 })`;
 const unsentNotes =
   "JSON.stringify([...document.querySelectorAll('.mark:not(.sent) .mark-note')].map((e) => e.textContent))";
+/** End review as it paints: whether it can be pressed, and the cursor that says so. */
+const END_PAINT = `JSON.stringify({
+  disabled: document.getElementById('end').disabled,
+  cursor: getComputedStyle(document.getElementById('end')).cursor,
+})`;
 
 test(
   "two unsent notes survive the tab closing, and the review opened again sends them",
@@ -4413,6 +4418,11 @@ test(
         "the page says it is not connected once, and that the notes are kept once",
       );
       assert.deepEqual(JSON.parse(await page.eval(unsentNotes)), ["Name the queue in the title"]);
+      assert.deepEqual(
+        JSON.parse(await page.eval(END_PAINT)),
+        { disabled: true, cursor: "not-allowed" },
+        "nor an End review that cannot reach the review either",
+      );
 
       // Pointing still opens the card, but Add waits for the connection, saying so on the card.
       await pointAt(page, artifact, "#p1");
@@ -4453,6 +4463,10 @@ test(
         "back online, the card's reason is gone and Add works",
       );
       assert.match(status, /^1 note ready to send\./, "and no stale failure is left in the margin");
+      assert.deepEqual(JSON.parse(await page.eval(END_PAINT)), {
+        disabled: false,
+        cursor: "pointer",
+      });
       await page.eval("document.getElementById('cardAdd').click()");
       await page.waitFor(
         "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 2",
@@ -4634,7 +4648,7 @@ const BOOT_SEEN = `JSON.stringify({
 })`;
 
 test(
-  "a tab whose health check is answered without proof says it is disconnected, and End review sends nothing carrying its token",
+  "a tab whose health check is answered without proof says it is disconnected, offers no End review, and sends nothing carrying its token",
   { skip: !executable && "no browser found" },
   async () => {
     const own = isolatedEnv();
@@ -4649,23 +4663,21 @@ test(
       await page.waitFor(
         "document.getElementById('status').textContent.includes('no longer works')",
       );
-      await clickOn(page, "document.getElementById('end')");
-      await page.waitFor("document.getElementById('endDialog').open");
-      await clickOn(page, "document.getElementById('endGo')");
-      // The barrier: End review has been handled, whether its request was refused or never sent.
-      await page.waitFor(
-        "document.getElementById('status').textContent.startsWith('Could not end the review')",
-      );
+      // A press on End review would only ever have been refused: it paints as off from the start.
       assert.deepEqual(
-        { carried: watched.carried, seen: JSON.parse(await page.eval(BOOT_SEEN)) },
+        {
+          carried: watched.carried,
+          seen: JSON.parse(await page.eval(BOOT_SEEN)),
+          end: JSON.parse(await page.eval(END_PAINT)),
+        },
         {
           carried: [],
           seen: {
             presence: "Disconnected",
-            status: "Could not end the review: not connected",
-            notice:
-              "This page can no longer reach its review. Run the command on this file again for a fresh page; your notes are kept there.",
+            status: "This link no longer works. Run the command on the file again to get a fresh one.",
+            notice: null,
           },
+          end: { disabled: true, cursor: "not-allowed" },
         },
       );
     } finally {

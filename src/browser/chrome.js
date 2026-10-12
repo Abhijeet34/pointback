@@ -450,7 +450,8 @@ function render() {
   // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
   cardAdd.disabled = offline;
   renderReason();
-  endButton.disabled = ended !== null || fileGone;
+  // Ending is a call to the review, so it waits for the connection as Send does.
+  endButton.disabled = ended !== null || fileGone || offline;
   // A failure the reviewer needs to see outlives the render that would otherwise write over it.
   setText(
     statusLine,

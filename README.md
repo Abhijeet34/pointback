@@ -236,7 +236,7 @@ It carries seven things.
 - **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back turns Annotate on again, if the reviewer had wanted it on, and reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
 
-When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send turns off until it is back, and a note being written stays in its card with Add note held until then.
+When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send and End review turn off until it is back, and a note being written stays in its card with Add note held until then.
 It keeps trying, because a daemon that idled out or was stopped comes back at the agent's next command on the same port with the same token, and the tab picks the review up from there.
 A tab opened while nothing answers waits the same way, including when the request for the review itself goes unanswered; only an answer makes it say the link no longer works, an HTTP error or a health check that does not prove the token.
 If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection; running the command on the file again opens a fresh tab with the notes in it.
