@@ -110,7 +110,7 @@ test("a rename-replace save and a sibling's change are told apart", async () => 
   stop();
 });
 
-test("a stopped watcher stays silent, and a vanished directory reports instead of throwing", async () => {
+test("a stopped watcher stays silent, and a vanished directory does not throw", async () => {
   const { dir, file } = lab();
   let changes = 0;
   const stop = watchFile(file, () => (changes += 1));
@@ -120,11 +120,11 @@ test("a stopped watcher stays silent, and a vanished directory reports instead o
   // A negative: three debounce windows outlast the one a delivered change would have fired in.
   await sleep(DEBOUNCE_MS * 3);
   assert.equal(changes, 0);
-  const errors = [];
   assert.throws(() => watchFile(join(dir, "missing", "x.html"), () => {}), /ENOENT/);
-  const stopAgain = watchFile(file, () => {}, { onError: (e) => errors.push(e) });
+  const stopAgain = watchFile(file, () => {});
   rmSync(dir, { recursive: true, force: true });
-  // A negative: the vanished directory must report, not throw, within the windows it would fire in.
+  // A negative: the vanished directory must not throw within the windows it would fire in. Whether
+  // it reports through onError is the platform's to say: macOS reports nothing at all.
   await sleep(DEBOUNCE_MS * 3);
   stopAgain();
 });

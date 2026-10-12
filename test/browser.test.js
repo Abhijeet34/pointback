@@ -5705,7 +5705,7 @@ const reachability = (selectors) => `JSON.stringify((() => {
   };
 })())`;
 
-// Every other case runs at 800x600, so the band layout chrome.css switches to below 900 px
+// Every other case runs at 800x600, so the two-line bar chrome.css switches to below 600 px
 // had no coverage at all. 390x844 is a current phone held upright.
 /** The agent's state as the bar paints it, and the margin's one line. */
 const AGENT_PAINT = `JSON.stringify({
