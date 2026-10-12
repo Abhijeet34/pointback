@@ -52,6 +52,12 @@ body {
   margin: 0;
 }
 
+/* The chrome never scrolls as a whole, so a wheel run past the end of the page under review or of
+   the notes stops there rather than rubber-banding the whole review, as macOS does. */
+html {
+  overscroll-behavior: none;
+}
+
 body {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -348,8 +354,14 @@ body {
 }
 
 /* The pin's fill is the note's state, the same as its pin on the page: a ring while queued, the
-   accent once sent, the reply's colour after. */
+   accent once sent, the reply's colour after. The house pin is a fixed 1.6rem circle, which a
+   three-digit number spills out of, so it keeps the circle's height and is as wide as its number
+   needs, with the house's smallest space either side. */
 .mark-number {
+  /* Override until the house pin gains a three-digit rule (house-pin-three-digit-rule); then remove. */
+  width: auto;
+  aspect-ratio: 1;
+  padding-inline: var(--hw-space-4);
   font-variant-numeric: tabular-nums;
 }
 

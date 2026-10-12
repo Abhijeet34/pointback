@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parse } from "parse5";
-import { assetsOutside, injectSdk } from "../src/inject.js";
+import { assetsOutside, preparePage } from "../src/inject.js";
+
+const injectSdk = (html, src) => preparePage(html, src).html;
+const outsideOf = (html, root, page) =>
+  assetsOutside(preparePage(html, "/sdk.js").loads, root, page);
 
 test("the SDK script becomes the last child of body, and the one asking again for a refused sheet the first of head", () => {
   const out = injectSdk(
@@ -55,7 +59,7 @@ test("the assets a page loads from above its root are named as the page wrote th
 <template><img src="../../tpl.png"></template>
 <img src="../../${"x".repeat(200)}.png">
 </body>`;
-  assert.deepEqual(assetsOutside(html, root, page), [
+  assert.deepEqual(outsideOf(html, root, page), [
     "../../site.css",
     "/abs.css",
     "../../app.js",
@@ -64,7 +68,7 @@ test("the assets a page loads from above its root are named as the page wrote th
   ]);
   // A <base> moves what every relative path resolves against, as it does for the browser.
   assert.deepEqual(
-    assetsOutside(`<base href="../../"><link rel="stylesheet" href="site.css">`, root, page),
+    outsideOf(`<base href="../../"><link rel="stylesheet" href="site.css">`, root, page),
     ["site.css"],
   );
 });
