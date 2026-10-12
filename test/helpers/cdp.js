@@ -761,13 +761,17 @@ class Page {
    * @param {string} key
    * @param {{ code?: string, keyCode?: number, text?: string, modifiers?: number }} [options]
    */
-  async key(key, { code = key, keyCode, text, modifiers = 0 } = {}) {
+  /**
+   * `native: false` leaves out the native key code, without which headless Chromium on macOS does not
+   * send a key nothing handles back to the focus again and again (`docs/ENGINEERING-NOTES.md`).
+   */
+  async key(key, { code = key, keyCode, text, modifiers = 0, native = true } = {}) {
     const base = {
       key,
       code,
       modifiers,
       windowsVirtualKeyCode: keyCode,
-      nativeVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: native ? keyCode : undefined,
     };
     await this.send("Input.dispatchKeyEvent", {
       type: text ? "keyDown" : "rawKeyDown",

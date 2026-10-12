@@ -1108,12 +1108,13 @@ function hearKeys(page) {
 const pageTookFocus = (what) => until(() => focusReports.at(-1)?.id === "field", { what });
 
 /** Real key presses, which go wherever the browser has the focus. */
-async function press(page, word) {
+async function press(page, word, { native } = {}) {
   for (const ch of word) {
     await page.key(ch, {
       code: `Key${ch.toUpperCase()}`,
       keyCode: ch.toUpperCase().charCodeAt(0),
       text: ch,
+      native,
     });
   }
 }
@@ -3097,7 +3098,9 @@ test(
     await until(async () => (await pageAddress(page)) === "about:blank", {
       what: "the page's frame to hold about:blank",
     });
-    await press(page, "xyz");
+    // Nothing in the chrome handles these, and headless Chromium on macOS sent such keys back to the
+    // focus until they reached the note (macos-15, hunt 38260129160 attempts 8 and 12).
+    await press(page, "xyz", { native: false });
     await clickOn(page, "document.getElementById('cardText')");
     await page.waitFor("document.activeElement.id === 'cardText'");
     await press(page, "def");
