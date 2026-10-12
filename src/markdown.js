@@ -21,6 +21,32 @@ md.renderer.rules.table_open = (tokens, index, options, _env, self) =>
 md.renderer.rules.table_close = (tokens, index, options, _env, self) =>
   `${self.renderToken(tokens, index, options)}</div>`;
 
+// Inline code and the characters touching it, such as "(" before or ")," after, are one chip that
+// wraps whole (markdown.css); apart, a line could end on the "(" with its code on the next.
+const codeInline = md.renderer.rules.code_inline;
+const isCode = (token) => token?.type === "code_inline";
+md.renderer.rules.text = (tokens, index) => {
+  let text = tokens[index].content;
+  let head = "";
+  let tail = "";
+  if (isCode(tokens[index - 1])) {
+    const [run] = text.match(/^\S*/);
+    head = `${md.utils.escapeHtml(run)}</span>`;
+    text = text.slice(run.length);
+  }
+  if (isCode(tokens[index + 1])) {
+    const [run] = text.match(/\S*$/);
+    tail = `<span class="chip">${md.utils.escapeHtml(run)}`;
+    text = text.slice(0, text.length - run.length);
+  }
+  return head + md.utils.escapeHtml(text) + tail;
+};
+md.renderer.rules.code_inline = (tokens, index, ...rest) => {
+  const open = tokens[index - 1]?.type === "text" ? "" : '<span class="chip">';
+  const close = tokens[index + 1]?.type === "text" ? "" : "</span>";
+  return open + codeInline(tokens, index, ...rest) + close;
+};
+
 /** The daemon's own stylesheets every rendered page loads, which no root needs to hold. */
 export const MARKDOWN_STYLES = [
   "/house/brand.tokens.css",

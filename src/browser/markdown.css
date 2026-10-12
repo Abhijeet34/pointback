@@ -138,17 +138,24 @@ blockquote {
   color: var(--hw-text-muted);
 }
 
-/* A chip is one unit: it moves whole to the next line rather than splitting at a hyphen, and only
-   one longer than the line wraps inside itself. Its side padding stays under a word space, so the
-   comma after it does not read as set off by one. */
-code {
+/* A chip, the code and the characters touching it (markdown.js), moves whole to the next line rather
+   than splitting at a hyphen or leaving a "(" behind, and only one longer than the line wraps inside
+   itself, between words where it can, on the text's own leading, each line keeping the code's
+   padding. A table column is never squeezed narrower than a chip's longest word. */
+.chip {
   display: inline-block;
   max-width: 100%;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+}
+
+/* Its side padding stays under a word space, so the comma after it does not read as set off by one. */
+code {
   font: 400 max(0.88em, 11px) / 1 var(--hw-font-mono);
   background: var(--hw-fill);
   border-radius: var(--hw-radius-sm);
   padding: 0.12em 0.16em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 pre {
