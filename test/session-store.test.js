@@ -109,7 +109,7 @@ test("opening the same file twice yields one session, and it survives a restart"
   store.queue(a.key, [prompt()]);
   const reopened = new SessionStore(dir);
   assert.equal(reopened.get(a.key).assetToken, a.assetToken);
-  assert.equal(reopened.take(a.key).length, 1);
+  assert.equal(reopened.get(a.key).pending.length, 1);
   assert.equal(reopened.bootstrap(a.key).chat.length, 1);
   assert.equal(readFileSync(sessionFile(dir, a.key), "utf8").includes("nextUid"), true);
 });
@@ -132,7 +132,7 @@ test("a process holding a stale copy of a session refuses to write it over a new
   // The refusal took the newer copy, so the agent's next try goes through and gets the note.
   agents.open(artifact);
   assert.deepEqual(
-    agents.take(key).map((p) => p.prompt),
+    agents.get(key).pending.map((p) => p.prompt),
     ["the note that must not be lost"],
   );
 });
@@ -296,7 +296,7 @@ test("prompts are validated field by field", () => {
       message,
     );
   }
-  assert.deepEqual(store.take(key), []);
+  assert.deepEqual(store.get(key).pending, []);
 });
 
 test("source lines ride only on a Markdown file's notes, and only as two line numbers", () => {
@@ -319,11 +319,11 @@ test("source lines ride only on a Markdown file's notes, and only as two line nu
   store.send(md);
   store.send(html);
   assert.deepEqual(
-    store.take(md).map((note) => note.lines),
+    store.get(md).pending.map((note) => note.lines),
     [[3, 4]],
   );
   assert.deepEqual(
-    store.take(html).map((note) => "lines" in note),
+    store.get(html).pending.map((note) => "lines" in note),
     [false],
   );
 });
@@ -334,7 +334,7 @@ test("uids are monotonic per session and extra fields are dropped", () => {
   const { key } = store.open(artifact);
   store.queue(key, [{ ...prompt("one"), evil: "x" }, prompt("two")]);
   store.queue(key, [prompt("three")]);
-  const taken = store.take(key);
+  const taken = store.get(key).pending;
   assert.deepEqual(
     taken.map((p) => [p.uid, p.prompt]),
     [
@@ -367,7 +367,7 @@ test("a target is rebuilt field by field, and an anchor that cannot be trusted i
     { ...prompt("control"), tag: "button", target: { type: "control", name: "Upgrade", on: 1 } },
     { ...prompt("image"), tag: "img", target: { ...picture, onload: "x" } },
   ]);
-  const taken = store.take(key);
+  const taken = [...store.get(key).pending];
   assert.deepEqual(taken[0].target, range);
   assert.deepEqual(taken[1].target, { type: "table-cell", column: "Owner" });
   assert.deepEqual(taken[2].target, { type: "control", name: "Upgrade" });
@@ -395,7 +395,7 @@ test("a target is rebuilt field by field, and an anchor that cannot be trusted i
       message,
     );
   }
-  assert.deepEqual(store.take(key), []);
+  assert.deepEqual(store.get(key).pending, taken, "a refused target queues nothing");
 });
 
 test("the page outline is bounded, replaced with each batch, and delivered with the prompts", async () => {

@@ -734,7 +734,7 @@ function mark(entry, sent, n) {
   head.append(target);
   li.append(head);
   if (missingPins.has(n)) li.append(missingLine());
-  li.append(edited ? editor(entry, n) : noteText(entry));
+  li.append(edited ? editor(n) : noteText(entry));
   if (entry.reply) li.append(replyLine(entry));
   if (!sent && !edited) {
     const edit = document.createElement("button");
@@ -788,7 +788,7 @@ function missingLine() {
 }
 
 /** A queued note edited where it stands: Enter saves, Shift+Enter breaks the line, Escape keeps it. */
-function editor(entry, n) {
+function editor(n) {
   const form = document.createElement("form");
   form.className = "mark-editor";
   const box = document.createElement("textarea");

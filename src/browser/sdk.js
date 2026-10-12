@@ -1010,7 +1010,7 @@
       if (!annotate || open || ours(event) || event.ctrlKey || event.metaKey || event.altKey)
         return;
       const element = candidate(document.activeElement);
-      if (!element || element === document.body) return;
+      if (!element) return;
       const control = isControl(element);
       if (!control && event.shiftKey && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
         extendPassage(element, event.key === "ArrowRight" ? "forward" : "backward");
