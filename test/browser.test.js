@@ -1137,16 +1137,21 @@ const slowFrameOnHide = (page) =>
     }).observe(frame, { attributes: true, attributeFilter: ["hidden"] });
   })()`);
 
-/** The address of the page's frame as the browser has it, from the wrapper's frame tree. */
-async function pageAddress(page) {
+/** The wrapper's own DevTools session and its frame tree, which holds the page's frame. */
+async function wrapperOf(page) {
   for (const session of page.children.keys()) {
     const tree = await page.browser
       .send("Page.getFrameTree", {}, session)
       .then((answer) => answer.frameTree)
       .catch(() => null);
-    if (tree?.frame.url.endsWith("/wrapper.html")) return tree.childFrames?.[0]?.frame.url ?? null;
+    if (tree?.frame.url.endsWith("/wrapper.html")) return { session, tree };
   }
   return null;
+}
+
+/** The address of the page's frame as the browser has it, from the wrapper's frame tree. */
+async function pageAddress(page) {
+  return (await wrapperOf(page))?.tree.childFrames?.[0]?.frame.url ?? null;
 }
 
 /**
@@ -4547,9 +4552,60 @@ async function handled(page, artifact, attempts) {
     await artifact.waitFor(`${attempts} >= ${from + 10}`);
   }
   sentinel -= 1;
-  await artifact.eval(`parent.postMessage({ type: "scroll", nonce, y: ${sentinel} }, "*")`);
+  const nonce = JSON.stringify(await nonceOf(page, artifact));
+  await artifact.eval(
+    `parent.postMessage({ type: "scroll", nonce: ${nonce}, y: ${sentinel} }, "*")`,
+  );
   await page.waitFor(`document.body.dataset.scroll === "${sentinel}"`);
 }
+
+/**
+ * The nonce the chrome handed the page's SDK, which a page that does not listen for it never sees. It
+ * is heard in the wrapper, which every message from the page passes through, on the report of the
+ * page's place that a scroll event has the SDK post; that report changes nothing the chrome keeps.
+ */
+async function nonceOf(page, artifact) {
+  const inWrapper = async (expression) => {
+    const wrapper = await wrapperOf(page);
+    if (!wrapper) return null;
+    const answer = await page.browser.send(
+      "Runtime.evaluate",
+      { expression, returnByValue: true },
+      wrapper.session,
+    );
+    return answer.result.value;
+  };
+  await until(
+    () =>
+      inWrapper(`globalThis.heard = "";
+        globalThis.hearing ??= addEventListener("message", (event) => {
+          if (event.source !== parent && event.data?.nonce) heard = event.data.nonce;
+        }, true) ?? true`),
+    { what: "the wrapper to listen for the page's messages" },
+  );
+  await artifact.eval("dispatchEvent(new Event('scroll'))");
+  return page.explained(
+    until(() => inWrapper("heard"), { what: "the page's SDK to post with its nonce" }),
+  );
+}
+
+// The barrier a negative needs, on a page that knows nothing of the chrome's messages: with Annotate
+// off the reviewer's click is the page's own, and the chrome handles whatever the SDK made of it
+// without opening a card.
+test(
+  "a reviewer's click in an ordinary page with Annotate off opens no card",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    await clickIn(page, artifact, "#title");
+    await handled(page, artifact);
+    assert.equal(await page.eval("document.getElementById('card').hidden"), true);
+    await page.close();
+  },
+);
 
 /**
  * Adds a note the way a reviewer does: point at the element, type, press Enter. The page ignores
