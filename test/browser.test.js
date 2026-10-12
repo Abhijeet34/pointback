@@ -6293,6 +6293,91 @@ test(
   },
 );
 
+/**
+ * The inner edge of each ring the review script draws over the page, read through its closed shadow
+ * root, or null when one is redrawn between the two reads, as a scroll or a resize redraws them.
+ */
+async function ringsOn(artifact) {
+  const found = [];
+  const walk = (node) => {
+    if (node.attributes?.[node.attributes.indexOf("class") + 1] === "box") found.push(node);
+    for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? [])]) walk(child);
+  };
+  walk(
+    artifact.frameId
+      ? await artifact.document()
+      : (await artifact.send("DOM.getDocument", { depth: -1, pierce: true })).root,
+  );
+  const rings = [];
+  for (const node of found) {
+    const box = await artifact
+      .send("DOM.getBoxModel", { backendNodeId: node.backendNodeId })
+      .catch(() => null);
+    if (!box) return null;
+    const [left, top, , , right, bottom] = box.model.padding;
+    rings.push({ left, top, right, bottom });
+  }
+  return rings;
+}
+
+test(
+  "the ring round a pointed heading or paragraph stands clear of its words",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfReadme();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+      width: 1440,
+      height: 900,
+    });
+    const clear = {};
+    for (const selector of ["main > h2:nth-of-type(1)", "main > p:nth-of-type(2)"]) {
+      // At the top of the frame, so the card opens under the target with room to spare.
+      await artifact.eval(
+        `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: "start" })`,
+      );
+      await pointAt(page, artifact, selector);
+      // The ring against the words' own boxes, every line of them, read until it is clear of them on
+      // every side by the house focus ring's offset, 2 px; a miss reports the nearest it came.
+      let gap = null;
+      await until(
+        async () => {
+          const rings = await ringsOn(artifact);
+          if (rings?.length !== 1) return false;
+          const [ring] = rings;
+          const words = JSON.parse(
+            await artifact.eval(`(() => {
+              const range = document.createRange();
+              range.selectNodeContents(document.querySelector(${JSON.stringify(selector)}));
+              return JSON.stringify(range.getBoundingClientRect());
+            })()`),
+          );
+          gap = Math.min(
+            words.left - ring.left,
+            words.top - ring.top,
+            ring.right - words.right,
+            ring.bottom - words.bottom,
+          );
+          return Math.round(gap * 10) / 10 >= 2;
+        },
+        { what: `the ring round ${selector} clear of its words` },
+      ).catch((error) => {
+        if (!error.message.startsWith("timed out")) throw error;
+      });
+      clear[selector] = Math.round(gap * 10) / 10 >= 2 ? "clear" : `${gap?.toFixed(1)} px`;
+      await clickOn(page, "document.getElementById('cardCancel')");
+      await page.waitFor(
+        "document.getElementById('card').hidden && document.body.dataset.handoff === 'settled'",
+      );
+    }
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+    assert.deepEqual(clear, {
+      "main > h2:nth-of-type(1)": "clear",
+      "main > p:nth-of-type(2)": "clear",
+    });
+  },
+);
+
 test(
   "a note in the margin leads to its place on the page, and a pin leads back to its note",
   { skip: !executable && "no browser found" },

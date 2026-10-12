@@ -281,15 +281,32 @@
   }
 
   function outlineRects(rects) {
+    // A passage has a box per run of text, and runs side by side on one line share one ring rather
+    // than each drawing a border across the space between them.
+    const lines = [];
+    for (const r of rects) {
+      const middle = r.top + r.height / 2;
+      const line = lines.find((l) => middle > l.top && middle < l.bottom);
+      if (!line) lines.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+      else
+        Object.assign(line, {
+          left: Math.min(line.left, r.left),
+          top: Math.min(line.top, r.top),
+          right: Math.max(line.right, r.right),
+          bottom: Math.max(line.bottom, r.bottom),
+        });
+    }
     boxes.replaceChildren(
-      ...[...rects].map((r) => {
+      ...lines.map((r) => {
         const box = document.createElement("div");
         box.className = "box";
+        // The house focus ring's 2 px offset outside its 2 px border, so the ring stands clear of
+        // the words it marks rather than touching a heading's first letter.
         Object.assign(box.style, {
-          left: `${r.left - 2}px`,
-          top: `${r.top - 2}px`,
-          width: `${r.width}px`,
-          height: `${r.height}px`,
+          left: `${r.left - 4}px`,
+          top: `${r.top - 4}px`,
+          width: `${r.right - r.left + 4}px`,
+          height: `${r.bottom - r.top + 4}px`,
         });
         return box;
       }),
