@@ -186,7 +186,7 @@
    * `:nth-of-type` down one, so the selector alone would silently name a different element.
    */
   function readingAnchor(to) {
-    const bySelector = document.querySelector(to.selector);
+    const bySelector = query(to.selector);
     if (!to.text || (bySelector && visibleText(bySelector) === to.text)) return bySelector;
     let seen = 0;
     for (const element of document.body.querySelectorAll("*")) {
@@ -345,7 +345,9 @@
         parts.unshift(`#${CSS.escape(node.id)}`);
         break;
       }
-      const tag = node.tagName.toLowerCase();
+      // Escaped, because Office exports carry tags such as `st1:place`, which unescaped reads as
+      // the tag `st1` with a pseudo-class and is no selector at all.
+      const tag = CSS.escape(node.tagName.toLowerCase());
       const siblings = [...node.parentElement.children].filter((s) => s.tagName === node.tagName);
       parts.unshift(
         siblings.length > 1 ? `${tag}:nth-of-type(${siblings.indexOf(node) + 1})` : tag,

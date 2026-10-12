@@ -3980,6 +3980,60 @@ test(
 );
 
 test(
+  "a save keeps the place and Annotate on a Word page, and a note on a smart tag names it in valid CSS",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    // Word and Outlook exports carry smart tags such as <st1:place>. The reading place handed back
+    // on a reload named one unescaped, which is no selector, so the page threw before its place,
+    // Annotate and pins came back; and a note on one sent the agent the same broken selector.
+    const { file } = copyOfFixture();
+    const word = (title) =>
+      `<html xmlns:st1="urn:schemas-microsoft-com:office:smarttags"><head><title>${title}</title></head><body>` +
+      Array.from(
+        { length: 120 },
+        (_, i) => `<p><st1:place w:st="on">Seattle</st1:place> office, row ${i + 1}.</p>`,
+      ).join("") +
+      "</body></html>";
+    writeFileSync(file, word("Offices"));
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    try {
+      // The reading place is the deepest element crossing the top edge: row 45's smart tag.
+      const row45 = "document.querySelectorAll('p')[44].firstElementChild";
+      const top = `Math.round(${row45}.getBoundingClientRect().top)`;
+      const y = await artifact.eval(
+        `(() => { window.scrollTo(0, ${top} + window.scrollY - 2); return window.scrollY; })()`,
+      );
+      await page.waitFor(`document.body.dataset.scroll === '${y}'`);
+      assert.match(await page.eval("document.body.dataset.place"), /> st1\\?:place$/);
+      const wasAt = Number(await artifact.eval(top));
+      writeFileSync(file, word("Offices, saved"));
+      await page.waitFor("document.body.dataset.revision === '1'");
+      assert.equal(
+        Number(await artifact.eval(top)),
+        wasAt,
+        "row 45 stayed where the reviewer had it",
+      );
+
+      await noteOn(page, artifact, "p:nth-of-type(60) > st1\\:place", "Which Seattle office?");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+      const [note] = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts;
+      assert.equal(note.selector, "p:nth-of-type(60) > st1\\:place");
+      // What the agent does with it: the selector finds the element the note was left on.
+      assert.equal(
+        await artifact.eval(
+          `document.querySelector(${JSON.stringify(note.selector)}).parentElement.textContent`,
+        ),
+        "Seattle office, row 60.",
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
   "a save keeps the reviewer's place on a page with a sticky header, a fixed header or a fixed footer",
   { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
   async () => {
