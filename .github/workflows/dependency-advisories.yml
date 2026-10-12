@@ -1,0 +1,33 @@
+name: dependency advisories
+
+# Caller of gates' shared-dependency-advisories.yml, which fails on an open
+# Dependabot alert; the design and the live red/green runs behind it are in
+# automation's .ci/shared-workflows.md. @main with no digest pin is deliberate,
+# so a change to the shared body is live here on the next run.
+#
+# The weekly run is not redundant with the pull-request run: GitHub's advisory
+# database changes between commits, so a clean dependency can gain a high
+# advisory with no commit of ours in between.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: dependency-advisories-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# `vulnerability-alerts: read` has to be granted HERE. A called workflow can
+# narrow the caller's GITHUB_TOKEN but never widen it, so omitting it ends the
+# run in startup_failure with only a "workflow file issue" annotation.
+permissions:
+  contents: read
+  vulnerability-alerts: read
+
+jobs:
+  advisories:
+    uses: Abhijeet34/gates/.github/workflows/shared-dependency-advisories.yml@main

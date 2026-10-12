@@ -299,6 +299,7 @@ Each section below is the text `AGENTS.md` carried under the same heading before
 - `.gitleaks.toml` and `.githooks/pre-push` are copies of one canonical secret-scanning gate maintained outside this repository, in `Abhijeet34/gates` and shared across its siblings.
   Never hand-edit either: the `secrets` job in `ci.yml` calls gates' `shared-secret-scan.yml@main`, which pins the SHA-256 of both, so a drifted copy fails the required check and the fix is to re-sync from upstream.
   Never pin those digests locally: a local pin silently skips every fleet repin, and `test/pipeline.test.js` refuses one.
+- `.github/workflows/dependency-advisories.yml` calls gates' `shared-dependency-advisories.yml@main`, which fails on an open Dependabot alert; it is its own workflow, not a `checks` dependency, and its `vulnerability-alerts: read` is granted in the caller or the run ends in `startup_failure`.
 - `test/pipeline.test.js` pins the load-bearing lines of the workflows and rulesets, so a change that quietly unprotects something fails the gate.
 - A release pull request is opened with `GITHUB_TOKEN`, so GitHub creates its `pull_request` run in an approval-required state and it completes as `action_required` with zero check runs.
   The `release-pr-checks` job in `release.yml` releases it, through `scripts/approve-release-checks.js`, which may only ever reach a pull request authored by `github-actions[bot]` from a `release-please--` branch in this repository against the default branch; never widen those four clauses.

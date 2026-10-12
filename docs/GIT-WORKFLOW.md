@@ -341,7 +341,7 @@ On the GitHub side a release can be marked pre-release or deleted, but the tag s
 ## Applying the settings that are not files
 
 These settings are applied; one command re-applies them, which is also how a setting changed in the web UI is put back.
-Everything it sends is a setting, not a credential, and every value it sends is a file in this repository: `.github/rulesets/main.json`, `.github/rulesets/tags.json`, and the three exports under `.github/settings/`.
+Everything it sends is a setting, not a credential, and every value it sends is a file in this repository: `.github/rulesets/main.json`, `.github/rulesets/tags.json`, and the four exports under `.github/settings/`.
 
 ```sh
 REPO=OWNER/pointback
