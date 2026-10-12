@@ -21,6 +21,8 @@ window.addEventListener("message", (event) => {
     if (event.data?.type === "show") show(event.data.url);
     else if (event.data?.type === "unload") unload();
     else page?.contentWindow?.postMessage(event.data, "*");
+  } else if (event.source === window && event.data?.type === "loaded") {
+    toChrome({ type: "loaded" });
   } else if (page && event.source === page.contentWindow) {
     toChrome({
       type: "page",
@@ -44,8 +46,10 @@ function show(url) {
   Object.assign(page.style, FILL);
   page.src = url;
   // The chrome cannot see the page's loads through this frame, and a load the page did not
-  // announce itself in is how it learns the page strayed.
-  page.addEventListener("load", () => toChrome({ type: "loaded" }));
+  // announce itself in is how it learns the page strayed. The load goes out through this window's
+  // own message queue, behind the page's announcement already in it: WebKit fires the frame's load
+  // event first, and the chrome showed every page twice (docs/ENGINEERING-NOTES.md).
+  page.addEventListener("load", () => postMessage({ type: "loaded" }, location.origin));
   document.body.append(page);
 }
 
