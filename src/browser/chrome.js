@@ -569,7 +569,6 @@ function notesChanged() {
   render();
 }
 
-/** A live region announces every write, so an unchanged status is left alone. */
 /** Says which of the page's files the review does not serve, the reason a page paints unstyled. */
 function tellOutside(outside = []) {
   const one = outside.length === 1;
@@ -581,6 +580,7 @@ function tellOutside(outside = []) {
   );
 }
 
+/** A live region announces every write, so an unchanged status is left alone. */
 function setText(element, text) {
   if (element.textContent !== text) element.textContent = text;
 }
