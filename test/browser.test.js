@@ -4842,6 +4842,9 @@ test(
       await page.waitFor(noticeSays("You ended this review."));
       const key = new URL(url).pathname.split("/").pop();
       assert.ok(watched.carried.includes(`POST /api/${key}/end`), watched.carried.join(", "));
+      // The stream offers the token legitimately here, so this proves the handshake capture the
+      // negative tests rely on still sees the subprotocol header in this browser.
+      assert.ok(watched.carried.includes("WebSocket events"), watched.carried.join(", "));
       const polled = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json();
       assert.equal(polled.status, "ended");
     } finally {
