@@ -127,7 +127,8 @@ async function open(page, url) {
 /**
  * Open a file, point at an element, write a note, send, and a poll returns it. The page and the
  * frame it is shown in each load once: WebKit loaded both twice, and its second page replaced the
- * frame under whatever the reviewer was doing in the first.
+ * frame under whatever the reviewer was doing in the first. Nothing logs a console error on the way:
+ * WebKit logged one on every load for a message the chrome posted before its frame listened.
  */
 async function coreAct(page, lab) {
   const loads = { page: 0, wrapper: 0 };
@@ -135,6 +136,8 @@ async function coreAct(page, lab) {
     if (frame.url().includes("/artifact/")) loads.page += 1;
     else if (frame.url().endsWith("/wrapper.html")) loads.wrapper += 1;
   });
+  const errors = [];
+  page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
   const { session } = (await cli([fixture], lab.env)).json();
   await open(page, session.url);
   // Annotate starts on; the click below is the reviewer's gesture the chrome waits for.
@@ -158,6 +161,7 @@ async function coreAct(page, lab) {
   // Read once the note made in the page has come back: the chrome heard the page's load before the
   // note it proposed, and showing it again is decided only there, so no load is still to come.
   assert.deepEqual(loads, { page: 1, wrapper: 1 }, "the page and its wrapper loaded once each");
+  assert.deepEqual(errors, [], "the review logged no console error");
 }
 
 /**

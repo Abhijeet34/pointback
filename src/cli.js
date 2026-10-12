@@ -199,9 +199,9 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   let result;
   for (;;) {
     const timeoutMs = split ? Math.min(remaining, requestMs) : remaining;
-    result = await api(server, "GET", `/api/poll?${query}&timeoutMs=${timeoutMs}`).catch(
-      refused(canonical),
-    );
+    result = await api(server, "GET", `/api/poll?${query}&timeoutMs=${timeoutMs}`, undefined, {
+      holdMs: split ? timeoutMs : 0,
+    }).catch(refused(canonical));
     remaining = deadline - Date.now();
     if (!split || result.status !== "waiting" || remaining <= 0) break;
   }

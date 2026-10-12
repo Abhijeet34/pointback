@@ -978,7 +978,10 @@ function describe(entry) {
 const locatorOf = (note) => [kindOf(note), describe(note)].filter(Boolean).join(" · ");
 
 function post(message) {
-  // To the wrapper, which hands it on to the page under review.
+  // To the wrapper, which hands it on to the page under review. Nothing goes before the page's first
+  // `ready`: the frame may still hold its first document, of this origin, which WebKit refuses with a
+  // console error, and `init` carries all of it once the page listens.
+  if (!nonce) return;
   frame.contentWindow?.postMessage({ ...message, nonce }, wrapperOrigin);
 }
 
@@ -1328,7 +1331,7 @@ const frameTextSize = () =>
 textSize.addEventListener("change", () => {
   const size = textSize.querySelector("[aria-checked=true]")?.getAttribute("data-size") ?? "m";
   document.documentElement.dataset.textSize = size;
-  if (nonce && frameTextSize()) post({ type: "text-size", size });
+  if (frameTextSize()) post({ type: "text-size", size });
   try {
     localStorage.setItem(TEXT_SIZE_KEY, size);
   } catch {

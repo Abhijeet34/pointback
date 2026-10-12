@@ -1,0 +1,6 @@
+paths:
+  .github/workflows/dependency-advisories.yml:
+    ignore:
+      # actionlint 1.7.12 predates GitHub's `vulnerability-alerts` token scope, which the shared
+      # advisories workflow needs granted in this caller to read Dependabot alerts.
+      - 'unknown permission scope "vulnerability-alerts"'
