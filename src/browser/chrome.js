@@ -311,7 +311,11 @@ function spent() {
   render();
 }
 
-/** Follows the event stream until it closes, and answers with the code it closed with. */
+/**
+ * Follows the event stream until it closes, and answers with the code it closed with. The page is
+ * following once the hello the server sends first is applied, not when the stream opens: until then
+ * what it last heard of the review, the agent's presence among it, predates the reconnect.
+ */
 function follow(opened) {
   return new Promise((resolve) => {
     // The token rides as an offered subprotocol, since a WebSocket can carry no header.
@@ -319,8 +323,11 @@ function follow(opened) {
       "events",
       `bearer.${token}`,
     ]);
-    stream.addEventListener("open", opened);
-    stream.addEventListener("message", (event) => apply(JSON.parse(event.data)));
+    stream.addEventListener("message", (event) => {
+      const data = JSON.parse(event.data);
+      apply(data);
+      if (data.type === "hello") opened();
+    });
     stream.addEventListener("close", (event) => resolve(event.code));
   });
 }

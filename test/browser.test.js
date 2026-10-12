@@ -41,8 +41,8 @@ const FRAME_BOX = `(() => {
   return JSON.stringify({ left: box.left + frame.clientLeft, top: box.top + frame.clientTop });
 })()`;
 
-// The chrome is following its review once its event stream is open, and refuses Add and Send until
-// then: Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused stream
+// The chrome is following its review once its event stream has opened and brought the review's state,
+// and refuses Add and Send until then: Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused stream
 // connect is retried after a pause the chrome spends lost (docs/ENGINEERING-NOTES.md).
 const FOLLOWING = "document.body.dataset.stream === 'open'";
 
@@ -4640,6 +4640,44 @@ test(
       "a fresh card carries no reason left over from the note it was not asked about",
     );
     await page.close();
+  },
+);
+
+test(
+  "a tab back from a stopped daemon shows the agent as its review now has it, never as it was before the stop",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    let poll;
+    try {
+      const { file } = copyOfFixture();
+      const { page } = await openReview((await cli([file], own.env)).json().session.url);
+      await page.waitFor("document.getElementById('presence').dataset.state === 'waiting'");
+      // Every state the bar paints from here on, in order, whatever the tab does between two reads.
+      await page.eval(`globalThis.presenceSeen = [];
+        new MutationObserver(() => {
+          const state = document.getElementById("presence").dataset.state;
+          if (presenceSeen.at(-1) !== state) presenceSeen.push(state);
+        }).observe(document.getElementById("presence"), { attributes: true, attributeFilter: ["data-state"] })`);
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      // The agent's next poll starts the daemon and stays attached, so the review the tab comes back
+      // to has the agent listening.
+      poll = cli(["poll", file, "--timeout-ms", "20000"], own.env);
+      await page.waitFor("document.getElementById('presence').dataset.state === 'listening'", {
+        timeoutMs: 20_000,
+      });
+      assert.deepEqual(
+        JSON.parse(await page.eval("JSON.stringify(presenceSeen)")),
+        ["lost", "listening"],
+        "the bar goes from not connected straight to the agent the review has now",
+      );
+      assert.equal((await cli(["end", file], own.env)).json().ended_by, "agent");
+      assert.equal((await poll).json().status, "ended");
+      await page.close();
+    } finally {
+      await poll;
+      await own.stop();
+    }
   },
 );
 
