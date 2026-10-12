@@ -16,11 +16,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { createServer } from "node:http";
+import { randomBytes } from "node:crypto";
+import { createServer, request as httpRequest } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, afterEach, before, test } from "node:test";
+import { pidAlive } from "../src/daemon-lock.js";
 import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import {
@@ -4155,6 +4157,118 @@ test(
     );
     assert.equal(await page.eval("window.refusedStreams"), 3, "three stream connects failed");
     await page.close();
+  },
+);
+
+/** Opens `count` event streams on a review from Node; at `limits.eventStreams` the next tab is refused. */
+async function holdStreams(own, url, count = limits.eventStreams) {
+  const { port, token } = own.serverInfo();
+  const key = new URL(url).pathname.split("/").at(-1);
+  const held = [];
+  for (let i = 0; i < count; i += 1)
+    held.push(
+      await new Promise((resolve, reject) => {
+        const req = httpRequest({
+          host: "127.0.0.1",
+          port,
+          path: `/api/${key}/events`,
+          headers: {
+            connection: "Upgrade",
+            upgrade: "websocket",
+            "sec-websocket-version": "13",
+            "sec-websocket-key": randomBytes(16).toString("base64"),
+            "sec-websocket-protocol": `events, bearer.${token}`,
+          },
+        });
+        req.on("upgrade", (_res, socket) => resolve(socket.on("data", () => {})));
+        req.on("error", reject);
+        req.end();
+      }),
+    );
+  return held;
+}
+
+test(
+  "a tab refused for too many event streams follows its review once the reviewer closes another",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const held = await holdStreams(own, url, limits.eventStreams - 1);
+    const other = await browser.page(url);
+    await other.waitFor(FOLLOWING);
+    const page = await browser.page(url);
+    try {
+      await page.waitFor(
+        "document.getElementById('noticeText').textContent.startsWith('Too many review tabs are open')",
+      );
+      await other.close();
+      await page.waitFor(FOLLOWING);
+      await page.waitFor("document.getElementById('notice').hidden");
+    } finally {
+      for (const socket of held) socket.destroy();
+      // Already closed when the test got that far; this is for one that did not.
+      await other.close().catch(() => {});
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a tab refused for too many event streams says so, backs off, and lets the daemon idle out once hidden",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // The server takes the handshake and then closes 4429, and the chrome counted that open as
+    // following its review: it retried twice a second for good, said the server had stopped
+    // answering, and every try touched the daemon, so a hidden tab kept it from idling out.
+    const own = isolatedEnv({ POINTBACK_IDLE_MS: "3000" });
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { pid } = own.serverInfo();
+    const held = await holdStreams(own, url);
+    const page = await browser.page("about:blank");
+    // The browser's own clock for each health check the chrome makes before a stream.
+    const checks = [];
+    const counted = ({ method, params, sessionId }) => {
+      if (sessionId !== page.sessionId || method !== "Network.requestWillBeSent") return;
+      if (params.request.url.includes("/health?challenge=")) checks.push(params.timestamp * 1000);
+    };
+    page.browser.listeners.push(counted);
+    try {
+      await page.navigate(url);
+      await page.waitFor(
+        "document.getElementById('noticeText').textContent.startsWith('Too many review tabs are open')",
+      );
+      // One check at boot, then one before each try: six is the fourth retry.
+      await page.explained(
+        until(() => checks.length >= 6, { what: "the fourth retry", timeoutMs: 20_000 }),
+      );
+      const gaps = checks.slice(1, 6).map((at, i) => Math.round(at - checks[i]));
+      console.log(`browser suite: gaps between health checks after a 4429, ms: ${gaps}`);
+      // A lower bound only, which a slow runner cannot break: a timer never fires early, and the
+      // fourth pause is 2000 ms where every pause was 500 ms before.
+      assert.ok(gaps[4] >= 1500, `the fourth retry came ${gaps[4]} ms after the third`);
+
+      // Hidden, the tab stops trying, so nothing touches the daemon and it idles out. Its pid is
+      // read rather than probed, since a probe is itself activity.
+      await page.eval(
+        `Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+         document.dispatchEvent(new Event("visibilitychange"));`,
+      );
+      await page.explained(
+        until(() => !pidAlive(pid), {
+          what: "the daemon to idle out behind a hidden tab",
+          timeoutMs: 20_000,
+        }),
+      );
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(counted), 1);
+      for (const socket of held) socket.destroy();
+      await page.close();
+      await own.stop();
+    }
   },
 );
 
