@@ -249,10 +249,16 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
       "--disable-dev-shm-usage",
       "--enable-logging",
       `--log-file=${join(profile, LOG_FILE)}`,
+      // DevTools on fds 3 and 4 as well as the port, never spoken on: the browser shuts down when
+      // fd 3 closes, which the kernel does when this process dies however it dies, so a run that is
+      // killed takes its browser with it (`terminate` covers only an exit this process lives to see).
+      "--remote-debugging-pipe",
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "pipe"] },
+    { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"] },
   );
+  // Drained like stderr, so a reply the browser ever writes there cannot fill the pipe and stall it.
+  child.stdio[4].resume();
   const discard = async () => {
     await terminate(child);
     // The child exiting is not every handle on this directory being released: Chromium's

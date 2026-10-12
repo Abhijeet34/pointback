@@ -15,7 +15,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import { createServer as createTcpServer } from "node:net";
@@ -58,6 +58,15 @@ console.log(
     ? `browser suite: running against ${executable}`
     : `browser suite: SKIPPED, no end-to-end coverage in this run (${envPrefix}BROWSER=none)`,
 );
+
+// A run started without --test-timeout, as one test picked by name usually is, has no other bound,
+// and one hung for 13 hours holding its browser. The whole file takes about 150 s locally; ending
+// the process here ends the browser with it, through the launcher's DevTools pipe.
+const RUN_MS = 30 * 60_000;
+setTimeout(() => {
+  console.error(`browser suite: still running after ${RUN_MS} ms, so it ends here`);
+  process.exit(1);
+}, RUN_MS).unref();
 
 const lab = isolatedEnv();
 let browser;
@@ -228,6 +237,51 @@ test(
     await page.close();
     assert.equal(other.browser.listeners.length, listening);
     await other.close();
+  },
+);
+
+/** Whether a process is still there; a refusal to signal it means it is, and someone else's. */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+// A run that is killed, by a developer or by a runner ending a hung job, never reaches the launcher's
+// own cleanup, and a browser left behind held CPU and memory on a developer machine for 13 hours.
+test(
+  "a browser whose test run is killed exits with it",
+  { skip: !executable && "no browser found", timeout: LAUNCH_BOUND_MS + MARGIN_MS },
+  async () => {
+    const temp = mkdtempSync(join(lab.dir, "holder-"));
+    const holder = spawn(
+      process.execPath,
+      [join(dirname(fixture), "../helpers/browser-holder.js"), executable],
+      { env: { ...process.env, TMPDIR: temp }, stdio: ["ignore", "pipe", "inherit"] },
+    );
+    let said = "";
+    holder.stdout.on("data", (chunk) => (said += chunk));
+    let pid;
+    try {
+      pid = await until(
+        () => {
+          if (holder.exitCode !== null) throw new Error(`the holder exited ${holder.exitCode}`);
+          return Number(/^browser pid (\d+)$/m.exec(said)?.[1]);
+        },
+        { what: "the holder to launch its browser", timeoutMs: LAUNCH_BOUND_MS },
+      );
+      holder.kill("SIGKILL");
+      await until(() => !alive(pid), {
+        what: `the browser ${pid} to exit after its run was killed`,
+      });
+    } finally {
+      holder.kill("SIGKILL");
+      if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+      rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    }
   },
 );
 
