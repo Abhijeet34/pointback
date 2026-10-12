@@ -5758,17 +5758,40 @@ test(
 // A tab that could not reach the daemon while its review was evicted (a laptop asleep, a dropped
 // network) comes back to a review that no longer exists: the server refuses its stream with 4404,
 // and the tab must say so and how to get a fresh page, and the agent's next open must give one.
+// Its code face is refused while it is offline, as on macos-15 (run 38274988729), so a reload the
+// chrome holds for that face is in play when the stream opens and the server refuses it.
 test(
   "a tab that was offline while its review was evicted says so on its return, and the next open gives a working tab",
   { skip: !executable && "no browser found" },
   async () => {
     const own = isolatedEnv();
     const pages = [];
+    let reloads = 0;
+    const held = [];
     try {
       const { file } = copyOfFixture();
       const session = (await cli([file], own.env)).json().session;
-      const away = await openReview(session.url);
-      pages.push(away.page);
+      const page = await browser.page("about:blank");
+      pages.push(page);
+      page.listen(({ method, params, sessionId }) => {
+        if (method === "Page.frameRequestedNavigation" && sessionId === page.sessionId) {
+          if (params.frameId === page.targetId && params.reason === "reload") reloads += 1;
+        }
+        if (method !== "Fetch.requestPaused" || sessionId) return;
+        if (held.length === 0) held.push(params.requestId);
+        else
+          page.browser
+            .send("Fetch.continueRequest", { requestId: params.requestId })
+            .catch(() => {});
+      });
+      await page.browser.send("Fetch.enable", {
+        patterns: [
+          { urlPattern: `http://127.0.0.1:${own.serverInfo().port}/house/fonts/ibm-plex-mono/*` },
+        ],
+      });
+      await page.send("Page.navigate", { url: session.url });
+      const away = await reviewIn(page);
+      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
       const offline = (on) =>
         away.page.send("Network.emulateNetworkConditions", {
           offline: on,
@@ -5778,6 +5801,14 @@ test(
         });
       await away.page.send("Network.enable");
       await offline(true);
+      await page.browser.send("Fetch.failRequest", {
+        requestId: held[0],
+        errorReason: "InternetDisconnected",
+      });
+      await page.browser.send("Fetch.disable");
+      // The face's load has failed once the document's faces have settled; two frames after that let
+      // recover.js's loadingerror handler run before the daemon stops.
+      await page.explained(page.eval(SETTLED));
       assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
       await away.page.waitFor("document.getElementById('presence').dataset.state === 'lost'", {
         timeoutMs: 20_000,
@@ -5812,6 +5843,14 @@ test(
       assert.match(
         await away.page.eval("document.getElementById('noticeText').textContent"),
         /can no longer reach its review\. Run .+ on this file again for a fresh page/,
+      );
+      // A tab whose link is spent holds the face's reload for good, so none can come after this.
+      assert.deepEqual(
+        {
+          reloads,
+          navigation: await page.eval("performance.getEntriesByType('navigation')[0].type"),
+        },
+        { reloads: 0, navigation: "navigate" },
       );
 
       const reopened = await cli([file], own.env);
