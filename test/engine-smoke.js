@@ -2,7 +2,7 @@
 // browser, which is Safari on an unconfigured Mac, while test/browser.test.js drives Chromium
 // only. Open a file, point at an element, write a note, send, and a poll returns it. Then the gate
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
-// Keys pressed after a note made by mouse edit nothing in the page.
+// Keys pressed after a note made by mouse edit nothing in the page, and a Tab out of a note keeps it.
 // A save of a Word export keeps the reviewer's place and Annotate.
 // And an add after the tab sat idle past Node's default keep-alive close is kept.
 // And a chrome face refused while the browser is offline leaves the review on screen.
@@ -49,6 +49,7 @@ async function smoke(engine) {
     await act(browser, (page) => readingPlace(page, lab, engine));
     await act(browser, (page) => wordPage(page, lab, engine));
     await act(browser, (page) => pressOverThePage(page, lab));
+    await act(browser, (page) => tabFromTheNote(page, lab, engine));
     await act(browser, (page) => keysAfterAMouseNote(page, lab, engine));
     const control = await act(browser, (page) => keysReachThePage(page, lab, engine));
     const probes = [];
@@ -436,6 +437,37 @@ async function pressOverThePage(page, lab) {
     })),
     { shown: true, cover: true },
     "a press over the page is the reviewer's own move into it, so the page is not held",
+  );
+}
+
+/**
+ * A Tab the reviewer presses in an open note is the keyboard's way into the page, so the move it makes
+ * is theirs, as a press over the page is: the chrome leaves the page loaded and shown and the note open.
+ * WebKit 26.6 names nothing as where the focus went, so there it rests on the chrome hearing the Tab's
+ * trusted keydown first (`tabbing` in src/browser/chrome.js); Firefox 155 fires no focusout in the
+ * chrome for this move, so there it holds without that.
+ */
+async function tabFromTheNote(page, lab, engine) {
+  await openFocusFixture(page, lab, "tab");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.keyboard.press("Shift+Tab");
+  await page.waitForFunction(() => document.activeElement?.id === "artifact");
+  // Two tasks: the check the focus move starts runs in one, so the second means it has run.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0)));
+  const shown = await page.evaluate(() => ({
+    card: !document.getElementById("card").hidden,
+    cover: document.getElementById("cover").hidden,
+    frame: getComputedStyle(document.getElementById("artifact")).display,
+  }));
+  const address = page
+    .frames()
+    .find((frame) => frame.parentFrame()?.url().endsWith("/wrapper.html"))
+    ?.url();
+  assert.deepEqual(
+    { ...shown, unloaded: address === undefined || address.startsWith("about:blank") },
+    { card: true, cover: true, frame: "block", unloaded: false },
+    `${engine}: a Shift+Tab from the note into the page`,
   );
 }
 
