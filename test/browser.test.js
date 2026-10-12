@@ -4721,14 +4721,22 @@ async function holdSdk(artifact) {
   };
 }
 
-/** A real click in the middle of a chrome element, scrolled into view first as a reviewer would. */
+/**
+ * A real click in the middle of a chrome element, scrolled into view first as a reviewer would, and
+ * aimed two frames on, where a reviewer sees it: the card is placed again in the frame after it grows,
+ * and a box read before that frame aimed 49 px below Cancel (macos-15, run 38294988373).
+ */
 async function clickOn(page, expression) {
   const box = JSON.parse(
-    await page.eval(`(() => {
-      const element = ${expression};
-      element.scrollIntoView({ block: "nearest" });
-      return JSON.stringify(element.getBoundingClientRect());
-    })()`),
+    await page.eval(`new Promise((done, fail) => requestAnimationFrame(() => requestAnimationFrame(() => {
+      try {
+        const element = ${expression};
+        element.scrollIntoView({ block: "nearest" });
+        done(JSON.stringify(element.getBoundingClientRect()));
+      } catch (error) {
+        fail(error);
+      }
+    })))`),
   );
   await page.click(box.left + box.width / 2, box.top + box.height / 2);
 }
