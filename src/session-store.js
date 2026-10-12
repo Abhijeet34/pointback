@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -9,11 +9,12 @@ import {
   canonicalFile,
   canonicalPath,
   isOutside,
+  resolveAsset,
   sessionKey,
 } from "./artifact-path.js";
 import { HttpError } from "./http-guard.js";
 import { limits } from "./limits.js";
-import { assetsOutside } from "./inject.js";
+import { assetsOutside, preparePage } from "./inject.js";
 import { MARKDOWN_STYLES, artifactKind, renderMarkdown } from "./markdown.js";
 import {
   pastSharingViolations,
@@ -42,6 +43,8 @@ export const DRAFT_ID_PATTERN = /^[0-9a-f]{16}$/;
 const newEpoch = () => randomBytes(8).toString("hex");
 /** The one file every session lived in before each got its own. */
 const LEGACY_FILE = "state.json";
+/** Where every page served loads the SDK from; the daemon serves it among its own files. */
+const SDK_PATH = "/sdk.js";
 
 const writesOf = (session) => (Number.isSafeInteger(session?.writes) ? session.writes : 0);
 
@@ -57,6 +60,8 @@ export class SessionStore {
   #live;
   /** Each session file as this process last read or wrote it; see `#persist`. */
   #seen = new Map();
+  /** Each session's page as `page` last made it; weak, so an evicted session takes its page along. */
+  #pages = new WeakMap();
 
   /**
    * `stateDir` holds one file per session under `sessions/`, so a mutation rewrites only the session
@@ -293,22 +298,51 @@ export class SessionStore {
   }
 
   /**
+   * The page a review shows, as served, and what it loads, made once for each content its file has:
+   * rendering and parsing a 1.3 MB Markdown file took 0.4 s, which every open, connect and fetch of
+   * it paid before (docs/ENGINEERING-NOTES.md). Throws when the file cannot be read.
+   */
+  page(key) {
+    const session = this.get(key);
+    const source = readFileSync(session.file);
+    const digest = createHash("sha256").update(source).digest("hex");
+    const cached = this.#pages.get(session);
+    if (cached?.digest === digest) return cached;
+    const text = source.toString("utf8");
+    const markdown = artifactKind(session.file) === "markdown";
+    const { html, loads } = preparePage(
+      markdown ? renderMarkdown(text, session.file) : text,
+      SDK_PATH,
+    );
+    const page = { digest, body: Buffer.from(html), loads };
+    this.#pages.set(session, page);
+    return page;
+  }
+
+  /**
    * What the page loads from outside its root, which the review does not serve, so the agent and the
    * reviewer can be told why it looks unstyled rather than left to guess. Read from the file as it is.
    */
   outside(key) {
     const session = this.get(key);
-    let source;
+    let loads;
     try {
-      source = readFileSync(session.file, "utf8");
+      ({ loads } = this.page(key));
     } catch {
       return [];
     }
     const markdown = artifactKind(session.file) === "markdown";
-    const page = markdown ? renderMarkdown(source, session.file) : source;
     const { artifactUrl } = this.status(key);
     const rootUrl = `/artifact/${key}/${session.assetToken}/`;
-    return assetsOutside(page, rootUrl, artifactUrl).filter(
+    const readSheet = (path) => {
+      try {
+        const file = resolveAsset(session.root, path);
+        return file && readFileSync(file, "utf8");
+      } catch {
+        return null;
+      }
+    };
+    return assetsOutside(loads, rootUrl, artifactUrl, readSheet).filter(
       (ref) => !(markdown && MARKDOWN_STYLES.includes(ref)),
     );
   }
