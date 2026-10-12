@@ -104,6 +104,12 @@
       if (data.scroll) restoreScroll(data.scroll);
       setAnnotate(data.annotate);
       send({ type: "annotate-ok", on: annotate });
+      // This page replaced one unloaded for a note made by keyboard, so the element the note was on
+      // gets the focus back here, as `closeTarget` gives it, and the chrome is told it is done.
+      if (typeof data.refocus === "string") {
+        if (annotate) document.querySelector(data.refocus)?.focus({ preventScroll: true });
+        send({ type: "closed" });
+      }
       setTextSize(data.textSize);
       // The agent may have rewritten the page, so every note is found again by its anchor.
       setPins(data.pins);
@@ -504,6 +510,7 @@
     outlineRects(hit.rects);
     send({
       type: "target",
+      keyboard: !hit.pointed,
       note: {
         selector: selectorFor(hit.element),
         ...(hit.lines && { lines: hit.lines }),

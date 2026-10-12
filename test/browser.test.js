@@ -1234,6 +1234,37 @@ test(
   },
 );
 
+test(
+  "a note made by keyboard gives the focus back to its element after the page was unloaded for it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    // Into the page the way a keyboard reviewer starts: point at the title, Escape, then Tab on.
+    await pointAt(page, artifact, "#t");
+    await page.key("Escape", { keyCode: 27 });
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
+    await page.tab();
+    await artifact.waitFor("document.activeElement.id === 'p1'");
+    await page.enter();
+    await page.waitFor(
+      `!document.getElementById('card').hidden && document.activeElement === ${card}`,
+    );
+    await artifact.eval("globalThis.calling = true");
+    await page.eval("delete document.body.dataset.revision");
+    const result = await writeNote(page, card, "document.getElementById('card').hidden");
+    assert.deepEqual(result, { kept: true, text: "abc", address: "about:blank", keys: 0 });
+    // The page is loaded again for the reviewer, and the keyboard is back where they were.
+    await page.waitFor("document.body.dataset.revision === '0'");
+    const back = await page.frame();
+    await back.waitFor("document.hasFocus() && document.activeElement.id === 'p1'");
+    await page.tab();
+    await back.waitFor("document.activeElement.id === 'p2'");
+    await page.close();
+  },
+);
+
 /**
  * The page takes the focus from a note on its far paragraph, with the frame moved out of the chrome's
  * view or left in it. A word is typed into the note at once and another once the frame holds

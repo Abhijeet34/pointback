@@ -1023,9 +1023,13 @@ const gesture = (active) =>
 let composing = null;
 // Set when a forced close kept the card open, so the card can say why it is still there.
 let held = false;
+// The element a note made by keyboard was on, when closing it reloads the page: the page loaded in its
+// place has no target to give the focus back to, so it is named in that page's `init`.
+let refocusOnShow = null;
 
 function openCompose(note, label, outline, rects, from) {
   composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
+  refocusOnShow = null;
   if (!from) endWait();
   // A refusal belongs only to the words it refused; a fresh card gets a clean reason line.
   cardProblem = null;
@@ -1052,6 +1056,9 @@ function closeCompose(refocus) {
   if (card.hidden) return;
   card.hidden = true;
   const from = composing?.from;
+  // The same reloads `renderCover` and the line below make.
+  if (refocus && !from && composing?.keyboard && !fileGone && (unloaded || deferredReload))
+    refocusOnShow = composing.note.selector;
   composing = null;
   held = false;
   editing = false;
@@ -1150,17 +1157,22 @@ window.addEventListener("message", (event) => {
   const { active, message: data } = event.data;
   if (data?.type === "ready") {
     nonce = crypto.randomUUID();
+    // Only to a reviewer still on the frame: one who moved on keeps the focus where they went.
+    const refocus = document.activeElement === frame ? refocusOnShow : null;
+    refocusOnShow = null;
     post({
       type: "init",
       annotate,
       scroll: lastScroll,
       pins: pinData(),
       textSize: frameTextSize(),
+      ...(refocus && { refocus }),
     });
     document.body.dataset.ready = "1";
     announced = true;
-    // A page loaded since the card closed has no focus of its own to bring back.
-    endWait();
+    // A page loaded since the card closed has no focus of its own to bring back, unless it was given
+    // one, which it answers as closed.
+    if (!refocus) endWait();
     if (strayed) {
       // Back is about to be hidden under the reviewer, so the focus goes where Back led.
       const onBack = document.activeElement === backButton;
@@ -1193,6 +1205,7 @@ window.addEventListener("message", (event) => {
     const { selector, lines, tag, text, target } = data.note;
     const note = { selector, lines, tag, text, target };
     openCompose(note, locatorOf(note), data.structure, data.rects);
+    composing.keyboard = data.keyboard === true;
   } else if (data.type === "key") {
     // The review's keys pressed in the page. Like a target, a key is heard only under the
     // reviewer's own press in the frame; the controls it reaches are the ones the bar offers.
