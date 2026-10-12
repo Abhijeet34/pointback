@@ -417,8 +417,11 @@ class Page {
 
   /** Resolves once the browser says the tab is destroyed, which comes after the close's own answer. */
   async close() {
-    for (const listener of this.listeners ?? [])
-      this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+    for (const listener of this.listeners ?? []) {
+      const index = this.browser.listeners.indexOf(listener);
+      if (index !== -1) this.browser.listeners.splice(index, 1);
+    }
+    this.listeners = [];
     let gone = false;
     const listener = (message) => {
       if (message.method === "Target.targetDestroyed" && message.params.targetId === this.targetId)
