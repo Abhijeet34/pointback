@@ -13,6 +13,7 @@ import {
   sessionKey,
 } from "./artifact-path.js";
 import { HttpError } from "./http-guard.js";
+import { name } from "./identity.js";
 import { limits } from "./limits.js";
 import { assetsOutside, preparePage } from "./inject.js";
 import { MARKDOWN_STYLES, artifactKind, renderMarkdown, unreviewable } from "./markdown.js";
@@ -45,6 +46,14 @@ const newEpoch = () => randomBytes(8).toString("hex");
 const LEGACY_FILE = "state.json";
 /** Where every page served loads the SDK from; the daemon serves it among its own files. */
 const SDK_PATH = "/sdk.js";
+
+// What keeps a review from being evicted at the cap, in the words the refusal names each one with.
+const HOLDS = [
+  "open in a tab, so ask the reviewer to close that tab once they are done",
+  `being polled, so let the poll run to its end or run \`${name} end <file>\``,
+  "holding notes the agent has not received, so poll it until a poll brings no new notes",
+  "holding notes the reviewer has not sent, so ask the reviewer to send them and then poll it, or to discard them",
+];
 
 const writesOf = (session) => (Number.isSafeInteger(session?.writes) ? session.writes : 0);
 
@@ -220,6 +229,17 @@ export class SessionStore {
     return session;
   }
 
+  /** What keeps a session from being evicted, each cause worded with how to clear it. */
+  #holds(s) {
+    const [tab, polled, received, unsent] = HOLDS;
+    return [
+      this.#live(s.key) && tab,
+      (this.#pollsByKey.get(s.key) ?? 0) > 0 && polled,
+      (s.pending.length > 0 || s.unacked) && received,
+      s.drafts?.length > 0 && unsent,
+    ].filter(Boolean);
+  }
+
   /**
    * Makes room at the cap by disposing the least useful session, so a review is a bounded thing that
    * ends rather than an entry that accumulates until the tool wedges. An ended review goes before a
@@ -233,19 +253,18 @@ export class SessionStore {
    * real work and the new open is refused.
    */
   #evict() {
-    const evictable = [...this.#sessions.values()].filter(
-      (s) =>
-        (this.#pollsByKey.get(s.key) ?? 0) === 0 &&
-        !this.#live(s.key) &&
-        s.pending.length === 0 &&
-        !s.unacked &&
-        !s.drafts?.length,
-    );
-    if (evictable.length === 0)
+    const evictable = [...this.#sessions.values()].filter((s) => this.#holds(s).length === 0);
+    if (evictable.length === 0) {
+      // Each review under every cause holding it, so the agent frees the one it can, the right way.
+      const lines = HOLDS.flatMap((why) => {
+        const files = [...this.#sessions.values()].filter((s) => this.#holds(s).includes(why));
+        return files.length === 0 ? [] : [`\n- ${why}: ${files.map((s) => s.file).join(", ")}`];
+      });
       throw new HttpError(
         429,
-        `all ${limits.sessions} reviews held are open in a tab, being polled or holding notes, so none can make room: ask the reviewer to close the tab of a finished review, let a poll on a review run to the end or end that review, or for a review holding notes, poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way (a review held for more than one of these needs each cleared)`,
+        `all ${limits.sessions} reviews held are in use, so none can make room; free one by what holds it, then open the file again (a review listed twice needs both cleared):${lines.join("")}`,
       );
+    }
     evictable.sort((a, b) => {
       if (Boolean(a.endedAt) !== Boolean(b.endedAt)) return a.endedAt ? -1 : 1;
       return (a.lastActive ?? a.createdAt).localeCompare(b.lastActive ?? b.createdAt);

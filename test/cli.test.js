@@ -288,34 +288,86 @@ test("a review with tabs open is never evicted, closing one leaves the daemon up
   }
 });
 
-test("when every review held has a tab open, a new open is refused with the reason and the way out", async () => {
+// The refusal used to name the four causes and their remedies for all 64 reviews at once, so the
+// agent could not tell which review to clear, or how.
+test("when every review held is in use, a new open is refused naming what holds each one and how to free it", async () => {
   const own = isolatedEnv();
   const tabs = [];
+  const files = [];
+  let polling;
   try {
     const { dir, file } = scratch();
     const keys = [keyOf(await cli([file], own.env))];
-    tabs.push(await tab(own, keys[0]));
     const api = daemon(own);
+    files.push(file);
     for (let i = 1; i < limits.sessions; i += 1) {
       const other = join(dir, `other-${i}.html`);
       writeFileSync(other, "<p></p>");
       const { key } = await (await api.call("POST", "/api/sessions", { file: other })).json();
+      files.push(realpathSync(other));
       keys.push(key);
-      tabs.push(await tab(own, key));
     }
+    files[0] = realpathSync(file);
+    // One review per cause, and one held for two; every other review has a tab open.
+    const [polled, received, unsent, both] = [1, 2, 3, 4];
+    polling = cli(["poll", files[polled], "--timeout-ms", "20000"], own.env);
+    await until(async () => (await presenceOf(own.serverInfo(), keys[polled])) === "listening", {
+      what: "the poll to attach",
+    });
+    await api.note(keys[received], "a note the agent has not polled for");
+    for (const key of [keys[unsent], keys[both]]) {
+      const kept = await api.call("POST", `/api/${key}/drafts`, {
+        draft: { prompt: "not sent yet", selector: "#title", tag: "h1", text: "Rollout" },
+      });
+      assert.equal(kept.status, 200, await kept.text());
+    }
+    for (const [index, key] of keys.entries())
+      if (![polled, received, unsent].includes(index)) tabs.push(await tab(own, key));
+
     const oneMore = join(dir, "one-more.html");
     writeFileSync(oneMore, "<p></p>");
     const refused = await cli([oneMore], own.env);
     assert.equal(refused.code, 1, refused.stdout);
-    assert.match(
-      refused.stderr,
-      /open in a tab, being polled or holding notes.*ask the reviewer to close the tab of a finished review, let a poll on a review run to the end or end that review, or for a review holding notes, poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way \(a review held for more than one of these needs each cleared\)/,
+    const lines = refused.stderr.trimEnd().split("\n");
+    assert.equal(
+      lines[0],
+      `error: all ${limits.sessions} reviews held are in use, so none can make room; free one by what holds it, then open the file again (a review listed twice needs both cleared):`,
     );
+    const held = (cause) => {
+      const line = lines.find((entry) => entry.startsWith(`- ${cause}`));
+      assert.ok(line, `a line for ${cause}: ${refused.stderr}`);
+      return line.slice(line.indexOf(": ") + 2).split(", ");
+    };
+    const others = files.filter((_, index) => ![polled, received, unsent].includes(index));
+    assert.deepEqual(
+      held("open in a tab, so ask the reviewer to close that tab once they are done"),
+      others,
+    );
+    assert.deepEqual(
+      held(`being polled, so let the poll run to its end or run \`${name} end <file>\``),
+      [files[polled]],
+    );
+    assert.deepEqual(
+      held("holding notes the agent has not received, so poll it until a poll brings no new notes"),
+      [files[received]],
+    );
+    assert.deepEqual(
+      held(
+        "holding notes the reviewer has not sent, so ask the reviewer to send them and then poll it, or to discard them",
+      ),
+      [files[unsent], files[both]],
+    );
+    assert.equal(lines.length, 5, refused.stderr);
     const statuses = [];
     for (const key of keys) statuses.push((await api.call("GET", `/api/${key}/session`)).status);
     assert.deepEqual(statuses, Array(limits.sessions).fill(200), "every held review still answers");
   } finally {
     for (const open of tabs) open.close();
+    // Ending the polled review answers its poll at once, rather than at the poll's own timeout.
+    if (polling) {
+      await cli(["end", files[1]], own.env);
+      await polling;
+    }
     await own.stop();
   }
 });
