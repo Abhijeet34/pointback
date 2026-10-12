@@ -382,6 +382,7 @@ test("no workflow types a browser path of its own", () => {
 // repository uses already hands these bodies to bash.
 test("every multi-line run: block is valid shell", () => {
   for (const file of workflowNames) {
+    if (!/^ +steps:$/m.test(workflows[file])) continue; // a caller has no steps of its own
     const blocks = [...workflows[file].matchAll(/^( +)run: \|\n((?:\1 .*\n|\n)+)/gm)];
     assert.ok(blocks.length > 0, `${file}: no run block found, so this test checked nothing`);
     for (const [, , body] of blocks) {
@@ -720,6 +721,24 @@ test("the secret scan is gates' shared workflow and gates the required check", (
       `${file} pins the secret scan locally instead of following gates`,
     );
   }
+});
+
+// A called workflow can narrow the caller's token but never widen it, so a caller
+// without `vulnerability-alerts: read` ends in startup_failure (run 33564327488).
+test("open Dependabot alerts are read by gates' advisory workflow on every pull request", () => {
+  const caller = workflows["dependency-advisories.yml"];
+  assert.ok(caller, "no dependency-advisories.yml caller");
+  const text = directives(caller);
+  assert.match(
+    jobsByName(caller).advisories,
+    /^ {4}uses: Abhijeet34\/gates\/\.github\/workflows\/shared-dependency-advisories\.yml@main$/m,
+  );
+  assert.match(text, /^permissions:\n(?: {2}.*\n)*? {2}vulnerability-alerts: read$/m);
+  for (const trigger of ["push", "pull_request", "schedule"]) {
+    assert.match(text, new RegExp(`^ {2}${trigger}:`, "m"), `no ${trigger} trigger`);
+  }
+  // The development scope label is wrong about what ships, so it is never waived.
+  assert.doesNotMatch(text, /fail_on_development/);
 });
 
 test("the product name is never written into delivery configuration", () => {
