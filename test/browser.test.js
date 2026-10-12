@@ -3504,7 +3504,7 @@ test(
         errorReason: "ConnectionRefused",
       });
       // The face's load has failed once the document's faces have settled; two frames after that let
-      // the chrome's loadingerror handler run before the note is read.
+      // recover.js's rejected `loaded` be heard before the note is read.
       await page.eval(SETTLED);
       assert.deepEqual(
         JSON.parse(
@@ -3654,7 +3654,7 @@ test(
         errorReason: "InternetDisconnected",
       });
       // The face's load has failed once the document's faces have settled; two frames after that let
-      // recover.js's loadingerror handler run before the chrome is read.
+      // recover.js's rejected `loaded` be heard before the chrome is read.
       await page.explained(page.eval(SETTLED));
       await page.waitFor("/offline/.test(document.getElementById('noticeText').textContent)");
       assert.deepEqual(
