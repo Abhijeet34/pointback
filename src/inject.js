@@ -8,13 +8,15 @@ const ASK_AGAIN =
   "if(l instanceof HTMLLinkElement&&!again.has(l)){const c=l.cloneNode();again.add(c);l.replaceWith(c)}},true)}";
 
 /**
- * Appends the SDK script to the artifact's body, and puts the script that asks again for a refused
+ * Parses a page once for both of the daemon's uses of it: the page as served, and what it loads, for
+ * `assetsOutside`. The SDK script goes last in its body and the script that asks again for a refused
  * stylesheet first in its head, before any link it watches. Each goes in as a DOM node, so no
  * artifact byte sequence (an unclosed comment, a stray script) can swallow or reshape it, and the
  * artifact's own markup is re-emitted by the parser rather than spliced.
  */
-export function injectSdk(html, src) {
+export function preparePage(html, src) {
   const document = parse(html);
+  const loads = loadsOf(document);
   const script = (parentNode, attrs, text) => {
     const node = {
       nodeName: "script",
@@ -31,7 +33,7 @@ export function injectSdk(html, src) {
   head.childNodes.unshift(script(head, [], ASK_AGAIN));
   const body = find(document, "body");
   body.childNodes.push(script(body, [{ name: "src", value: src }]));
-  return serialize(document);
+  return { html: serialize(document), loads };
 }
 
 function find(node, name) {
@@ -63,13 +65,8 @@ const LOADING_LINKS = new Set(["stylesheet", "icon", "preload", "modulepreload",
 const MAX_OUTSIDE = 20;
 const MAX_NAME = 120;
 
-/**
- * The assets a page loads from outside `rootUrl`, as its markup names them: a relative path that
- * climbs above the root, or an absolute one, both of which the review answers with a 404. Resolved
- * as the browser will, from the page's address `pageUrl` and any <base>; other origins are not ours.
- */
-export function assetsOutside(html, rootUrl, pageUrl) {
-  const origin = "http://artifact.invalid";
+/** What a page's markup loads, as it names it, and the <base> it resolves against, if any. */
+function loadsOf(document) {
   const elements = [];
   const collect = (node) => {
     for (const child of node.childNodes ?? []) {
@@ -77,12 +74,10 @@ export function assetsOutside(html, rootUrl, pageUrl) {
       collect(child.content ?? child);
     }
   };
-  collect(parse(html));
+  collect(document);
   const attr = (element, name) => element.attrs.find((a) => a.name === name)?.value;
-  let base = new URL(pageUrl, origin);
-  const declared = elements.find((e) => e.tagName === "base" && attr(e, "href") !== undefined);
-  if (declared) base = new URL(attr(declared, "href"), base);
-  const outside = new Set();
+  const base = elements.find((e) => e.tagName === "base" && attr(e, "href") !== undefined);
+  const refs = [];
   for (const element of elements) {
     const names = LOADS[element.tagName];
     if (!names) continue;
@@ -93,19 +88,34 @@ export function assetsOutside(html, rootUrl, pageUrl) {
     for (const name of names) {
       const value = attr(element, name)?.trim();
       if (!value) continue;
-      const refs =
-        name === "srcset" ? value.split(",").map((c) => c.trim().split(/\s+/)[0]) : [value];
-      for (const ref of refs) {
-        if (ref.length > MAX_NAME) continue;
-        let url;
-        try {
-          url = new URL(ref, base);
-        } catch {
-          continue;
-        }
-        if (url.origin === origin && !url.pathname.startsWith(rootUrl)) outside.add(ref);
-      }
+      refs.push(
+        ...(name === "srcset" ? value.split(",").map((c) => c.trim().split(/\s+/)[0]) : [value]),
+      );
     }
+  }
+  return { base: base && attr(base, "href"), refs };
+}
+
+/**
+ * The assets a page loads from outside `rootUrl`, from its `loads` as `preparePage` read them: a
+ * relative path that climbs above the root, or an absolute one, both of which the review answers
+ * with a 404. Resolved as the browser will, from the page's address `pageUrl` and any <base>; other
+ * origins are not ours.
+ */
+export function assetsOutside({ base, refs }, rootUrl, pageUrl) {
+  const origin = "http://artifact.invalid";
+  let from = new URL(pageUrl, origin);
+  if (base !== undefined) from = new URL(base, from);
+  const outside = new Set();
+  for (const ref of refs) {
+    if (ref.length > MAX_NAME) continue;
+    let url;
+    try {
+      url = new URL(ref, from);
+    } catch {
+      continue;
+    }
+    if (url.origin === origin && !url.pathname.startsWith(rootUrl)) outside.add(ref);
   }
   return [...outside].slice(0, MAX_OUTSIDE);
 }

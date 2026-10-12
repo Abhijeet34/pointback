@@ -71,6 +71,10 @@ Each section below is the text `AGENTS.md` carried under the same heading before
 - A review shows HTML or Markdown and refuses anything else at open with a 415 (`artifactKind` in `src/markdown.js`).
   Markdown is rendered by markdown-it with raw HTML on, in `src/browser/markdown.css`, and every block carries `data-source-lines`, which the SDK turns into a note's `lines` (`sourceLines` in `src/browser/sdk.js`); the store keeps `lines` only on a Markdown session's notes, so an HTML page carrying the attribute names nothing.
   `test/browser.test.js` proves both against a copy of `README.md`, which is therefore also a fixture: its Install paragraph opens with `` `parse5` ``.
+- A review's page is rendered, parsed and injected once for each content its file has (`page` in `src/session-store.js`), keyed by the SHA-256 of the file's bytes, and the open, every connect and every fetch read that one copy.
+  Through 0.1.7 each of them did the work again: for a 1.3 MB Markdown file (4.3 MB rendered), every artifact GET took 0.39 to 0.45 s and a `/health` sent behind one waited 0.43 s; served from the copy, the same GETs took 0.010 to 0.030 s and `/health` 0.009 s.
+  The key is the content and never the file's mtime or size, so an edit is never served stale, and the copy holds what the page loads as its markup names it rather than a verdict, because whether that is outside the root depends on the root, which a later open can change.
+  `test/server.test.js` counts renders through markdown-it's `parse`: one open, ten connects and ten fetches of one content render it once.
 - The event stream is a WebSocket (`eventStream` in `src/server.js`, `src/websocket.js`, `follow` in `src/browser/chrome.js`).
   As a held `fetch` response it took one of the six HTTP connections a browser allows a host, so with five other review tabs open the sixth tab's add hung for good and the seventh never loaded (`test/browser.test.js`, "eight review tabs"); WebSockets have their own pool.
   Releasing the stream while a tab is hidden was rejected: it breaks `live` for duplicate tabs and still fails with six visible windows, and HTTP/2 needs TLS.
