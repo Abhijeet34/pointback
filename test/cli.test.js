@@ -1338,9 +1338,13 @@ test("reply answers a note done, declined or with a question, and refuses a uid 
     /^error: --message is over 2000 characters$/m,
   );
   const never = join(scratch().dir, "a.html");
+  writeFileSync(never, "<p></p>");
   const unopened = await cli(["reply", never, "1", "--done"], lab.env);
   assert.equal(unopened.code, 1);
-  assert.match(unopened.stderr, /no such session/);
+  assert.match(
+    unopened.stderr,
+    /^error: no review of \S*a\.html is open: run `\S+ \S*a\.html` to open one$/m,
+  );
 });
 
 test("a reply that meets a session another process rewrote is made once more and lands", async () => {
@@ -1471,16 +1475,56 @@ test("a poll longer than one request may last waits its whole timeout, then deli
   }
 });
 
-test("a --timeout-ms the server refuses is refused at once with its message, as before", async () => {
+// The waiting line used to come first, then the server's own name for the flag; a negative value
+// never reached either, refused by the argument parser with advice about dashes.
+test("a --timeout-ms that is not a whole number of milliseconds is refused by its own name, before any wait", async () => {
   const { file } = scratch();
   assert.equal((await cli([file], lab.env)).code, 0);
-  for (const value of ["Infinity", "300000.5"]) {
-    const refused = await cli(["poll", file, "--timeout-ms", value], lab.env, {
-      timeoutMs: 30_000,
-    });
-    assert.equal(refused.code, 1, value);
-    assert.equal(refused.stdout, "", value);
-    assert.ok(refused.stderr.endsWith("error: timeoutMs must be a non-negative integer\n"), value);
+  for (const value of [["abc"], ["-5"], ["--timeout-ms=-5"], ["1.5"], ["Infinity"], ["700000x"]]) {
+    const args = value[0].startsWith("--") ? value : ["--timeout-ms", ...value];
+    const refused = await cli(["poll", file, ...args], lab.env, { timeoutMs: 30_000 });
+    assert.equal(refused.code, 1, value[0]);
+    assert.equal(refused.stdout, "", value[0]);
+    assert.equal(
+      refused.stderr,
+      "error: --timeout-ms must be a whole number of milliseconds, 0 or more\n",
+      value[0],
+    );
+  }
+});
+
+// A file no review can open, or one with no review open, used to answer "no such session".
+// A file no review shows is refused before any wait; one that merely has no review open is known so
+// only from the daemon's answer, which comes at once, after the line saying the poll is waiting.
+test("poll, end and reply on a file with no review say why and what to run", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-noreview-"));
+  const notes = join(dir, "notes.txt");
+  const plan = join(dir, "plan.html");
+  writeFileSync(notes, "plain notes\n");
+  writeFileSync(plan, "<p>never opened</p>");
+  const cases = [
+    [
+      notes,
+      "error: notes.txt cannot be reviewed: open an HTML (.html, .htm) or Markdown (.md, .markdown) file\n",
+    ],
+    [plan, `error: no review of ${plan} is open: run \`${name} ${plan}\` to open one\n`],
+  ];
+  for (const [file, message] of cases) {
+    for (const args of [
+      ["poll", file, "--timeout-ms", "0"],
+      ["end", file],
+      ["reply", file, "1", "--done"],
+    ]) {
+      const refused = await cli(args, lab.env);
+      assert.equal(refused.code, 1, args.join(" "));
+      assert.equal(refused.stdout, "", args.join(" "));
+      const waited = file === plan && args[0] === "poll";
+      assert.equal(
+        refused.stderr,
+        `${waited ? `waiting for feedback on ${plan}...\n` : ""}${message}`,
+        args.join(" "),
+      );
+    }
   }
 });
 

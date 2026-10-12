@@ -15,7 +15,7 @@ import {
 import { HttpError } from "./http-guard.js";
 import { limits } from "./limits.js";
 import { assetsOutside, preparePage } from "./inject.js";
-import { MARKDOWN_STYLES, artifactKind, renderMarkdown } from "./markdown.js";
+import { MARKDOWN_STYLES, artifactKind, renderMarkdown, unreviewable } from "./markdown.js";
 import {
   pastSharingViolations,
   privateDir,
@@ -175,11 +175,8 @@ export class SessionStore {
    */
   open(file, root) {
     const canonical = canonicalFile(file);
-    if (!artifactKind(canonical))
-      throw new HttpError(
-        415,
-        `${basename(canonical)} cannot be reviewed: open an HTML (.html, .htm) or Markdown (.md, .markdown) file`,
-      );
+    const refusal = unreviewable(canonical);
+    if (refusal) throw new HttpError(415, refusal);
     const assets = assetRoot(root, canonical);
     const key = sessionKey(canonical);
     const now = new Date().toISOString();
