@@ -64,7 +64,9 @@ export async function api(info, method, path, body, retried = false, signal) {
 /**
  * Returns a live server, starting one when none answers. A server of another version
  * is asked to stop first, so the CLI and the daemon never disagree about the protocol.
- * The whole of it is bounded by `wallMs` of wall time: every look it takes is capped at what is left.
+ * Every wait it makes is bounded by `wallMs` of wall time: each look is capped at what is left.
+ * Spawning a daemon blocks the process until the system has created it, which no timer can cut
+ * short, so a spawn adds its own duration (docs/ENGINEERING-NOTES.md).
  */
 export async function ensureServer(stateDir, environment = process.env, wallMs = START_WALL_MS) {
   const began = performance.now();
@@ -160,10 +162,10 @@ export async function stopServer(stateDir, info, status, backstopMs = STOP_BACKS
 /** How long a daemon that answered "stopping" gets to exit before it is said not to have stopped. */
 const STOP_TIMEOUT_MS = 5_000;
 /**
- * The wall bound on a whole start, so an open always answers within it. Sized over the slowest start
- * measured on a CI runner, eight cold opens at once on windows-2025 in 13249 ms (138 hunt logs, docs/
- * ENGINEERING-NOTES.md), and the worst stalled probe, 11670 ms, at over four times either, while an
- * open's answer still fits a two-minute tool call with room for the CLI's own boot.
+ * The wall bound on a start's waits, so an open answers within it and its spawns. Sized over the
+ * slowest start measured on a CI runner, eight cold opens at once on windows-2025 in 13249 ms (138 hunt
+ * logs, docs/ENGINEERING-NOTES.md), and the worst stalled probe, 11670 ms, at over four times either,
+ * while an open's answer still fits a two-minute tool call with room for the CLI's own boot.
  */
 const START_WALL_MS = 60_000;
 /**
