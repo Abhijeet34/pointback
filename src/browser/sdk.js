@@ -25,6 +25,17 @@
   let focusable = [];
   let open = null;
 
+  // The house roles the highlight and the pins paint with, light and then dark, as literals: this frame
+  // cannot load the chrome's sheets. The reviewer's preference reaches it through the color-scheme the
+  // chrome and the wrapper declare. `--halo` rings every pin in the scheme's darkest role (--hw-ink in
+  // light, --hw-bg in dark), so a pin keeps a 3:1 edge on a white page and a dark one; `--ring` is the
+  // highlight, on --hw-focus in light, where the accent solid is under 2:1 on white.
+  const ROLES = `
+    :host { --hw-accent: oklch(0.78 0.12 230); --hw-on-accent: oklch(0.21 0.012 260); --hw-accent-text: oklch(0.489 0.097 230); --hw-surface: #fff; --hw-focus: oklch(0.619 0.108 230); --hw-green-9: oklch(0.55 0.14 150); --hw-amber-9: oklch(0.573 0.124 70); --hw-gray-9: oklch(0.566 0.012 260); --hw-on-solid: #fff; --halo: oklch(0.21 0.012 260); --ring: var(--hw-focus); }
+    @media (prefers-color-scheme: dark) {
+      :host { --hw-on-accent: oklch(0.165 0.012 260); --hw-accent-text: oklch(0.663 0.12 230); --hw-surface: oklch(0.195 0.012 260); --hw-focus: oklch(0.516 0.102 230); --halo: oklch(0.165 0.012 260); --ring: var(--hw-accent); }
+    }`;
+
   // Only the selection highlight lives in the artifact; the note card lives in the chrome, so the
   // artifact never composes the reviewer's instruction. See selectTarget below and chrome.js.
   const host = document.createElement("div");
@@ -32,8 +43,9 @@
   const shadow = host.attachShadow({ mode: "closed" });
   shadow.innerHTML = `
     <style>
+      ${ROLES}
       :host { font: 14px/1.4 system-ui, sans-serif; }
-      .box { position: fixed; pointer-events: none; border: 2px solid oklch(78% 0.12 230); border-radius: 3px; box-shadow: 0 0 0 2px oklch(78% 0.12 230 / 0.25); }
+      .box { position: fixed; pointer-events: none; border: 2px solid var(--ring); border-radius: 3px; box-shadow: 0 0 0 2px oklch(from var(--ring) l c h / 0.25); }
     </style>
     <div class="boxes"></div>`;
   const boxes = /** @type {HTMLElement} */ (shadow.querySelector(".boxes"));
@@ -41,10 +53,8 @@
   // One numbered pin per note, drawn from what the chrome sends: where the note points, its number
   // and its state, never its instruction or the agent's reply, which this page must not read. The
   // layer sits in document coordinates, so the pins ride the page's own scroll without a repaint.
-  // The shape is the house pin's at the default text size, and the colours its dark roles, as literals:
-  // this frame cannot load the chrome's sheets. Every pin and its focus ring carry a dark halo, so
-  // they read on a white page and a dark one. A number past two digits widens its pin rather than
-  // spilling out of it, with the house's 4 px either side.
+  // The shape is the house pin's at the default text size, and the colours its roles (ROLES above). A
+  // number past two digits widens its pin rather than spilling out of it, with the house's 4 px either side.
   const PIN = 24;
   // A pin stands GAP clear of the line or box it is beside.
   const GAP = 4;
@@ -72,14 +82,15 @@
   const pinRoot = pinHost.attachShadow({ mode: "closed" });
   pinRoot.innerHTML = `
     <style>
-      .pin { position: absolute; box-sizing: border-box; display: grid; place-items: center; min-width: ${PIN}px; height: ${PIN}px; padding: 0 4px; border: 0; border-radius: 50% 50% 50% 2px; background: oklch(0.78 0.12 230); color: oklch(0.165 0.012 260); font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; cursor: pointer; box-shadow: 0 0 0 2px oklch(0.165 0.012 260); }
+      ${ROLES}
+      .pin { position: absolute; box-sizing: border-box; display: grid; place-items: center; min-width: ${PIN}px; height: ${PIN}px; padding: 0 4px; border: 0; border-radius: 50% 50% 50% 2px; background: var(--hw-accent); color: var(--hw-on-accent); font: 700 12px/1 system-ui, sans-serif; font-variant-numeric: tabular-nums; cursor: pointer; box-shadow: 0 0 0 2px var(--halo); }
       .pin[hidden] { display: none; }
-      .pin[data-state="queued"] { background: oklch(0.195 0.012 260); color: oklch(0.663 0.12 230); box-shadow: inset 0 0 0 1px oklch(0.78 0.12 230), 0 0 0 2px oklch(0.165 0.012 260); }
-      .pin[data-state="done"] { background: oklch(0.55 0.14 150); color: #fff; }
-      .pin[data-state="question"] { background: oklch(0.573 0.124 70); color: #fff; }
-      .pin[data-state="declined"] { background: oklch(0.566 0.012 260); color: #fff; }
-      .pin[data-active] { box-shadow: 0 0 0 2px oklch(0.165 0.012 260), 0 0 0 5px oklch(0.78 0.12 230); }
-      .pin:focus-visible { outline: 2px solid oklch(0.516 0.102 230); outline-offset: 2px; box-shadow: 0 0 0 6px oklch(0.165 0.012 260); }
+      .pin[data-state="queued"] { background: var(--hw-surface); color: var(--hw-accent-text); box-shadow: inset 0 0 0 1px var(--hw-accent), 0 0 0 2px var(--halo); }
+      .pin[data-state="done"] { background: var(--hw-green-9); color: var(--hw-on-solid); }
+      .pin[data-state="question"] { background: var(--hw-amber-9); color: var(--hw-on-solid); }
+      .pin[data-state="declined"] { background: var(--hw-gray-9); color: var(--hw-on-solid); }
+      .pin[data-active] { box-shadow: 0 0 0 2px var(--halo), 0 0 0 5px var(--hw-accent); }
+      .pin:focus-visible { outline: 2px solid var(--hw-focus); outline-offset: 2px; box-shadow: 0 0 0 6px var(--halo); }
     </style>
     <div class="pins"></div>`;
   const pinLayer = /** @type {HTMLElement} */ (pinRoot.querySelector(".pins"));

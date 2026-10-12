@@ -7052,6 +7052,140 @@ test(
   },
 );
 
+/** A private Markdown file: a title and two paragraphs to note. */
+function copyOfPlan() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-scheme-"));
+  const file = join(dir, "plan.md");
+  writeFileSync(
+    file,
+    "# Rollout plan\n\nShip the importer behind a flag, then widen it in three steps.\n\nEach step waits a full day on the error budget.\n",
+  );
+  return file;
+}
+
+/** The strongest contrast any pixel inside `rect` makes with `ground`: its text, where it has some. */
+function inkOf(shot, rect, ground) {
+  let best = 1;
+  for (let y = Math.ceil(rect.top); y < Math.floor(rect.bottom); y += 1)
+    for (let x = Math.ceil(rect.left); x < Math.floor(rect.right); x += 1)
+      best = Math.max(best, contrast(shot.pixel(x, y), ground));
+  return best;
+}
+
+test(
+  "the chrome, a Markdown page, its pins and its highlight follow the reviewer's light or dark preference, at AA in screenshot pixels",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const file = copyOfPlan();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url, { width: 1440, height: 900 });
+    await noteOn(page, artifact, "h1", "Shorter title");
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    await noteOn(page, artifact, "p", "Say which flag");
+    // The card left open on the last paragraph has the page draw its highlight round it.
+    await pointAt(page, artifact, "p:last-of-type");
+    const frame = JSON.parse(await page.eval(FRAME_BOX));
+    const inPage = (r) => ({
+      left: frame.left + r.left,
+      top: frame.top + r.top,
+      right: frame.left + r.right,
+      bottom: frame.top + r.bottom,
+    });
+    const pins = (await pinsOn(artifact)).map(inPage);
+    assert.equal(pins.length, 2);
+    const text = (selector) =>
+      artifact
+        .eval(
+          `JSON.stringify(document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect())`,
+        )
+        .then((r) => inPage(JSON.parse(r)));
+    const paragraph = await text("p");
+    const last = await text("p:last-of-type");
+    const name = JSON.parse(
+      await page.eval(
+        "JSON.stringify(document.getElementById('fileName').getBoundingClientRect())",
+      ),
+    );
+    const gap = JSON.parse(
+      await page.eval(`(() => {
+        const id = document.querySelector('.bar-id').getBoundingClientRect();
+        const tools = document.querySelector('.bar-tools').getBoundingClientRect();
+        return JSON.stringify({ x: Math.round((id.right + tools.left) / 2), y: Math.round((id.top + id.bottom) / 2) });
+      })()`),
+    );
+    const WHITE = [255, 255, 255];
+    const BLACK = [0, 0, 0];
+    for (const scheme of ["light", "dark"]) {
+      // The reviewer's preference, set on the tab alone: the page under review hears it through the
+      // color-scheme the chrome and its wrapper frame declare.
+      await page.send("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-color-scheme", value: scheme }],
+      });
+      const prefers = `matchMedia("(prefers-color-scheme: ${scheme})").matches`;
+      await page.waitFor(prefers);
+      await artifact.waitFor(prefers);
+      await page.eval(SETTLED);
+      await artifact.eval(SETTLED);
+      const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+      const shot = decodePng(Buffer.from(data, "base64"));
+      const bar = shot.pixel(gap.x, gap.y);
+      const ground = shot.pixel(Math.round(frame.left + 24), Math.round(frame.top + 24));
+      const paper = scheme === "light" ? WHITE : BLACK;
+      // The pin's edge is the strongest step at its boundary, the halo or the ring just inside it,
+      // and its fill is read in the square corner, clear of the number.
+      const pinsSeen = pins.map((pin) => {
+        const y = Math.round(pin.bottom) - 3;
+        const fill = shot.pixel(Math.round(pin.left) + 3, y);
+        const edge = Math.max(
+          ...[-2, -1, 0, 1].map((dx) => contrast(shot.pixel(Math.round(pin.left) + dx, y), ground)),
+        );
+        const label = inkOf(
+          shot,
+          { left: pin.left + 6, top: pin.top + 5, right: pin.right - 6, bottom: pin.bottom - 5 },
+          fill,
+        );
+        return { edge, label };
+      });
+      // The highlight's top edge, read down the left of the noted paragraph just above its text.
+      const ringEdge = Math.max(
+        ...[1, 2, 3, 4, 5, 6].map((dy) =>
+          contrast(shot.pixel(Math.round(last.left) + 10, Math.round(last.top) - dy), ground),
+        ),
+      );
+      const seen = {
+        bar: contrast(bar, paper),
+        ground: contrast(ground, paper),
+        name: inkOf(shot, name, bar),
+        prose: inkOf(shot, paragraph, ground),
+        pins: pinsSeen,
+        ring: ringEdge,
+      };
+      const round = (n) => Number(n.toFixed(2));
+      console.log(
+        `${scheme}: bar ${round(seen.bar)}:1 from ${scheme === "light" ? "white" : "black"}, ground ${round(seen.ground)}:1, file name ${round(seen.name)}:1, prose ${round(seen.prose)}:1, ` +
+          `pins ${pinsSeen.map((p) => `edge ${round(p.edge)}:1 label ${round(p.label)}:1`).join("; ")}, highlight ${round(ringEdge)}:1`,
+      );
+      // The chrome's bar and the page's ground sit within a shade of the scheme's own paper.
+      assert.ok(seen.bar < 1.25, `${scheme}: the chrome's bar is ${scheme}, ${bar}`);
+      assert.ok(
+        seen.ground < 1.25,
+        `${scheme}: the Markdown page's ground is ${scheme}, ${ground}`,
+      );
+      assert.ok(seen.name >= 4.5, `${scheme}: the file name on the bar, ${seen.name}`);
+      assert.ok(seen.prose >= 4.5, `${scheme}: the page's prose, ${seen.prose}`);
+      for (const [i, pin] of pinsSeen.entries()) {
+        assert.ok(pin.edge >= 3, `${scheme}: pin ${i + 1}'s edge on the page, ${pin.edge}`);
+        assert.ok(pin.label >= 4.5, `${scheme}: pin ${i + 1}'s number, ${pin.label}`);
+      }
+      assert.ok(ringEdge >= 3, `${scheme}: the highlight on the page, ${ringEdge}`);
+    }
+    await page.send("Emulation.setEmulatedMedia", { features: [] });
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
 test(
   "the reviewer sets the chrome's text size in the bar, and it stays for the next review",
   { skip: !executable && "no browser found" },
