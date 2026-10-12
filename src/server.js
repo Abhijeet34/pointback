@@ -28,6 +28,8 @@ import { DRAFT_ID_PATTERN, EPOCH_PATTERN, SessionStore } from "./session-store.j
 import { readJson, writeJsonAtomic } from "./state-dir.js";
 import { acceptWebSocket, isWebSocketHandshake, offeredProtocols } from "./websocket.js";
 
+/** How often a running daemon looks that it still holds its state directory: one directory read. */
+const LOCK_CHECK_MS = 2_000;
 const browserDir = new URL("./browser/", import.meta.url);
 // Read once at startup like the chrome page itself: these bytes never change while the
 // daemon runs, and a Map keeps a request for "__proto__" from finding anything.
@@ -98,6 +100,7 @@ export async function serve({
   stateDir,
   port = 0,
   idleMs = limits.idleShutdownMs,
+  // Called once the daemon has closed itself: idle, or no longer holding its state directory.
   onIdle = () => {},
 }) {
   const recorded = join(stateDir, "server.json");
@@ -107,6 +110,7 @@ export async function serve({
   const store = new SessionStore(stateDir, { live: (key) => streams.live(key) });
   const streams = new EventStreams(store);
   let idleTimer;
+  let lockCheck;
   // The daemon idles out on inactivity. An open tab keeps it alive by heartbeating while the reviewer
   // is on it, not merely by holding a stream open, so a review left and walked away from releases the
   // process instead of pinning it forever. Every request - a poll, a heartbeat - is that activity.
@@ -155,6 +159,7 @@ export async function serve({
   const close = () =>
     new Promise((resolve) => {
       clearTimeout(idleTimer);
+      clearInterval(lockCheck);
       streams.closeAll();
       for (const socket of sockets) socket.destroy();
       server.close(() => resolve(undefined));
@@ -206,6 +211,14 @@ export async function serve({
     throw error;
   }
   touch();
+  // A daemon whose state directory was removed under it serves on where no stop can find it, beside
+  // the daemon the next start brings up there, so it closes once its lock is gone.
+  lockCheck = setInterval(() => {
+    if (lock.holds()) return;
+    console.error(`${stateDir} no longer holds this daemon's lock, so it is closing`);
+    close().then(onIdle);
+  }, LOCK_CHECK_MS);
+  lockCheck.unref();
   return { port: bound, token, close, server };
 }
 

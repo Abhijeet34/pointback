@@ -193,6 +193,9 @@ Each section below is the text `AGENTS.md` carried under the same heading before
 - One daemon per state directory, by construction rather than by the CLI's timing.
   On 0.1.6, 8 cold `pointback f<i>.html` at once left 8 daemons on one state directory and 7 of the 8 calls failed after 10 s, and after an idle-out a tab reconnected to the daemon that won its old port while the agent reached another, whose next write deleted the tab's sent note from disk (deep review A1).
   A start claims the next `daemon.<n>.lock` with an exclusive create before it loads a session (`claimDaemon` in `src/daemon-lock.js`); replacing a dead holder by delete-then-create lets two starts that both saw it die each delete the other's fresh lock, which the racing test in `test/daemon-lock.test.js` would catch.
+  A running daemon reads its state directory every `LOCK_CHECK_MS` (2 s, `src/server.js`) and closes once its lock is gone or a later generation tops it.
+  A daemon whose directory was removed under it after it published served on until its idle-out (30 min by default) where `stop` found no record and said `not-running`, beside the daemon the next open started there; one whose directory went before it published never exited until 0.1.8 (`serve` closes a failed start).
+  "a running daemon whose state directory is removed exits instead of serving where no stop can find it" in `test/cli.test.js` timed out on main at 10 s and passes in about 2 s.
   A holder is alive while its pid is and its port answers `/health` as `pointback` with that same pid, or does not answer within a second of running time.
   A pid alone can come back after a crash and lock every start out.
   A port alone can be taken by another listener after a reboot, since the recorded port is sticky.

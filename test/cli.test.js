@@ -951,6 +951,23 @@ test("a daemon whose state directory is removed before it publishes exits instea
   }
 });
 
+// A daemon whose state directory was removed under it after it published served on until its idle-out,
+// beside the daemon the next open started there, while `stop` found no record and said not-running.
+test("a running daemon whose state directory is removed exits instead of serving where no stop can find it", async () => {
+  const lost = isolatedEnv({ POINTBACK_IDLE_MS: "600000" });
+  let pid;
+  try {
+    const opened = await cli([fixture], lost.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    pid = lost.serverInfo().pid;
+    rmSync(lost.dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    await until(() => !pidAlive(pid), { what: "the daemon that lost its directory to exit" });
+  } finally {
+    if (pid && pidAlive(pid)) process.kill(pid);
+    await lost.stop();
+  }
+});
+
 // windows-2025, 3 of about 2160 traced rounds: a stop right after concurrent opens was followed by a
 // daemon one of those opens had spawned and that was still booting, which claimed the directory the
 // stop freed and ran on after it. Here such a start is held before any of its own code runs until the
