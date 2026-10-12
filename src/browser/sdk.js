@@ -733,31 +733,47 @@
     );
     const { start = 0, before = "", after = "" } = pin.target ?? {};
     const best = (element) => {
+      const whole = element.textContent;
+      // The squashed text either side of a match, read only as far as `before` and `after` need.
+      // Squashing the whole prefix and suffix for every match held a long <pre> for seconds.
+      const behind = (at) => {
+        for (let span = 2 * QUOTE_CHARS; ; span *= 2) {
+          const text = squash(whole.slice(Math.max(0, at - span), at));
+          if (text.length >= before.length || span >= at) return text;
+        }
+      };
+      const ahead = (at) => {
+        for (let span = 2 * QUOTE_CHARS; ; span *= 2) {
+          const text = squash(whole.slice(at, at + span));
+          if (text.length >= after.length || at + span >= whole.length) return text;
+        }
+      };
       let found = null;
-      for (const match of element.textContent.matchAll(pattern)) {
-        const whole = element.textContent;
+      for (const match of whole.matchAll(pattern)) {
         const end = match.index + match[0].length;
-        const context =
-          squash(whole.slice(0, match.index)).endsWith(before) &&
-          squash(whole.slice(end)).startsWith(after);
+        const context = behind(match.index).endsWith(before) && ahead(end).startsWith(after);
         const score = (context ? 0 : 1e9) + Math.abs(match.index - start);
         if (!found || score < found.score) found = { start: match.index, end, score };
       }
       return found;
     };
-    let element = bySelector && best(bySelector) ? bySelector : null;
+    let hit = bySelector && best(bySelector);
+    let element = hit ? bySelector : null;
     if (!element) {
       let seen = 0;
+      let least = Infinity;
       for (const node of document.body.querySelectorAll("*")) {
         if (++seen > MAX_FOCUSABLE) break;
         if (SKIP.has(tagName(node)) || host.contains(node)) continue;
+        const text = node.textContent;
         pattern.lastIndex = 0;
-        const size = node.textContent.length;
-        if ((!element || size < element.textContent.length) && pattern.test(node.textContent))
+        if (text.length < least && pattern.test(text)) {
           element = node;
+          least = text.length;
+        }
       }
+      hit = element && best(element);
     }
-    const hit = element && best(element);
     return (hit && rangeAt(element, hit.start, hit.end)) ?? bySelector;
   }
 

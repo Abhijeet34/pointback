@@ -6279,6 +6279,81 @@ test(
   },
 );
 
+test(
+  "a passage pin in a long <pre> is found again from one read of its text, beside its own line",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    // Finding a passage again squashed its element's whole text before and after every match, on
+    // every pins update: a passage on a common word in a 113 KB <pre> held the page 4 to 8 s each
+    // time. Reads are counted rather than milliseconds, since a latency is never asserted.
+    const { file } = copyOfFixture();
+    const lines = Array.from({ length: 1000 }, (_, k) => `INFO worker ${k}: the batch was flushed`);
+    const whole = lines.join("\n");
+    writeFileSync(file, `<!doctype html><title>Log</title><main><pre>${whole}</pre></main>`);
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    try {
+      // Counted on the prototype the sdk reads through, from a listener added after the sdk's,
+      // which therefore runs once the sdk has handled the same message.
+      await artifact.eval(`(() => {
+        const own = Object.getOwnPropertyDescriptor(Node.prototype, "textContent");
+        window.reads = 0;
+        Object.defineProperty(Node.prototype, "textContent", {
+          get() { window.reads += 1; return own.get.call(this); }, set: own.set, configurable: true,
+        });
+        addEventListener("message", (event) => {
+          if (event.data?.type === "pins") window.readsForPins = window.reads;
+        });
+      })()`);
+      // One of 2,000 matches of "the", told apart only by the text around it: the offset the note
+      // carries is 3,000 characters off, as after an agent's edit above it.
+      const start = whole.indexOf("the batch", 20_000);
+      await api(session, "POST", "drafts", {
+        draft: {
+          selector: "main > pre",
+          tag: "text",
+          text: "the",
+          prompt: "Name the batch",
+          target: {
+            type: "text-range",
+            start: start - 3000,
+            end: start - 2997,
+            before: whole.slice(start - 32, start).replace(/\s+/g, " "),
+            after: whole.slice(start + 3, start + 35).replace(/\s+/g, " "),
+          },
+        },
+      });
+      const reads = Number(await artifact.waitFor("window.readsForPins"));
+      console.log(`browser suite: one passage pin's pins update read text ${reads} times`);
+      assert.ok(reads < 100, `one passage pin read text ${reads} times`);
+
+      const line = JSON.parse(
+        await artifact.eval(`(() => {
+          const range = document.createRange();
+          const text = document.querySelector("main > pre").firstChild;
+          range.setStart(text, ${start});
+          range.setEnd(text, ${start + 3});
+          window.scrollTo(0, range.getBoundingClientRect().top + window.scrollY - 200);
+          return JSON.stringify(range.getBoundingClientRect());
+        })()`),
+      );
+      const [pin] = await until(
+        async () => {
+          const shown = await pinsOn(artifact);
+          return shown.length === 1 ? shown : null;
+        },
+        { what: "the passage pin" },
+      );
+      assert.ok(
+        pin.bottom >= line.top - 4 && pin.top <= line.bottom,
+        `${pin.name} paints at ${JSON.stringify(pin)}, beside its line at ${JSON.stringify(line)}`,
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
+
 const CELL = (row) => `main > table > tbody > tr:nth-of-type(${row}) > td:nth-of-type(2)`;
 
 /** Waits for the frame to paint `count` pins, and says where each stands against its target. */
