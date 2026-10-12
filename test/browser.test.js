@@ -1394,33 +1394,6 @@ test(
 );
 
 test(
-  "focus handling leaves a move into the page alone after a press outside the note",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const { session } = await focusCallsReview();
-    const { page, artifact } = await openReview(session.url);
-    await pointAt(page, artifact, "#p1");
-    await clickOn(page, "document.getElementById('appName')");
-    await page.waitFor("document.activeElement === document.body");
-    // The press's own focus-out is handled a task later; this waits for that task before the move.
-    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
-    await page.eval("document.getElementById('artifact').focus()");
-    await page.waitFor("document.activeElement === document.getElementById('artifact')");
-    // The blur's own put-back of a note runs a task later; this waits for that task.
-    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
-    const state = JSON.parse(
-      await page.eval(`JSON.stringify({
-        shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
-        cover: document.getElementById("cover").hidden,
-        focus: document.activeElement.id,
-      })`),
-    );
-    await page.close();
-    assert.deepEqual(state, { shown: true, cover: true, focus: "artifact" });
-  },
-);
-
-test(
   "a move from a note into the page unloads it when the move names the frame",
   { skip: !executable && "no browser found" },
   async () => {
@@ -1750,8 +1723,11 @@ test(
   },
 );
 
+// A press on the chrome's own words leaves the focus on nothing, which a page's focus() leaves with no
+// focus-out to hear, so the page stays shielded while the note is open, and the reviewer's press over it
+// hands it the focus first.
 test(
-  "a press on the page after a press on the chrome reaches the page",
+  "a press over the page after a press on the chrome hands the page the focus, and the next one reaches it",
   { skip: !executable && "no browser found" },
   async () => {
     const { session } = await focusCallsReview();
@@ -1766,17 +1742,21 @@ test(
       await page.eval(`JSON.stringify((() => {
         const box = document.getElementById("artifact").getBoundingClientRect();
         for (const y of [box.top + 8, box.bottom - 8, box.top + box.height / 2])
-          for (const x of [box.left + 8, box.right - 8, box.left + box.width / 2]) {
-            const hit = document.elementFromPoint(x, y)?.id;
-            if (hit === "shield" || hit === "artifact") return { x, y };
-          }
+          for (const x of [box.left + 8, box.right - 8, box.left + box.width / 2])
+            if (document.elementFromPoint(x, y)?.id === "shield") return { x, y };
         return null;
       })())`),
     );
-    assert.ok(at, "a point of the page is not under the card");
+    assert.ok(at, "a point of the page is under the shield");
+    await page.click(at.x, at.y);
+    await page.waitFor(
+      "document.activeElement === document.getElementById('artifact') && document.getElementById('shield').hidden",
+    );
+    await page.pointerInto(artifact, at);
     await page.click(at.x, at.y);
     await artifact.waitFor("globalThis.pressed === true");
     assert.equal(await page.eval("document.getElementById('cover').hidden"), true);
+    assert.notEqual(await pageAddress(page), "about:blank", "the page stays loaded");
     await page.close();
   },
 );
@@ -2783,7 +2763,7 @@ test(
     await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
     await page.type(", four words at most");
     await page.eval("delete document.body.dataset.revision");
-    const answer = await holdChromeAt(page, "if (document.activeElement !== frame || unloaded");
+    const answer = await holdChromeAt(page, "if ((now || document.activeElement === frame)");
     // The chrome covers the page in the task it takes it out in; a page out of the wrapper's document
     // has nothing left to hear.
     if (await page.eval("document.getElementById('cover').hidden"))
@@ -2956,6 +2936,68 @@ test(
     await page.waitFor("document.body.dataset.handoff === 'settled'");
     assert.equal(await page.eval("document.activeElement.id"), "annotate");
     assert.notEqual(await pageAddress(page), "about:blank", "the page stays loaded");
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus while a press on the card has left it on nothing is unloaded until the note is done",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    // The card's own words take no focus, so a press on them leaves the focus on the chrome's body.
+    const at = JSON.parse(
+      await page.eval(`JSON.stringify((() => {
+        const box = document.getElementById("cardTarget").getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      })())`),
+    );
+    await page.click(at.x, at.y);
+    await page.waitFor("document.activeElement === document.body");
+    await artifact.eval("globalThis.calling = true");
+    const result = await writeNote(
+      page,
+      "document.getElementById('cardText')",
+      "document.getElementById('card').hidden",
+    );
+    assert.deepEqual(
+      { text: result.text, keys: result.keys, kept: result.kept },
+      { text: "abc", keys: 0, kept: true },
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus from a chrome control while a note is open is unloaded until the note is done",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await page.eval("document.getElementById('annotate').focus()");
+    await page.waitFor("document.activeElement.id === 'annotate'");
+    const quiet = keyReports.length;
+    await artifact.eval("globalThis.calling = true");
+    // The focus goes back to the control it was taken from, once the page is out.
+    await page.waitFor(`document.activeElement.id === "annotate" &&
+      getComputedStyle(document.getElementById("artifact")).display === "none" &&
+      document.getElementById("coverText").textContent === ${JSON.stringify(UNLOADED_LINE)}`);
+    await until(async () => (await pageAddress(page)) === "about:blank", {
+      what: "the page's frame to hold about:blank",
+    });
+    await press(page, "xyz");
+    await clickOn(page, "document.getElementById('cardText')");
+    await page.waitFor("document.activeElement.id === 'cardText'");
+    await press(page, "def");
+    assert.equal(await page.eval("document.getElementById('cardText').value"), "def");
+    await page.enter();
+    await page.waitFor(
+      `document.getElementById('card').hidden && getComputedStyle(document.getElementById("artifact")).display !== "none" && document.getElementById("cover").hidden`,
+    );
+    assert.equal(keyReports.length - quiet, 0, "no key reached the page");
     await page.close();
   },
 );

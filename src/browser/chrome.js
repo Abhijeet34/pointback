@@ -1539,33 +1539,39 @@ cardCancel.addEventListener("click", () => closeCompose(true));
 
 // The page under review can call focus() at any moment, and Chromium then moves the focus out of
 // the chrome and into it, so the reviewer's next keys reach the page: the note's words, and a press
-// `gesture` would count as their own. While the focus is in a note being written, the shield lies
-// over the page, so a press there lands here and hands the page the focus on purpose; any other move
-// from that note into the frame is the page's own. Putting the focus back alone is a race a page
-// that takes it again at once wins for some keys, and a hidden page can still hold the focus, so the
-// page is unloaded on that move until the note is done, and hidden whenever a note is open for the
-// rest of the review. docs/THREAT-MODEL.md says what this covers and what it leaves.
+// `gesture` would count as their own. While a note is open and the focus is anywhere in the chrome,
+// in the note, on a control or on nothing after a press on the chrome, the shield lies over the page,
+// so a press there lands here and hands the page the focus on purpose; any other move from the chrome
+// into the frame is the page's own. Putting the focus back alone is a race a page that takes it again
+// at once wins for some keys, and a hidden page can still hold the focus, so the page is unloaded on
+// that move until the note is done, and hidden whenever a note is open for the rest of the review.
+// docs/THREAT-MODEL.md says what this covers and what it leaves.
 function writing(element) {
   return (!card.hidden && card.contains(element)) || Boolean(element?.closest?.(".mark-editor"));
 }
+const noteOpen = () => composing !== null || editingNote !== null;
 function guard() {
-  shield.hidden = !writing(document.activeElement);
+  shield.hidden = !noteOpen() || document.activeElement === frame;
   renderCover();
 }
-// The reviewer handed the page the focus: a press on the shield, or a Tab from the note into the frame.
-// It stays handed until the focus comes back to the chrome, since Firefox reports a Tab into the frame
-// only at the reviewer's next press in the page.
+// The reviewer handed the page the focus: a press on the shield, a Tab from the chrome into the frame,
+// or the chrome's own move. It stays handed until the focus comes back to the chrome, since Firefox
+// reports a Tab into the frame only at the reviewer's next press in the page.
 let handed = false;
 document.addEventListener("focusin", (event) => {
   if (event.target !== frame) handed = false;
   guard();
 });
-shield.addEventListener("mousedown", (event) => {
-  event.preventDefault();
-  away = undefined;
+/** Gives the frame the focus as the reviewer's own move, which `movedToPage` must not take for the page's. */
+function handToPage() {
   handed = true;
   frame.focus();
   guard();
+}
+shield.addEventListener("mousedown", (event) => {
+  event.preventDefault();
+  away = undefined;
+  handToPage();
 });
 // The page cannot see the wheel over the shield, so its scroll is handed on.
 shield.addEventListener(
@@ -1576,15 +1582,15 @@ shield.addEventListener(
   },
   { passive: true },
 );
-// A move from the note to a control of the chrome names that control and is left alone. A move into the
-// frame names the frame, or nothing when the page makes it, and unloads unless the reviewer handed it
-// over (`handed`). Engines differ in what they name for the page's move, so the one trigger is where
-// the focus is a task later: still in the frame, the note gets it back through the unload. A Tab the
-// reviewer presses in the note is the keyboard way into the page, so the move it makes is left alone;
-// whether it went there is read a task later, and Firefox fires no focus-out for it, so the shield
-// follows it.
+// A move within the chrome names where it went and is left alone. A move into the frame names the
+// frame, or nothing when the page makes it, and a move from nothing focused fires no focus-out at all,
+// only the window's blur; either unloads unless the reviewer handed the focus over (`handed`).
+// Engines differ in what they name and fire for the page's move, so the one trigger is where the focus
+// is a task later: still in the frame, the note gets it back through the unload. A Tab the reviewer
+// presses in the chrome is the keyboard way into the page, so the move it makes is left alone; whether
+// it went there is read a task later, and Firefox fires no focus-out for it, so the shield follows it.
 document.addEventListener("keydown", (event) => {
-  if (event.key !== "Tab" || !event.isTrusted || !writing(event.target)) return;
+  if (event.key !== "Tab" || !event.isTrusted || !noteOpen()) return;
   away = undefined;
   handed = true;
   setTimeout(() => {
@@ -1592,42 +1598,52 @@ document.addEventListener("keydown", (event) => {
     guard();
   });
 });
+// The element of the chrome the focus last left, which a move from nothing focused leaves in place: the
+// focus goes back there once the page is out.
+let left = /** @type {HTMLElement | null} */ (null);
 document.addEventListener("focusout", (event) => {
-  const field = /** @type {HTMLElement} */ (event.target);
+  left = /** @type {HTMLElement} */ (event.target);
   const named = event.relatedTarget;
-  setTimeout(() => (shield.hidden = !writing(document.activeElement)));
-  if (handed || (named !== null && named !== frame) || !writing(field)) return;
-  takenFrom(field);
+  if (named === null || named === frame) movedToPage();
+  setTimeout(guard);
 });
-function takenFrom(field) {
+window.addEventListener("blur", () => {
+  movedToPage();
+  setTimeout(guard);
+});
+// A hidden frame the page moved the focus into gives it up to nothing at the next layout, so where the
+// focus is now counts as well as where it is a task later.
+function movedToPage() {
+  if (handed || !noteOpen()) return;
+  const now = document.activeElement === frame;
   setTimeout(() => {
-    if (document.activeElement !== frame || unloaded || !writing(field)) return;
-    taken = field;
-    tookFocus = true;
-    unload();
+    if ((now || document.activeElement === frame) && !unloaded && noteOpen()) pageTook(left);
   });
 }
-// Undefined while the window has the focus; once it is left, the note that held the focus at that moment.
-// The task after the loss drops the record if the window has the focus again, which is a reviewer's own
-// move into the page (a press, a Tab) that moved the focus and the window together. A later blur, from
-// the page taking the focus while away, does not change the record.
+/** Unloads the page for taking the focus, which goes back to `from` once it is out, or to the note. */
+function pageTook(from) {
+  taken = from;
+  tookFocus = true;
+  unload();
+}
+// Undefined while the window has the focus; once it is left, where the focus was at that moment in the
+// chrome while a note was open. The task after the loss drops the record if the window has the focus
+// again, which is a reviewer's own move into the page (a press, a Tab) that moved the focus and the
+// window together. A later blur, from the page taking the focus while away, does not change the record.
 let away;
 function leftWindow() {
   if (away !== undefined) return;
-  away = writing(document.activeElement) ? document.activeElement : null;
+  const at = document.activeElement;
+  away = noteOpen() && at !== frame ? (at === document.body ? left : at) : null;
   setTimeout(() => {
     if (document.hasFocus() && !document.hidden) away = undefined;
   });
 }
 // A window that comes back with the page holding the focus took it from that note while it was away.
 function regained() {
-  const field = away;
+  const from = away;
   away = undefined;
-  if (field && writing(field) && document.activeElement === frame && !unloaded) {
-    taken = field;
-    tookFocus = true;
-    unload();
-  }
+  if (from && noteOpen() && document.activeElement === frame && !unloaded) pageTook(from);
 }
 window.addEventListener("blur", leftWindow);
 window.addEventListener("focus", regained);
@@ -1653,7 +1669,8 @@ function unload() {
 /** Gives the frame the focus, or the open note it cannot take while the page is held. */
 function focusFrame() {
   const field = composing ? cardText : marks.querySelector(".mark-edit-text");
-  (field && frame.hidden ? /** @type {HTMLElement} */ (field) : frame).focus();
+  if (field && frame.hidden) /** @type {HTMLElement} */ (field).focus();
+  else handToPage();
 }
 
 // The wrapper is served under the loopback name this page is not, which makes it another origin, so
