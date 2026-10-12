@@ -33,6 +33,10 @@ const STEP_MS = 30_000;
 const NOTE = "Make the title shorter";
 // `ACTIVATION_MS` in src/browser/chrome.js: how long the chrome hears nothing from the page after a key.
 const GATE_MS = 5000;
+// Playwright holds every element action until its record of the main frame's navigation clears,
+// and in Firefox that record can stay set after the review committed (docs/ENGINEERING-NOTES.md).
+// Every act waits on the chrome's own word before acting, so the check guards nothing here.
+process.env.PLAYWRIGHT_SKIP_NAVIGATION_CHECK = "1";
 
 async function smoke(engine) {
   const lab = isolatedEnv();
