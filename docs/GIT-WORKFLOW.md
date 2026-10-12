@@ -288,7 +288,7 @@ With the variable unset the release ends at the tag, the GitHub release and its 
 
 **Trusted publishing is configured on both sides.**
 The workflow half: `id-token: write` on the `publish` job, `registry-url` on `setup-node`, the npm version assertion, and `npm publish` with no `--provenance` flag.
-The registry half: 0.1.3 was published by hand on 2026-09-04 and carries no attestation; 0.1.4, 0.1.5 and 0.1.6 were published by the `publish` job (release runs 37000278537, 37219211426, 37224590064), and each carries npm's SLSA provenance attestation (`npm view pointback@0.1.6 dist.attestations`).
+The registry half: 0.1.3 was published by hand on 2026-09-04 and carries no attestation; 0.1.4 to 0.1.7 were published by the `publish` job (release runs 37000278537, 37219211426, 37224590064, 38219113800), and each carries npm's SLSA provenance attestation (`npm view pointback@0.1.6 dist.attestations`).
 The release asset `pointback-0.1.6.tgz` is byte-identical to the tarball npm serves, and `gh attestation verify` on it names `release.yml` on `refs/heads/main` at the release commit.
 
 Before the first publish, `GET https://registry.npmjs.org/pointback` answered `404 {"error":"Not found"}` (2026-09-04), so there was no package settings page and no trusted publisher to match the OIDC claim against, and two things had to happen on npmjs.com first:
