@@ -304,10 +304,12 @@ test("when every review held is in use, a new open is refused naming what holds 
       const other = join(dir, `other-${i}.html`);
       writeFileSync(other, "<p></p>");
       const { key } = await (await api.call("POST", "/api/sessions", { file: other })).json();
-      files.push(realpathSync(other));
+      files.push(realpathSync.native(other));
       keys.push(key);
     }
-    files[0] = realpathSync(file);
+    // Named as the daemon keys them: only the native realpath expands a Windows 8.3 short name
+    // such as RUNNER~1 in the temp directory.
+    files[0] = realpathSync.native(file);
     // One review per cause, and one held for two; every other review has a tab open.
     const [polled, received, unsent, both] = [1, 2, 3, 4];
     polling = cli(["poll", files[polled], "--timeout-ms", "20000"], own.env);
