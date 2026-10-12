@@ -15,6 +15,10 @@ on:
         description: Runner image to hunt on
         required: false
         default: windows-2025
+      engine:
+        description: Hunt the engine smoke in this engine (webkit or firefox) instead of the suite
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -34,6 +38,8 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      ENGINE: ${{ inputs.engine }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -45,6 +51,7 @@ jobs:
       - run: npm ci
 
       - name: Point the browser suite at this runner's Chrome
+        if: inputs.engine == ''
         run: |
           set -euo pipefail
           # The ${...} below belongs to the JavaScript template literals, not to the shell.
@@ -61,19 +68,35 @@ jobs:
           ' >> "$GITHUB_ENV"
 
       - name: check
+        if: inputs.engine == ''
         timeout-minutes: 12
         run: |
           set -euo pipefail
           npm run check 2>&1 | tee "$RUNNER_TEMP/check.log"
+
+      # The same steps as the engines job in cross-platform.yml.
+      - name: Install ${{ inputs.engine }}
+        if: inputs.engine != ''
+        timeout-minutes: 10
+        run: npx playwright-core install --with-deps "$ENGINE"
+
+      - name: smoke
+        if: inputs.engine != ''
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          npm run smoke -- "$ENGINE" 2>&1 | tee "$RUNNER_TEMP/check.log"
 
       - name: Say whether the browser case ran
         if: always()
         run: |
           set -uo pipefail
           rc=0
-          verdict=$(grep -m1 '^browser suite' "$RUNNER_TEMP/check.log" 2>/dev/null || true)
+          what="browser suite"
+          if [ -n "$ENGINE" ]; then what="engine smoke"; fi
+          verdict=$(grep -m1 "^$what" "$RUNNER_TEMP/check.log" 2>/dev/null || true)
           if [ -z "$verdict" ]; then
-            verdict="browser suite: NO VERDICT, this platform never reached the suite"
+            verdict="$what: NO VERDICT, this platform never reached it"
             echo "::error::$verdict" >&2
             rc=1
           fi
