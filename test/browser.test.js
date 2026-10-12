@@ -298,6 +298,26 @@ test(
   },
 );
 
+// Target.closeTarget answers before the browser has destroyed the tab (50 of 50 locally), so a test
+// that looks right after a close could still find it.
+test(
+  "a tab is gone once its close answers",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const page = await browser.page("about:blank");
+    const destroyed = [];
+    const listener = (message) =>
+      message.method === "Target.targetDestroyed" && destroyed.push(message.params.targetId);
+    page.browser.listeners.push(listener);
+    try {
+      await page.close();
+      assert.ok(destroyed.includes(page.targetId), "the browser has said the tab is destroyed");
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+    }
+  },
+);
+
 // On windows-2025 a fresh tab's first load has stalled with its document answered 200 and the tab
 // answering nothing (hunt 38189872095, attempt 18), and the tab was left open for the rest of the suite.
 // A server that never answers stands in for it: the tab must go, and the failure must say whether the
@@ -311,16 +331,20 @@ test(
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const url = `http://127.0.0.1:${server.address().port}/never`;
     const other = await browser.page("about:blank");
+    const tabs = async () =>
+      (await other.browser.send("Target.getTargets")).targetInfos.map((target) => target.targetId);
     try {
       const listening = other.browser.listeners.length;
+      const before = await tabs();
       const message = await browser.page(url).then(
         () => assert.fail("a load nothing answered finished"),
         (error) => error.message,
       );
-      const { targetInfos } = await other.browser.send("Target.getTargets");
+      // By id: a tab that never committed may still be listed under about:blank.
+      const after = await tabs();
       assert.deepEqual(
         {
-          open: targetInfos.filter((target) => target.url === url).length,
+          open: after.filter((id) => !before.includes(id)).length,
           listening: other.browser.listeners.length,
           committed: /\n {2}committed: (.*)/.exec(message)?.[1],
         },

@@ -415,10 +415,22 @@ class Page {
     return this.send("Page.bringToFront");
   }
 
-  close() {
+  /** Resolves once the browser says the tab is destroyed, which comes after the close's own answer. */
+  async close() {
     for (const listener of this.listeners ?? [])
       this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
-    return this.browser.send("Target.closeTarget", { targetId: this.targetId });
+    let gone = false;
+    const listener = (message) => {
+      if (message.method === "Target.targetDestroyed" && message.params.targetId === this.targetId)
+        gone = true;
+    };
+    this.browser.listeners.push(listener);
+    try {
+      await this.browser.send("Target.closeTarget", { targetId: this.targetId });
+      await until(() => gone, { what: `the browser to destroy the tab ${this.targetId}` });
+    } finally {
+      this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+    }
   }
 
   /** Hands `listener` every message on the connection until this tab is closed. */
