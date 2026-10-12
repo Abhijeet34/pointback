@@ -6,7 +6,9 @@
 // spends: that load reloads again only for a file not on that list, so a file that never loads costs
 // one reload, and a chain of reloads ends within the chrome's own files. A reviewer's own reload
 // finds no list and starts a new one. A reload that would take a half-typed note with it waits for
-// the hold chrome.js registers to release.
+// the hold chrome.js registers to release. So does one while the browser is offline, whose reload
+// the browser refuses too and answers with its own error page in place of the review: it waits for
+// the browser to come back online.
 {
   const key = "recoverReloaded";
   // The wrapper and the sandboxed page are cross-origin to this storage; storage that cannot be read
@@ -38,12 +40,13 @@
       held = check;
     },
     release: () => {
-      if (waiting !== null && !reloading && !held()) reload(waiting);
+      if (waiting !== null && !reloading && navigator.onLine && !held()) reload(waiting);
     },
   };
+  addEventListener("online", globalThis.recover.release);
   const refused = (file) => {
     if (!reloadedFor || reloadedFor.includes(file) || reloading || waiting !== null) return;
-    if (held()) waiting = file;
+    if (!navigator.onLine || held()) waiting = file;
     else reload(file);
   };
   addEventListener(

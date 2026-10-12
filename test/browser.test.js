@@ -3446,7 +3446,7 @@ test(
           path: "session",
           file: "plan.html",
           notice:
-            "This browser is offline. Your notes are kept, and this page reconnects once it is back online.",
+            "This browser is offline. Your notes are kept, and this page catches up once it is back online.",
           navigation: "navigate",
         },
       );

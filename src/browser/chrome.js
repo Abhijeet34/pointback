@@ -236,7 +236,9 @@ function show() {
 function holdsReload() {
   return editing || unloaded || (tookFocus && editingNote !== null);
 }
-globalThis.recover?.hold(() => holdsReload() || editingNote !== null);
+// A reload while the review does not answer lands on the browser's error page, so it waits for the
+// connection to come back as well.
+globalThis.recover?.hold(() => holdsReload() || editingNote !== null || connection !== "live");
 
 function showPage() {
   if (holdsReload()) {
@@ -608,6 +610,9 @@ function elapsed(since) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+// The stream can outlive the browser going offline, so the notice follows the browser's own word.
+for (const type of ["online", "offline"]) addEventListener(type, () => session && render());
+
 /** One line at the top of the margin for whatever has taken the page out of its normal state. */
 function renderNotice() {
   const [text, action] = fileGone
@@ -621,17 +626,22 @@ function renderNotice() {
               `This page can no longer reach its review. Run ${appName} on this file again for a fresh page; your notes are kept there.`,
               false,
             ]
-          : connection === "lost"
+          : !navigator.onLine
             ? [
-                `The review server stopped answering. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
+                "This browser is offline. Your notes are kept, and this page catches up once it is back online.",
                 false,
               ]
-            : !liveReload
+            : connection === "lost"
               ? [
-                  "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                  `The review server stopped answering. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
                   false,
                 ]
-              : [null, false];
+              : !liveReload
+                ? [
+                    "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                    false,
+                  ]
+                : [null, false];
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
   takeOverButton.hidden = !action;
