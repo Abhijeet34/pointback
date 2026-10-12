@@ -4815,6 +4815,50 @@ test(
   },
 );
 
+test(
+  "a tab whose Take over was pressed while it could not reach its review says so the next time it cannot",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { port, token } = own.serverInfo();
+    const { page } = await openReview(url);
+    const second = await browser.page(url);
+    const lost = "document.getElementById('presenceText').textContent === 'Not connected'";
+    let watched;
+    try {
+      await second.waitFor("document.body.dataset.ready === '1'");
+      await page.waitFor(
+        noticeSays("Another tab took over this review, so this page has stopped updating."),
+      );
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      // Closed while the daemon is down, so the other tab cannot take the review back on its return.
+      await second.close();
+      await page.front();
+      await page.waitFor(lost);
+      // Pressed during the pause between two reconnects, with no stream open to close.
+      await clickOn(page, "document.getElementById('takeOver')");
+      assert.equal(
+        (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().status,
+        "waiting",
+      );
+      await page.waitFor(`${FOLLOWING} && document.getElementById('notice').hidden`, {
+        timeoutMs: 20_000,
+      });
+      // The next drop is an ordinary one: with the health check held, the tab can only say it lost
+      // the review, and must, rather than go on showing the agent as if it were still connected.
+      watched = await holdHealth(page, port, token);
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      await page.waitFor(lost);
+    } finally {
+      await watched?.stop();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
 // A tab that could not reach the daemon while its review was evicted (a laptop asleep, a dropped
 // network) comes back to a review that no longer exists: the server refuses its stream with 4404,
 // and the tab must say so and how to get a fresh page, and the agent's next open must give one.

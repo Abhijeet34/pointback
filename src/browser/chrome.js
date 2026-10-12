@@ -276,6 +276,9 @@ async function listen() {
       code = await follow(() => {
         failures = 0;
         connection = "live";
+        // Any stream that opens takes the review over, so a Take over pressed while none was open,
+        // with nothing to close, is done here, not left to swallow the next ordinary close.
+        retaking = false;
         // Published for the same reason as ready: `connection` reads live from the health check on,
         // before the stream opens, and a stream connect Windows refuses is lost for a pause then
         // retried, so only this says the page is following its review (docs/ENGINEERING-NOTES.md).
