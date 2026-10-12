@@ -361,6 +361,8 @@ body {
 .mark[data-state="queued"] .mark-number {
   background: var(--hw-surface);
   color: var(--hw-accent-text);
+  /* The outer ring restates .hw-pin's own 2px, which this box-shadow replaces: a rem one would part
+     from a sent pin's at a larger text size. */
   box-shadow:
     inset 0 0 0 var(--hw-border-w) var(--hw-accent),
     0 0 0 2px var(--hw-surface);
