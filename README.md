@@ -310,7 +310,8 @@ The CLI opens the reviewer's default browser, which is Safari on an unconfigured
 `npm run smoke -- webkit firefox` runs the core act in both engines: open the fixture through the CLI, point at the title, write a note, send it, and poll it back.
 It then has a hostile page try to spend the note card's Enter, which exercises the gate those engines rely on (`docs/THREAT-MODEL.md`).
 It also presses over the page while a note has the focus and checks that the page is not hidden for it, since that press is the reviewer's own move.
-It then has a page call `focus()` out of a note in five fresh reviews and checks that the page is unloaded, that the note keeps the word typed, and that no key reaches the page (`unloadRound` in `test/engine-smoke.js`).
+It then has a page call `focus()` out of a note in five fresh reviews and checks that the page is unloaded and that a word typed once the note has the focus back lands in the note with no key reaching the page (`unloadRound` in `test/engine-smoke.js`).
+A key typed at the moment of the page's move can still reach the page; the smoke prints that count and does not assert it, and `docs/THREAT-MODEL.md` gives the measured rates.
 Last, it writes a note, idles 6.5 s past Node's default keep-alive close, and adds it on a connection the tab opened before the idle (`addAfterAnIdle`).
 The `engines` job in `.github/workflows/cross-platform.yml` runs it every Monday and on the release pull request, WebKit on `macos-15` and Firefox on `ubuntu-24.04`, and names the engine and its version in the job summary, failed or passed.
 On the release pull request it reaches the required `checks` through `ci.yml`, so a release does not merge until both engines pass; it skips when `release.yml` calls that workflow on a push to `main`, so the tag itself waits on the platform matrix alone.
