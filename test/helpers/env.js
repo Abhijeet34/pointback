@@ -60,7 +60,6 @@ export function cli(args, env, { timeoutMs = 30_000 } = {}) {
   });
 }
 
-/** Sends a note the way the chrome does, kept as a draft and then sent, straight to the daemon. */
 /** The agent's presence on a review as the daemon reports it: `listening` once a poll attaches. */
 export async function presenceOf(info, key) {
   const res = await fetch(`http://127.0.0.1:${info.port}/api/${key}/session`, {
@@ -69,6 +68,7 @@ export async function presenceOf(info, key) {
   return (await res.json()).presence.state;
 }
 
+/** Sends a note the way the chrome does, kept as a draft and then sent, straight to the daemon. */
 export async function sendNote(info, key, note, structure) {
   const call = (path, body) =>
     fetch(`http://127.0.0.1:${info.port}${path}`, {

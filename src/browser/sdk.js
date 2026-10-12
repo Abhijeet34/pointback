@@ -253,7 +253,7 @@
   }
 
   // One Tab stop per block of content and per picture, never per inline run: a stop for every
-  // element with text of its own put 1,794 stops on an 83 KB report. H and Shift+H jump headings.
+  // element with text of its own put 1,794 stops on an 81 KB report. H and Shift+H jump headings.
   function setAnnotate(on) {
     annotate = on;
     for (const element of focusable) element.removeAttribute("tabindex");
@@ -810,10 +810,10 @@
     const element = elementFor(anchor);
     const cell = element?.closest("td, th");
     if (cell) {
-      // Beside the words rather than above them, so it clears them by its widest ring, 5 px.
+      // Beside the words rather than above them, so it clears them by its widest ring.
       const box = cell.getBoundingClientRect();
       return {
-        left: Math.max(box.left, Math.min(right + 5, box.right - width)),
+        left: Math.max(box.left, Math.min(right + HALO, box.right - width)),
         top: Math.max(box.top, Math.min(lineTop - height, box.bottom - height)),
       };
     }
@@ -1072,7 +1072,7 @@
       if (!annotate || open || ours(event) || event.ctrlKey || event.metaKey || event.altKey)
         return;
       const element = candidate(document.activeElement);
-      if (!element || element === document.body) return;
+      if (!element) return;
       const control = isControl(element);
       if (!control && event.shiftKey && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
         extendPassage(element, event.key === "ArrowRight" ? "forward" : "backward");

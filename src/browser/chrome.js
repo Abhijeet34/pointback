@@ -573,7 +573,6 @@ function notesChanged() {
   render();
 }
 
-/** A live region announces every write, so an unchanged status is left alone. */
 /** Says which of the page's files the review does not serve, the reason a page paints unstyled. */
 function tellOutside(outside = []) {
   const one = outside.length === 1;
@@ -585,6 +584,7 @@ function tellOutside(outside = []) {
   );
 }
 
+/** A live region announces every write, so an unchanged status is left alone. */
 function setText(element, text) {
   if (element.textContent !== text) element.textContent = text;
 }
@@ -746,7 +746,7 @@ function mark(entry, sent, n) {
   head.append(target);
   li.append(head);
   if (missingPins.has(n)) li.append(missingLine());
-  li.append(edited ? editor(entry, n) : noteText(entry));
+  li.append(edited ? editor(n) : noteText(entry));
   if (entry.reply) li.append(replyLine(entry));
   if (!sent && !edited) {
     const edit = document.createElement("button");
@@ -800,7 +800,7 @@ function missingLine() {
 }
 
 /** A queued note edited where it stands: Enter saves, Shift+Enter breaks the line, Escape keeps it. */
-function editor(entry, n) {
+function editor(n) {
   const form = document.createElement("form");
   form.className = "mark-editor";
   const box = document.createElement("textarea");
@@ -978,7 +978,10 @@ function describe(entry) {
 const locatorOf = (note) => [kindOf(note), describe(note)].filter(Boolean).join(" · ");
 
 function post(message) {
-  // To the wrapper, which hands it on to the page under review.
+  // To the wrapper, which hands it on to the page under review. Nothing goes before the page's first
+  // `ready`: the frame may still hold its first document, of this origin, which WebKit refuses with a
+  // console error, and `init` carries all of it once the page listens.
+  if (!nonce) return;
   frame.contentWindow?.postMessage({ ...message, nonce }, wrapperOrigin);
 }
 
@@ -1328,7 +1331,7 @@ const frameTextSize = () =>
 textSize.addEventListener("change", () => {
   const size = textSize.querySelector("[aria-checked=true]")?.getAttribute("data-size") ?? "m";
   document.documentElement.dataset.textSize = size;
-  if (nonce && frameTextSize()) post({ type: "text-size", size });
+  if (frameTextSize()) post({ type: "text-size", size });
   try {
     localStorage.setItem(TEXT_SIZE_KEY, size);
   } catch {
