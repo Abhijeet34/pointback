@@ -112,21 +112,23 @@ The matrix below is still Linux-only on `pull_request`, because `AGENTS.md` says
 
 The private-repository counterfactual, at the rates measured on 2026-09-03 and recorded in the `lavish-release-devops-r2` design (Linux $0.006, Windows $0.010, macOS $0.062 per minute, every job rounded up to a whole minute):
 
-| Event                         | Jobs                                                                                                           | Billed Linux minutes                       | If private                        |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------- |
-| Push to a pull request        | `check`, `secrets / secret scan`, `dependency review`, `checks`                                                | 2 + 2 + 1 + 1 = 6                          | $0.036                            |
-| Merge to `main`               | `check`, `secrets / secret scan`, `checks`, `release-pr`, `release-pr-checks`, `cross-platform`, `release-tag` | 2 + 2 + 1 + 1 + 1 + 1 = 8, plus the matrix | $0.048 + $0.228 = $0.276          |
-| Weekly `cross-platform`       | macOS 3, Windows 3, Linux 2                                                                                    | n/a                                        | $0.186 + $0.030 + $0.012 = $0.228 |
-| Release (on top of the merge) | `artifacts`, `publish`                                                                                         | n/a                                        | $0.006 + $0.006 = $0.012          |
+| Event                         | Jobs                                                                                         | Billed Linux minutes                       | If private                        |
+| ----------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------- |
+| Push to a pull request        | `check`, `secrets / secret scan`, `dependency review`, `checks`                              | 4 + 1 + 1 + 1 = 7                          | $0.042                            |
+| Merge to `main`               | `check`, `secrets / secret scan`, `checks`, `release-pr`, `release-pr-checks`, `release-tag` | 4 + 1 + 1 + 1 + 1 + 1 = 9, plus the matrix | $0.054 + $0.394 = $0.448          |
+| The matrix (`cross-platform`) | macOS 5, Windows 6, Linux 4                                                                  | n/a                                        | $0.310 + $0.060 + $0.024 = $0.394 |
+| Weekly `cross-platform`       | the matrix, plus `engines`: WebKit on macOS 2, Firefox on Linux 2                            | n/a                                        | $0.394 + $0.124 + $0.012 = $0.530 |
+| Release (on top of the merge) | `artifacts`, `publish`                                                                       | n/a                                        | $0.006 + $0.006 = $0.012          |
 
-The per-job minutes are an upper bound, not a measurement: the whole gate runs in 6.7 s locally with dependencies installed, so every job here is dominated by checkout and `npm ci` rather than by its own work, and the arithmetic is dominated by GitHub's per-job rounding.
-Replace them with `started_at` to `completed_at` from the first ten runs.
+The per-job minutes are measured: each job's mean `started_at` to `completed_at` over its last ten successful runs, read on 2026-10-12 and rounded up to a whole minute as GitHub bills it.
+The `engines` legs and the release jobs had fewer runs to read: the two release pull requests that ran `engines`, and the three releases that published (0.1.4 to 0.1.6).
+`check` is the one job that runs long, 175 to 239 s, because it runs the whole gate with the browser suite; every other Linux job outside the matrix takes at most 15 s and bills one minute.
 
 The merge row is where the tag gate is paid for.
 macOS and Windows are back on every merge, because the only way to gate the tag without a second opinion about whether a push is a release is to run the matrix on all of them; `release.yml` carries that reasoning above the job.
-Against the reference implementation's measured figures in section 5.1 of that design, $0.018 per pull request push and $0.100 per merge on a three-OS matrix: the pull request here costs twice as much because it runs three gates the reference splits across four separate workflows, and the merge costs about 2.8x as much because it now runs the matrix the reference splits across its own release workflow.
-The macOS leg is the whole difference, there and here.
-It sat at exactly 60 seconds there and was 62 percent of that repository's merge cost on its own.
+Against the reference implementation's measured figures in section 5.1 of that design, $0.018 per pull request push and $0.100 per merge on a three-OS matrix: the pull request here costs about 2.3x as much because it runs three gates the reference splits across four separate workflows and its `check` runs a browser suite, and the merge costs about 4.5x as much because it now runs the matrix the reference splits across its own release workflow.
+The macOS leg is most of the difference, there and here.
+It sat at exactly 60 seconds there and was 62 percent of that repository's merge cost on its own; here it is 69 percent ($0.310 of $0.448).
 None of it is billed while this repository is public.
 
 ## Versioning
@@ -278,19 +280,18 @@ The cheapest identity is the one nobody has to remember.
 
 ## Publishing to npm
 
-Off.
-The `publish` job runs only when the repository variable `NPM_PUBLISH_ENABLED` is exactly `true`, and that variable is now the whole switch.
+On.
+The `publish` job runs only when the repository variable `NPM_PUBLISH_ENABLED` is exactly `true`, and that variable is now the whole switch; it has been `true` since 2026-09-04.
 With the variable unset the release ends at the tag, the GitHub release and its two assets, and the job is visibly skipped rather than quietly absent.
 `package.json` used to hold a second refusal in `"private": true` and `"license": "UNLICENSED"`; both were dropped once the name was settled and the licence became Apache-2.0, so the variable stands alone.
 `scripts/release-preflight.js --publishing` still refuses a publish with `private` true, with the licence absent or `UNLICENSED`, or with no `files` allowlist, which is what catches a regression to any of those rather than a first setup.
 
-**Trusted publishing is configured on this side and on no other, and the rest cannot be done from this repository.**
-The workflow half is real: `id-token: write` on the `publish` job, `registry-url` on `setup-node`, the npm version assertion, and `npm publish` with no `--provenance` flag.
-The registry half does not exist.
-`GET https://registry.npmjs.org/pointback` answered `404 {"error":"Not found"}` on 2026-09-04, so there is no package, no package settings page, and therefore no trusted publisher to match the OIDC claim against.
-Setting `NPM_PUBLISH_ENABLED` today would reach `npm publish` and fail with `ENEEDAUTH`, after the tag and the GitHub release already exist.
+**Trusted publishing is configured on both sides.**
+The workflow half: `id-token: write` on the `publish` job, `registry-url` on `setup-node`, the npm version assertion, and `npm publish` with no `--provenance` flag.
+The registry half: 0.1.3 was published by hand on 2026-09-04 and carries no attestation; 0.1.4, 0.1.5 and 0.1.6 were published by the `publish` job (release runs 37000278537, 37219211426, 37224590064), and each carries npm's SLSA provenance attestation (`npm view pointback@0.1.6 dist.attestations`).
+The release asset `pointback-0.1.6.tgz` is byte-identical to the tarball npm serves, and `gh attestation verify` on it names `release.yml` on `refs/heads/main` at the release commit.
 
-Two things have to happen on npmjs.com first, and neither can be done from here:
+Before the first publish, `GET https://registry.npmjs.org/pointback` answered `404 {"error":"Not found"}` (2026-09-04), so there was no package settings page and no trusted publisher to match the OIDC claim against, and two things had to happen on npmjs.com first:
 
 1. Publish once by hand, from a laptop with `npm login` and 2FA. `npm/cli#8544`, "Allow publishing initial version with OIDC", is open on exactly this. Publish the release that carries the attested `.tgz` asset, not the oldest tag: `v0.1.0` and `v0.1.1` were both cut with `assets: []` by the bug `#15` fixed, so neither has a tarball anything signed.
 1. Configure the trusted publisher on the package's settings page: this repository, and the workflow filename `release.yml`, both case-sensitive and exact.
@@ -299,7 +300,7 @@ Two things have to happen on npmjs.com first, and neither can be done from here:
 npm's provenance prerequisites require "a public `repository` that matches (case-sensitive) where you are publishing with provenance from", trusted publishing generates provenance by default, and without the field the publish fails at the registry with the tag already cut.
 `scripts/release-preflight.js --publishing` refuses that case now, alongside `private`, the licence and the `files` allowlist, so it is caught on the runner rather than by npm.
 
-The mechanism, when it is turned on, is **npm trusted publishing over OIDC**.
+The mechanism is **npm trusted publishing over OIDC**.
 No long-lived token is stored anywhere: the `publish` job asks GitHub for an OIDC token and npm trusts the claim, which names the owner, the repository and the workflow filename.
 From npm's trusted-publishing documentation, read 2026-09-03:
 
@@ -311,8 +312,6 @@ From npm's trusted-publishing documentation, read 2026-09-03:
 
 So there is no `--provenance` flag in the publish command, and there should not be: it is redundant when the repository is public and it turns a provenance-ineligible publish into a failed release.
 The workflow asserts the npm version itself, because an old npm fails with `ENEEDAUTH`, which reads like a misconfigured trusted publisher rather than an old client.
-
-Check the npmjs.com form at the time: if it offers a trusted publisher for a name that has never been published, skip the manual first publish above.
 
 If a token is ever genuinely required instead, it is a granular access token scoped to this package alone, read and write, at the shortest expiry npm offers, stored as the repository secret `NPM_TOKEN` and consumed as `NODE_AUTH_TOKEN`.
 That is the fallback, not the plan.
@@ -341,7 +340,7 @@ On the GitHub side a release can be marked pre-release or deleted, but the tag s
 ## Applying the settings that are not files
 
 These settings are applied; one command re-applies them, which is also how a setting changed in the web UI is put back.
-Everything it sends is a setting, not a credential, and every value it sends is a file in this repository: `.github/rulesets/main.json`, `.github/rulesets/tags.json`, and the three exports under `.github/settings/`.
+Everything it sends is a setting, not a credential, and every value it sends is a file in this repository: `.github/rulesets/main.json`, `.github/rulesets/tags.json`, and the four exports under `.github/settings/`.
 
 ```sh
 REPO=OWNER/pointback
@@ -366,7 +365,7 @@ gh-axi api "repos/$REPO/actions/permissions/workflow" \
   --jq '{default_workflow_permissions,can_approve_pull_request_reviews}'
 ```
 
-`NPM_PUBLISH_ENABLED` is set only when the maintainer says so, and it is the last step, after a first manual publish and after the trusted publisher is configured:
+`NPM_PUBLISH_ENABLED` is set only when the maintainer says so; for this repository it was the last step, after the first manual publish and after the trusted publisher was configured:
 
 ```sh
 gh-axi variable set NPM_PUBLISH_ENABLED --body true -R "$REPO"

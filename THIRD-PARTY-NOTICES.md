@@ -1,8 +1,8 @@
 # Third-party notices
 
 Runtime dependencies shipped with this package, with their licences.
-pointback's own code is Apache-2.0; `LICENSE` carries that text and this file carries nobody else's.
-Development-only tooling (eslint, prettier, typescript, @types/node) is not shipped and is not listed.
+pointback's own code is Apache-2.0; `LICENSE` carries that text, and this file carries everyone else's.
+Development-only tooling (everything under `devDependencies` in `package.json`) is not shipped and is not listed.
 
 ## parse5 8.0.1
 
@@ -18,7 +18,7 @@ Licence text: `node_modules/markdown-it/LICENSE`.
 
 ## linkify-it 6.1.0, mdurl 2.1.0 (dependencies of markdown-it)
 
-MIT. Copyright (c) 2015 Vitaly Puzrin (linkify-it), and Vitaly Puzrin, Alex Kocharin (mdurl).
+MIT. Copyright (c) 2015 Vitaly Puzrin (linkify-it), and Vitaly Puzrin, Alex Kocharin (mdurl); mdurl's `.parse()` is based on Joyent's node.js `url` code, Copyright Joyent, Inc. and other Node contributors, under the same licence.
 Licence texts: `node_modules/linkify-it/LICENSE`, `node_modules/mdurl/LICENSE`.
 
 ## uc.micro 3.0.0, punycode.js 2.3.1 (dependencies of markdown-it)

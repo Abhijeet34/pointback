@@ -249,7 +249,7 @@
   }
 
   // One Tab stop per block of content and per picture, never per inline run: a stop for every
-  // element with text of its own put 1,794 stops on an 83 KB report. H and Shift+H jump headings.
+  // element with text of its own put 1,794 stops on an 81 KB report. H and Shift+H jump headings.
   function setAnnotate(on) {
     annotate = on;
     for (const element of focusable) element.removeAttribute("tabindex");
