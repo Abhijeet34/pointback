@@ -3387,6 +3387,91 @@ test(
 );
 
 test(
+  "a chrome face refused while the browser is offline keeps the review on screen and says so, and the chrome reloads for the face once back online",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const page = await browser.page("about:blank");
+    const held = [];
+    let reloads = 0;
+    const listener = ({ method, params, sessionId }) => {
+      if (method === "Page.frameRequestedNavigation" && sessionId === page.sessionId) {
+        if (params.frameId === page.targetId && params.reason === "reload") reloads += 1;
+      }
+      if (method !== "Fetch.requestPaused" || sessionId) return;
+      if (held.length === 0) held.push(params.requestId);
+      else
+        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
+    };
+    page.browser.listeners.push(listener);
+    const offline = (on) =>
+      page.send("Network.emulateNetworkConditions", {
+        offline: on,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      });
+    try {
+      const { file } = copyOfFixture();
+      const url = (await cli([file], own.env)).json().session.url;
+      const { port } = own.serverInfo();
+      await page.browser.send("Fetch.enable", {
+        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
+      });
+      await page.send("Page.navigate", { url });
+      await reviewIn(page);
+      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
+      // The face is still loading when the tab goes offline, so its load fails the way the
+      // browser fails it then (runs 38219818479 and 38227307855).
+      await page.send("Network.enable");
+      await offline(true);
+      await page.browser.send("Fetch.failRequest", {
+        requestId: held[0],
+        errorReason: "InternetDisconnected",
+      });
+      // The face's load has failed once the document's faces have settled; two frames after that let
+      // recover.js's loadingerror handler run before the chrome is read.
+      await page.explained(page.eval(SETTLED));
+      await page.waitFor("/offline/.test(document.getElementById('noticeText').textContent)");
+      assert.deepEqual(
+        JSON.parse(
+          await page.eval(`JSON.stringify({
+            path: location.pathname.split('/')[1],
+            file: document.getElementById('fileName').textContent,
+            notice: document.getElementById('noticeText').textContent,
+            navigation: performance.getEntriesByType('navigation')[0].type,
+          })`),
+        ),
+        {
+          path: "session",
+          file: "plan.html",
+          notice:
+            "This browser is offline. Your notes are kept, and this page reconnects once it is back online.",
+          navigation: "navigate",
+        },
+      );
+
+      await offline(false);
+      await reloadOf(page);
+      await reviewIn(page);
+      assert.deepEqual(
+        {
+          reloads,
+          face: await paintedFace(page, "#fileName"),
+          notice: await page.eval("document.getElementById('noticeText').textContent"),
+        },
+        { reloads: 1, face: "IBM Plex Mono", notice: "" },
+      );
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+      await page.browser.send("Fetch.disable").catch(() => {});
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
   "a refused first load of a reload held behind an open answer card gets the stray cover and Back, never the file-changed line",
   { skip: !executable && "no browser found" },
   async () => {
