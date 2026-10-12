@@ -478,7 +478,7 @@ test("stop shuts the server down and reports when none runs", async () => {
 const loading = (env, helper, extra = {}) => ({
   ...env,
   NODE_OPTIONS:
-    `${process.env.NODE_OPTIONS ?? ""} --import=${new URL(`./helpers/${helper}`, import.meta.url).href}`.trim(),
+    `${env.NODE_OPTIONS ?? ""} --import=${new URL(`./helpers/${helper}`, import.meta.url).href}`.trim(),
   ...extra,
 });
 /** The environment of a daemon whose exit, once asked for, is held `hold` ms, or "never". */
@@ -504,6 +504,22 @@ test("stop says stopped only once the daemon has exited and its port is free", a
     assert.equal(await bindable(port), "free", "and its port can be bound at once");
     assert.equal((await cli([fixture], env)).code, 0);
     assert.equal(own.serverInfo().port, port, "so the next daemon comes back on it");
+  } finally {
+    await own.stop();
+  }
+});
+
+// windows-2025 hunt job 114779896419: a daemon held past the stop's 5 s deadline exited just after it,
+// before the look that follows, and `stop` said not-running about the daemon it had just stopped.
+test("stop says stopped when its daemon exits after the stop's deadline, before its next look", async () => {
+  const own = isolatedEnv();
+  const env = loading(own.env, "late-exit.js", { TEST_EXIT_GATE: join(gates(), "exit") });
+  try {
+    assert.equal((await cli([fixture], env)).code, 0);
+    const { pid, port } = own.serverInfo();
+    assert.deepEqual((await cli(["stop"], env)).json(), { status: "stopped" });
+    assert.equal(pidAlive(pid), false, "the daemon's process is gone");
+    assert.equal(await bindable(port), "free", "and its port can be bound at once");
   } finally {
     await own.stop();
   }
@@ -908,6 +924,36 @@ test("a start that began before a stop steps aside after it, and an open after t
   } finally {
     daemon.kill();
     await stopping.stop();
+  }
+});
+
+// windows-2025 hunt job 114777032386: client.test.js read a gate's `.reached` between its creation and
+// its write, killed pid Number("") = 0, which on Windows is the calling process, and the file died with
+// its last test unreported. The daemon's write is held open at that point here.
+test("a held start's reached file, whenever it is there, names the daemon", async () => {
+  const held = isolatedEnv();
+  const dir = gates();
+  const bootGate = join(dir, "boot");
+  const { daemon } = daemonProcess(
+    loading(loading(held.env, "slow-write.js", { TEST_SLOW_WRITE_DIR: dir }), "gated-start.js", {
+      TEST_BOOT_GATE: bootGate,
+    }),
+  );
+  const named = () =>
+    existsSync(`${bootGate}.reached`) ? readFileSync(`${bootGate}.reached`, "utf8") : null;
+  try {
+    await until(() => existsSync(join(dir, "writing")), { what: "the daemon to write its pid" });
+    const midWrite = named();
+    assert.ok(
+      midWrite === null || midWrite === String(daemon.pid),
+      `mid-write the reached file read ${JSON.stringify(midWrite)}`,
+    );
+    writeFileSync(join(dir, "go"), "");
+    await until(named, { what: "the reached file" });
+    assert.equal(named(), String(daemon.pid));
+  } finally {
+    daemon.kill();
+    await held.stop();
   }
 });
 
