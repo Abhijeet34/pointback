@@ -110,7 +110,9 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
         JSON.stringify({ status: "refused", pid: holding.pid, port: holding.port }),
       );
     }
-    return print(stdout, JSON.stringify({ status: "not-running" }));
+    // A daemon this stop found and asked may exit after the stop's deadline and before the look above,
+    // as one held by a starved windows-2025 runner did: it is gone because it was stopped.
+    return print(stdout, JSON.stringify({ status: held ? "stopped" : "not-running" }));
   }
 
   const file = args[0];
