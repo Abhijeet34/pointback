@@ -250,6 +250,7 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   Its timer rejects before it closes the socket: closing a WebSocket that is still connecting fires `error` at once, which reported every slow connect as a bare `cannot connect`.
 - A flake is proved absent by a count, never by a green tick.
   `.github/workflows/windows-flake-hunt.yml` is the instrument: dispatch it and read twenty independent verdicts off the job list.
+  Its `engine` input hunts the engine smoke in WebKit or Firefox instead of the suite, as `gh workflow run windows-flake-hunt.yml -f os=macos-15 -f engine=webkit`, since a cross-platform run spends five jobs on one verdict per engine.
   The bar this repository has used and should keep using is the whole suite, twenty Windows runs, before and after: 17/20 on `main` (run 33874545761), then 18/20, 20/20 and 19/20 across the passes that followed (runs 33875622583, 33876393712, 33877405478) - each red attempt naming something the pass before it could not see - and 40/40 over the two runs that closed it (33878156179, 33878425638).
 - The state directory's owner-only protection is a security property with two platform spellings, both in `src/state-dir.js`: POSIX mode bits, and on Windows an ACL reset to one full-control entry for the current user that every file inside inherits.
   `/inheritance:r` alone is not enough, because a directory an administrator creates carries SYSTEM and `BUILTIN\Administrators` as its own explicit entries.
