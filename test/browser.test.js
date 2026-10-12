@@ -446,6 +446,59 @@ test(
   },
 );
 
+// A command goes unanswered either because the page it went to never settles or because the browser
+// stopped, and the two need different fixes, so the failure says which. Each case launches a browser of
+// its own with a short command wait, so the shared one is never stalled and the case takes seconds.
+test(
+  "a page that never answers is named as the stall, and the browser goes on answering",
+  { skip: !executable && "no browser found", timeout: LAUNCH_BOUND_MS + MARGIN_MS },
+  async () => {
+    const own = await launchBrowser(executable, { commandMs: 1000 });
+    try {
+      const page = await own.page("about:blank");
+      await assert.rejects(page.eval("new Promise(() => {})"), {
+        message:
+          "the browser sent no reply to Runtime.evaluate within 1000 ms, yet it answered " +
+          "Browser.getVersion at once: what stalled is the page it was sent to, its script busy " +
+          "or an awaited promise never settled, not the browser",
+      });
+      assert.equal(await page.eval("1 + 1"), 2);
+    } finally {
+      await own.close();
+    }
+  },
+);
+
+// Once, locally at 52e25a1, the browser stopped answering mid-suite: the first test waited 30 s on
+// Runtime.evaluate and every test after it 30 s more on Target.createTarget, each saying only that.
+test(
+  "a browser that stops answering is named as stopped, and every later command fails with that name",
+  {
+    skip: (!executable && "no browser found") || (process.platform === "win32" && "no SIGSTOP"),
+    timeout: LAUNCH_BOUND_MS + MARGIN_MS,
+  },
+  async () => {
+    const own = await launchBrowser(executable, { commandMs: 1000 });
+    try {
+      const page = await own.page("about:blank");
+      process.kill(own.pid, "SIGSTOP");
+      const stopped = await page.eval("1").then(
+        () => assert.fail("a stopped browser answered"),
+        (error) => error.message,
+      );
+      assert.equal(
+        stopped,
+        "the browser stopped answering DevTools: no reply to Runtime.evaluate within 1000 ms, " +
+          "nor to Browser.getVersion within 5000 ms after it, so every later command fails with this",
+      );
+      await assert.rejects(own.page("about:blank"), { message: stopped });
+    } finally {
+      process.kill(own.pid, "SIGCONT");
+      await own.close();
+    }
+  },
+);
+
 /** The reference implementation's snapshot: every element to depth 6 with 80 characters of text. */
 const REFERENCE_SNAPSHOT = `(() => {
   const lines = [];
