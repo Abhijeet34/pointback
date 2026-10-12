@@ -21,6 +21,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { after, afterEach, before, test } from "node:test";
 import { pidAlive } from "../src/daemon-lock.js";
 import { envPrefix } from "../src/identity.js";
@@ -305,11 +306,12 @@ test(
   async () => {
     const page = await browser.page(opened.session.url);
     const started = Date.now();
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.ready === '1'");
-    const readyMs = Date.now() - started;
-    await page.waitFor(FOLLOWING);
-    const artifact = await attaching;
+    let readyMs;
+    const artifact = await frameWhile(page, async () => {
+      await page.waitFor("document.body.dataset.ready === '1'");
+      readyMs = Date.now() - started;
+      await page.waitFor(FOLLOWING);
+    });
     // The chrome is ready as soon as the SDK announces itself, which is earlier than the
     // artifact having laid its stylesheet out; the rects below are measured from it.
     await artifact.waitFor("document.readyState === 'complete'");
@@ -655,9 +657,9 @@ test(
   { skip: !executable && "no browser found" },
   async () => {
     const page = await browser.page(opened.session.url);
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.revision === '0'");
-    const artifact = await attaching;
+    const artifact = await frameWhile(page, () =>
+      page.waitFor("document.body.dataset.revision === '0'"),
+    );
     await artifact.waitFor("document.readyState === 'complete'");
     const frameBox = JSON.parse(await page.eval(FRAME_BOX));
     const title = JSON.parse(
@@ -919,9 +921,10 @@ setInterval(() => {
     );
     const session = (await cli([file], lab.env)).json().session;
     const page = await browser.page(session.url);
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.ready === '1'");
-    await handled(page, await attaching, "rounds");
+    const artifact = await frameWhile(page, () =>
+      page.waitFor("document.body.dataset.ready === '1'"),
+    );
+    await handled(page, artifact, "rounds");
     assert.equal(
       await page.eval("document.querySelectorAll('#marks .mark').length"),
       0,
@@ -4168,6 +4171,23 @@ test(
 );
 
 /**
+ * The page under review (`frame`), looked for from the tab's first load while `waits` run on the tab,
+ * once both are done. A wait that fails first settles only after the look has too, which it has heard,
+ * so a failed open leaves nothing running past its test and no rejection nobody listens for.
+ */
+async function frameWhile(page, waits) {
+  const attaching = page.frame();
+  const looked = attaching.catch(() => {});
+  try {
+    await waits();
+  } catch (error) {
+    await looked;
+    throw error;
+  }
+  return attaching;
+}
+
+/**
  * Opens a review in a fresh tab, with the artifact attached and Annotate on. It starts on, which
  * the slice test asserts; turning it on here when it is not keeps every other test about its own
  * property rather than about that default.
@@ -4179,10 +4199,10 @@ async function openReview(url, viewport) {
 /** Waits for a tab navigated to a review to be ready and following it, as `openReview` describes. */
 async function reviewIn(page) {
   hearKeys(page);
-  const attaching = page.frame();
-  await page.waitFor("document.body?.dataset.ready === '1'");
-  await page.waitFor(FOLLOWING);
-  const artifact = await attaching;
+  const artifact = await frameWhile(page, async () => {
+    await page.waitFor("document.body?.dataset.ready === '1'");
+    await page.waitFor(FOLLOWING);
+  });
   await artifact.waitFor("document.readyState === 'complete'");
   // Read from what the page acknowledged rather than from the switch's markup.
   await page.waitFor("document.body.dataset.annotate !== undefined");
@@ -4192,6 +4212,34 @@ async function reviewIn(page) {
   await page.waitFor("document.body.dataset.annotate === '1'");
   return { page, artifact };
 }
+
+// A tab that never gets ready fails its open on that wait, and the look for the page under review
+// begun alongside it must neither outlive the test nor reject with nobody listening: both muddied
+// the log of every failed open with an error after the test had ended.
+test(
+  "a tab that never gets ready fails its open with nothing of the open still running",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const page = await browser.page("about:blank");
+    const stray = [];
+    const hear = (reason) => stray.push(String(reason?.message ?? reason).split("\n")[0]);
+    process.on("unhandledRejection", hear);
+    let asked = 0;
+    const evaluate = page.eval.bind(page);
+    page.eval = (...args) => ((asked += 1), evaluate(...args));
+    try {
+      await assert.rejects(reviewIn(page), /dataset\.ready === '1'/);
+      const settled = asked;
+      // A wait still running asks the tab again within one 25 ms poll and its round trip; 500 ms
+      // bounds twenty of those, so a look left running shows here.
+      await sleep(500);
+      assert.deepEqual({ stray, askedAfter: asked - settled }, { stray: [], askedAfter: 0 });
+    } finally {
+      process.off("unhandledRejection", hear);
+      await page.close();
+    }
+  },
+);
 
 /**
  * Has the chrome's first `count` event-stream connects fail before they open, as Windows fails about
@@ -6346,10 +6394,10 @@ test(
     const { file } = copyOfFixture();
     const session = (await cli([file], lab.env)).json().session;
     const page = await browser.page(session.url, { width: 390, height: 844 });
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.ready === '1'");
-    await page.waitFor(FOLLOWING);
-    const artifact = await attaching;
+    const artifact = await frameWhile(page, async () => {
+      await page.waitFor("document.body.dataset.ready === '1'");
+      await page.waitFor(FOLLOWING);
+    });
     await artifact.waitFor("document.readyState === 'complete'");
     const usable = async (when, selectors) => {
       const seen = JSON.parse(await page.eval(reachability(selectors)));
@@ -7604,9 +7652,9 @@ test(
     const file = copyOfDark();
     const session = (await cli([file], lab.env)).json().session;
     const page = await browser.page(session.url, { width: 1440, height: 900 });
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.ready === '1'");
-    const artifact = await attaching;
+    const artifact = await frameWhile(page, () =>
+      page.waitFor("document.body.dataset.ready === '1'"),
+    );
     await artifact.waitFor("document.readyState === 'complete'");
     await page.waitFor("document.body.dataset.annotate === '1'");
     await pointAt(page, artifact, "#cell");
