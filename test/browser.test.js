@@ -3493,7 +3493,7 @@ test(
 );
 
 test(
-  "a review whose loads all answer asks for the frame the page is shown in once, and never loads it again",
+  "a review whose loads all answer asks for the page under review and the frame it is shown in once each, and never loads either again",
   { skip: !executable && "no browser found" },
   async () => {
     const own = isolatedEnv();
@@ -3503,7 +3503,10 @@ test(
       const { file } = copyOfFixture();
       const url = (await cli([file], own.env)).json().session.url;
       const { port } = own.serverInfo();
-      refused = await refuseLoads(page, `http://localhost:${port}/wrapper.html*`, 0);
+      refused = await refuseLoads(page, [
+        [`http://localhost:${port}/wrapper.html*`, 0],
+        [`http://127.0.0.1:${port}/artifact/*/plan.html*`, 0],
+      ]);
       await page.send("Page.addScriptToEvaluateOnNewDocument", {
         source: `window.frameLoads = 0;
         document.addEventListener("load", (event) => {
@@ -3513,11 +3516,16 @@ test(
       await page.navigate(url);
       const { artifact } = await reviewIn(page);
       // The frame's first counted load is its initial about:blank, which fires before the chrome's script
-      // runs; the second is the wrapper's, and the chrome's listener for it runs in that same dispatch,
-      // so once two are counted the chrome has handled the wrapper's load and asked for nothing more.
+      // runs; the second is the wrapper's, and the chrome's listener for it, in that same dispatch, queues
+      // the chrome's judgement of it as a message. The page's proposal of the note is queued behind that,
+      // and behind the wrapper's word of the page's load, so once the card opens on it the chrome has
+      // judged both loads and asked for nothing more.
       await page.waitFor("window.frameLoads >= 2");
       await noteOn(page, artifact, "#title", "Name the queue in the title");
-      assert.equal(refused.counts.asked, 1);
+      assert.deepEqual(
+        refused.rules.map(({ asked }) => asked),
+        [1, 1],
+      );
     } finally {
       await refused?.stop();
       await page.close();
@@ -3862,7 +3870,8 @@ test(
 /**
  * Refuses the first `times` loads whose address matches `pattern` as Windows refuses a loopback
  * connect (docs/ENGINEERING-NOTES.md), and lets the rest through; a list of `[pattern, ask]` pairs
- * refuses only that numbered ask of each, such as the one a reload made. It intercepts at the
+ * refuses only that numbered ask of each, such as the one a reload made, and an ask of 0 only counts
+ * them, in `rules` in the order given. It intercepts at the
  * browser, so a frame's load is caught however early its target attaches; `pattern` names a port
  * only the calling test's daemon holds, so no other tab is touched.
  */
@@ -3896,6 +3905,7 @@ async function refuseLoads(page, pattern, times = 1) {
   });
   return {
     counts,
+    rules,
     async stop() {
       page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
       await page.browser.send("Fetch.disable");
