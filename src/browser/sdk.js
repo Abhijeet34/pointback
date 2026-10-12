@@ -52,6 +52,9 @@
   const MAX_SHIFT_ATTEMPTS = 200;
   // The widest ring a pin paints around its box, the active one.
   const HALO = 5;
+  // How far a pin may slide under the next in a row too long for the frame: the next pin's 2 px
+  // halo then stops a pixel short of even a three-digit number, so every number still reads.
+  const TIGHT = -1;
   const MAX_TEXT_NODES = 20000;
   const CONTROLS = "button, input, select, textarea";
   const SOLID = `${CONTROLS}, img, svg, video, canvas, iframe, pre, table`;
@@ -747,26 +750,28 @@
   // is tall, the pin moves beside the line's end, before its start, under its end, then to the right
   // of the block; failing all of those, to whichever covers least.
   // A table cell has no room above its words, so its pin stays inside the cell, off the rows around it.
-  // Every note on one target is placed as one row `width` wide, so a second pin stands beside the first.
+  // Every note on one target is placed as one block, `size` across and down, so a second pin stands
+  // beside the first and a row too long for the frame goes on under itself (`layRow`).
   const elementFor = (anchor) => {
     const node = anchor instanceof Range ? anchor.commonAncestorContainer : anchor;
     return node instanceof Element ? node : node.parentElement;
   };
 
   // A box of the target's own, or one holding it, is a spot's ground, not something it covers.
-  const overlapArea = (spot, width, avoid, element) => {
+  const overlapArea = (spot, { width, height }, avoid, element) => {
     let area = 0;
     for (const { rect, owner } of avoid) {
       if (owner && (owner === element || owner.contains(element) || element.contains(owner)))
         continue;
       const w = Math.min(spot.left + width, rect.right) - Math.max(spot.left, rect.left);
-      const h = Math.min(spot.top + PIN, rect.bottom) - Math.max(spot.top, rect.top);
+      const h = Math.min(spot.top + height, rect.bottom) - Math.max(spot.top, rect.top);
       if (w > 0.5 && h > 0.5) area += w * h;
     }
     return area;
   };
 
-  function pinSpot(anchor, avoid, bounds, width) {
+  function pinSpot(anchor, avoid, bounds, size) {
+    const { width, height } = size;
     let rects;
     if (anchor instanceof Range) rects = [...anchor.getClientRects()];
     else if (ownText(anchor) && !anchor.matches(CONTROLS)) {
@@ -791,7 +796,7 @@
       const box = cell.getBoundingClientRect();
       return {
         left: Math.max(box.left, Math.min(right + 5, box.right - width)),
-        top: Math.max(box.top, Math.min(lineTop - PIN, box.bottom - PIN)),
+        top: Math.max(box.top, Math.min(lineTop - height, box.bottom - height)),
       };
     }
     // Level with the line's middle, or with the top of a box taller than a pin.
@@ -804,7 +809,7 @@
         top:
           (anchor instanceof Range
             ? lineTop
-            : Math.min(lineTop, element.getBoundingClientRect().top)) - PIN,
+            : Math.min(lineTop, element.getBoundingClientRect().top)) - height,
       },
       { left: right + GAP, top: beside },
       { left: Math.min(...line.map((r) => r.left)) - width - GAP, top: beside },
@@ -816,11 +821,38 @@
     }));
     let best = null;
     for (const spot of candidates) {
-      const area = overlapArea(spot, width, avoid, element);
+      const area = overlapArea(spot, size, avoid, element);
       if (area === 0) return spot;
       if (!best || area < best.area) best = { ...spot, area };
     }
     return best;
+  }
+
+  /**
+   * Where each pin of one target's row stands inside its block, in number order, given each pin's
+   * width: side by side, closing up to TIGHT apart when the row is wider than `room`, and on a new
+   * line under the first once the next would still run past it, so the row stays inside the frame.
+   */
+  function layRow(widths, room) {
+    const total = widths.reduce((sum, w) => sum + w, 0);
+    const gap =
+      widths.length > 1
+        ? Math.max(TIGHT, Math.min(GAP, (room - total) / (widths.length - 1)))
+        : GAP;
+    let x = 0;
+    let y = 0;
+    let width = 0;
+    const spots = widths.map((w) => {
+      if (x > 0 && x + w > room) {
+        x = 0;
+        y += PIN + GAP;
+      }
+      const spot = { x, y };
+      x += w + gap;
+      width = Math.max(width, x - gap);
+      return spot;
+    });
+    return { spots, size: { width, height: y + PIN } };
   }
 
   // What a pin must not paint over, in viewport coordinates: every run of the page's words, and the
@@ -881,8 +913,12 @@
     }
     for (const row of rows.values()) {
       const { anchor } = row[0];
-      const width = row.length * PIN + (row.length - 1) * GAP;
-      const spot = anchor && pinSpot(anchor, avoid, bounds, width);
+      const { spots, size } = layRow(
+        row.map(() => PIN),
+        bounds.right - bounds.left,
+      );
+      const { width, height } = size;
+      const spot = anchor && pinSpot(anchor, avoid, bounds, size);
       for (const pin of row) pin.button.hidden = !spot;
       if (!spot) {
         missing.push(...row.map((pin) => pin.n));
@@ -896,9 +932,11 @@
       const right = bounds.right - origin.left - width;
       const element = elementFor(anchor);
       const areaAt = (cx, cy) =>
-        placed.some((p) => p.x - width < cx && cx < p.x + p.width && Math.abs(p.y - cy) < PIN)
+        placed.some(
+          (p) => p.x - width < cx && cx < p.x + p.width && p.y - height < cy && cy < p.y + p.height,
+        )
           ? Infinity
-          : overlapArea({ left: cx + origin.left, top: cy + origin.top }, width, avoid, element);
+          : overlapArea({ left: cx + origin.left, top: cy + origin.top }, size, avoid, element);
       let bestX = x;
       let bestY = y;
       let bestArea = areaAt(x, y);
@@ -917,12 +955,15 @@
       }
       x = bestX;
       y = bestY;
-      placed.push({ x, y, width });
+      placed.push({ x, y, width, height });
       // A placed row is in the way of the next one, as words are.
-      avoid.push({ rect: new DOMRect(x + origin.left, y + origin.top, width, PIN), owner: null });
+      avoid.push({
+        rect: new DOMRect(x + origin.left, y + origin.top, width, height),
+        owner: null,
+      });
       for (const [i, pin] of row.entries()) {
-        pin.button.style.left = `${x + i * (PIN + GAP)}px`;
-        pin.button.style.top = `${y}px`;
+        pin.button.style.left = `${x + spots[i].x}px`;
+        pin.button.style.top = `${y + spots[i].y}px`;
       }
     }
     missing.sort((a, b) => a - b);

@@ -6182,6 +6182,47 @@ test(
 );
 
 test(
+  "more notes on one heading than fit across the frame stand in lines inside it, off every word",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const covered = {};
+    // Enough pins, with their gaps, to run wider than the page's frame at each width.
+    for (const [viewport, count] of [
+      [{ width: 390, height: 844 }, 14],
+      [{ width: 1440, height: 900 }, 40],
+    ]) {
+      const { file } = copyOfFixture();
+      const session = (await cli([file], lab.env)).json().session;
+      for (let i = 1; i <= count; i += 1) {
+        await api(session, "POST", "drafts", {
+          draft: {
+            prompt: `Note ${i}`,
+            selector: "#title",
+            tag: "h1",
+            text: "Rollout plan for the queue worker",
+          },
+        });
+      }
+      const { page, artifact } = await openReview(session.url, viewport);
+      const pins = await until(
+        async () => {
+          const shown = await pinsOn(artifact);
+          return shown.length === count ? shown : null;
+        },
+        { what: `${count} pins on the title at ${viewport.width}` },
+      );
+      covered[viewport.width] = [
+        ...(await wordsUnderPins(artifact, pins)),
+        ...(await pinsOffFrame(artifact, pins)),
+      ];
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(covered, { 390: [], 1440: [] });
+  },
+);
+
+test(
   "a note in the margin leads to its place on the page, and a pin leads back to its note",
   { skip: !executable && "no browser found" },
   async () => {
