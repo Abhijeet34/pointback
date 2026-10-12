@@ -10,6 +10,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -786,6 +787,44 @@ test("a daemon that cannot start is reported by what it said, not by where it wr
   } finally {
     squatter.close();
     await blocked.stop();
+  }
+});
+
+/** A fresh folder for the gate files of `test/helpers/gated-start.js`, outside any state directory. */
+const gates = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-gates-"));
+
+/** A `pointback server` whose stderr is kept, for a test that needs the daemon's own process. */
+function daemonProcess(env) {
+  const daemon = spawn(process.execPath, [bin, "server"], {
+    env,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let said = "";
+  daemon.stderr.on("data", (d) => (said += d));
+  return { daemon, said: () => said };
+}
+
+// A start whose state directory was removed between its claim and its publish threw out of the start
+// with its server listening and no idle-out armed, so it never exited: six such daemons were found left
+// running by test runs on 2026-10-06. The bind is held until the directory is gone.
+test("a daemon whose state directory is removed before it publishes exits instead of listening on", async () => {
+  const lost = isolatedEnv();
+  const bindGate = join(gates(), "bind");
+  const { daemon, said } = daemonProcess(
+    loading(lost.env, "gated-start.js", { TEST_BIND_GATE: bindGate, POINTBACK_IDLE_MS: "600000" }),
+  );
+  try {
+    await until(() => existsSync(`${bindGate}.reached`), {
+      what: "the daemon to claim the directory and reach its bind",
+    });
+    rmSync(lost.dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    writeFileSync(bindGate, "");
+    await until(() => daemon.exitCode !== null, { what: "the daemon to exit" });
+    assert.equal(daemon.exitCode, 1);
+    assert.match(said(), /ENOENT/, "and it said why");
+  } finally {
+    daemon.kill();
+    await lost.stop();
   }
 });
 

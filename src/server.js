@@ -182,17 +182,19 @@ export async function serve({
     );
   }
   const bound = boundPort();
-  if (!lock.publish(bound)) {
-    await close();
-    return null;
-  }
   // The token is kept only with the port it was paired with: a tab can reach no other port, and a
   // fresh token on a fresh port is one fewer place an old one is still worth anything.
   const token =
     bound === previous?.port && SERVER_TOKEN_PATTERN.test(previous.token ?? "")
       ? previous.token
       : randomBytes(24).toString("hex");
+  // A listening server whose start failed has no idle-out yet, so it is closed here or it never
+  // exits; a state directory removed under the start makes either write throw.
   try {
+    if (!lock.publish(bound)) {
+      await close();
+      return null;
+    }
     writeJsonAtomic(recorded, {
       pid: process.pid,
       port: bound,

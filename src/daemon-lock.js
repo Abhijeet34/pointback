@@ -181,7 +181,12 @@ function claim(stateDir, generation) {
     },
     /** Lets the next start take over at once, without waiting on this process to exit. */
     release() {
-      if (held()) write({ port: null, released: true });
+      try {
+        if (held()) write({ port: null, released: true });
+      } catch {
+        // Only a speedup: where the write fails, as in a removed state directory, the next start
+        // takes over once this pid is gone, so a close never fails on it.
+      }
     },
   };
 }
