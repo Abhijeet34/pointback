@@ -561,15 +561,6 @@ export class SessionStore {
     this.#events.emit(key, { type: "reopened" });
   }
 
-  /** Drains the queue, clearing it as the batch leaves. Delivery goes through #answer, not this. */
-  take(key) {
-    const session = this.get(key);
-    const prompts = session.pending;
-    session.pending = [];
-    if (prompts.length > 0) this.#persist(session);
-    return prompts;
-  }
-
   /**
    * The poll's answer when one exists now: feedback, or the ended notice; null means keep waiting.
    *

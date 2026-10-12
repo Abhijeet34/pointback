@@ -837,9 +837,3 @@ class ArtifactFrame extends Page {
     return find(root);
   }
 }
-
-export async function screenshot(page, file) {
-  const { writeFileSync } = await import("node:fs");
-  const { data } = await page.send("Page.captureScreenshot", { format: "png" });
-  writeFileSync(file, Buffer.from(data, "base64"));
-}

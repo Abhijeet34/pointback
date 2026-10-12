@@ -201,7 +201,7 @@ test("a deleted file is gone rather than a revision, its return reloads, and clo
   const two = tab(streams, key);
   assert.equal(two.lines[0].gone, true);
   rmSync(dir, { recursive: true, force: true });
-  // A negative: the vanished directory's watcher must report, not throw, before the hub closes.
+  // A negative: the vanished directory's watcher must not throw before the hub closes.
   await sleep(200);
   streams.closeAll();
   assert.equal(streams.size, 0);

@@ -318,7 +318,7 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   Never hand-edit or reformat them (they are in `.prettierignore` for that reason); change the standard instead.
   Project security scope lives in `docs/THREAT-MODEL.md`.
 - The repository is public and licensed Apache-2.0 (`LICENSE`, copyright Abhijeet Halder); `SECURITY.md` routes vulnerability reports through GitHub private advisories, and no email address or other personal contact detail belongs anywhere in this repository.
-  Publishing to npm stays off behind the `NPM_PUBLISH_ENABLED` repository variable, pinned by `test/pipeline.test.js`.
+  Publishing to npm runs behind the `NPM_PUBLISH_ENABLED` repository variable, pinned by `test/pipeline.test.js`, and the variable is on (`docs/GIT-WORKFLOW.md`, "Publishing to npm").
 - Never put `provenance` in `publishConfig`.
   `ensureProvenanceGeneration` in npm's own `libnpmpublish/lib/publish.js` throws `EUSAGE: Automatic provenance generation not supported for provider: <name>` anywhere but GitHub Actions or GitLab CI, and `npm publish --dry-run --provenance` returns before that code runs, so a dry run never reveals it.
   Trusted publishing generates provenance without the flag, which is why `release.yml` does not pass it either; the manifest's `publishConfig.access` is `public` because the same function refuses to generate provenance for a package it cannot see as public.

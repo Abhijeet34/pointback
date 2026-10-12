@@ -61,25 +61,28 @@ test("a key that names an inherited property never resolves to an object", () =>
 });
 
 test("a poisoned state file is skipped entry by entry, not trusted", () => {
-  const { dir } = lab();
+  const { dir, artifact } = lab();
   // Repeated digit rather than a written-out 16-hex literal: a session key's
   // shape reads as a credential to a secret scanner, and this is a fixture.
   const key = "0".repeat(16);
-  writeFileSync(
-    join(dir, "state.json"),
-    JSON.stringify({
-      sessions: {
-        __proto__: { assetToken: "0".repeat(32), chat: [] },
-        zzzz: { assetToken: "0".repeat(32) },
-        [key]: { key, assetToken: "not-a-token" },
-      },
-    }),
+  const good = "2".repeat(16);
+  const token = "0".repeat(32);
+  // Parsed rather than written as a literal, where `__proto__` would set the prototype and
+  // JSON.stringify would drop it, so the file would never carry the entry this test is about.
+  const sessions = JSON.parse(
+    `{"__proto__": ${JSON.stringify({ key: "__proto__", assetToken: token, file: artifact })}}`,
   );
+  Object.assign(sessions, {
+    zzzz: { key: "zzzz", assetToken: token, file: artifact },
+    [key]: { key, assetToken: "not-a-token" },
+    [good]: { key: good, assetToken: token, file: artifact, pending: [], chat: [] },
+  });
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ sessions }));
   // A session's own file is held to the same: its name must be a key, and the key it records.
   const other = "1".repeat(16);
   mkdirSync(join(dir, "sessions"));
-  writeFileSync(sessionFile(dir, "__proto__"), JSON.stringify({ assetToken: "0".repeat(32) }));
-  writeFileSync(sessionFile(dir, other), JSON.stringify({ key, assetToken: "0".repeat(32) }));
+  writeFileSync(sessionFile(dir, "__proto__"), JSON.stringify({ assetToken: token }));
+  writeFileSync(sessionFile(dir, other), JSON.stringify({ key, assetToken: token }));
   const store = new SessionStore(dir);
   for (const missing of [key, other])
     assert.throws(
@@ -87,6 +90,13 @@ test("a poisoned state file is skipped entry by entry, not trusted", () => {
       (e) => e.status === 404,
     );
   assert.equal(Object.prototype.assetToken, undefined);
+  // Only the well-formed entry was split out, and it survives a restart.
+  assert.deepEqual(readdirSync(join(dir, "sessions")).sort(), [
+    `${other}.json`,
+    `${good}.json`,
+    "__proto__.json",
+  ]);
+  assert.equal(new SessionStore(dir).get(good).file, artifact);
 });
 
 test("opening the same file twice yields one session, and it survives a restart", () => {
@@ -99,7 +109,7 @@ test("opening the same file twice yields one session, and it survives a restart"
   store.queue(a.key, [prompt()]);
   const reopened = new SessionStore(dir);
   assert.equal(reopened.get(a.key).assetToken, a.assetToken);
-  assert.equal(reopened.take(a.key).length, 1);
+  assert.equal(reopened.get(a.key).pending.length, 1);
   assert.equal(reopened.bootstrap(a.key).chat.length, 1);
   assert.equal(readFileSync(sessionFile(dir, a.key), "utf8").includes("nextUid"), true);
 });
@@ -122,7 +132,7 @@ test("a process holding a stale copy of a session refuses to write it over a new
   // The refusal took the newer copy, so the agent's next try goes through and gets the note.
   agents.open(artifact);
   assert.deepEqual(
-    agents.take(key).map((p) => p.prompt),
+    agents.get(key).pending.map((p) => p.prompt),
     ["the note that must not be lost"],
   );
 });
@@ -219,8 +229,7 @@ test("a session file with no write count loads, keeps its notes, and is counted 
     store.get(key).pending.map((p) => p.prompt),
     ["kept from before the count"],
   );
-  const counted = JSON.parse(readFileSync(sessionFile(dir, key), "utf8")).writes;
-  assert.ok(Number.isSafeInteger(counted) && counted >= 1, `counted: ${counted}`);
+  assert.equal(JSON.parse(readFileSync(sessionFile(dir, key), "utf8")).writes, 1);
 });
 
 test("a session file deleted by hand is written again from memory, so an unsent note survives", () => {
@@ -287,7 +296,7 @@ test("prompts are validated field by field", () => {
       message,
     );
   }
-  assert.deepEqual(store.take(key), []);
+  assert.deepEqual(store.get(key).pending, []);
 });
 
 test("source lines ride only on a Markdown file's notes, and only as two line numbers", () => {
@@ -310,11 +319,11 @@ test("source lines ride only on a Markdown file's notes, and only as two line nu
   store.send(md);
   store.send(html);
   assert.deepEqual(
-    store.take(md).map((note) => note.lines),
+    store.get(md).pending.map((note) => note.lines),
     [[3, 4]],
   );
   assert.deepEqual(
-    store.take(html).map((note) => "lines" in note),
+    store.get(html).pending.map((note) => "lines" in note),
     [false],
   );
 });
@@ -325,7 +334,7 @@ test("uids are monotonic per session and extra fields are dropped", () => {
   const { key } = store.open(artifact);
   store.queue(key, [{ ...prompt("one"), evil: "x" }, prompt("two")]);
   store.queue(key, [prompt("three")]);
-  const taken = store.take(key);
+  const taken = store.get(key).pending;
   assert.deepEqual(
     taken.map((p) => [p.uid, p.prompt]),
     [
@@ -358,7 +367,7 @@ test("a target is rebuilt field by field, and an anchor that cannot be trusted i
     { ...prompt("control"), tag: "button", target: { type: "control", name: "Upgrade", on: 1 } },
     { ...prompt("image"), tag: "img", target: { ...picture, onload: "x" } },
   ]);
-  const taken = store.take(key);
+  const taken = [...store.get(key).pending];
   assert.deepEqual(taken[0].target, range);
   assert.deepEqual(taken[1].target, { type: "table-cell", column: "Owner" });
   assert.deepEqual(taken[2].target, { type: "control", name: "Upgrade" });
@@ -386,7 +395,7 @@ test("a target is rebuilt field by field, and an anchor that cannot be trusted i
       message,
     );
   }
-  assert.deepEqual(store.take(key), []);
+  assert.deepEqual(store.get(key).pending, taken, "a refused target queues nothing");
 });
 
 test("the page outline is bounded, replaced with each batch, and delivered with the prompts", async () => {
