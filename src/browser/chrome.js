@@ -1552,14 +1552,19 @@ function guard() {
   shield.hidden = !writing(document.activeElement);
   renderCover();
 }
-document.addEventListener("focusin", guard);
-let handing = false;
+// The reviewer handed the page the focus: a press on the shield, or a Tab from the note into the frame.
+// It stays handed until the focus comes back to the chrome, since Firefox reports a Tab into the frame
+// only at the reviewer's next press in the page.
+let handed = false;
+document.addEventListener("focusin", (event) => {
+  if (event.target !== frame) handed = false;
+  guard();
+});
 shield.addEventListener("mousedown", (event) => {
   event.preventDefault();
   away = undefined;
-  handing = true;
+  handed = true;
   frame.focus();
-  handing = false;
   guard();
 });
 // The page cannot see the wheel over the shield, so its scroll is handed on.
@@ -1572,22 +1577,26 @@ shield.addEventListener(
   { passive: true },
 );
 // A move from the note to a control of the chrome names that control and is left alone. A move into the
-// frame names the frame, or nothing when the page makes it, and unloads unless the shield's press handed
-// it over (`handing`). Engines differ in what they name for the page's move, so the one trigger is where
+// frame names the frame, or nothing when the page makes it, and unloads unless the reviewer handed it
+// over (`handed`). Engines differ in what they name for the page's move, so the one trigger is where
 // the focus is a task later: still in the frame, the note gets it back through the unload. A Tab the
-// reviewer presses in the note is the keyboard way into the page, so the move it makes is left alone.
-let tabbing = false;
+// reviewer presses in the note is the keyboard way into the page, so the move it makes is left alone;
+// whether it went there is read a task later, and Firefox fires no focus-out for it, so the shield
+// follows it.
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Tab" || !event.isTrusted || !writing(event.target)) return;
-  tabbing = true;
   away = undefined;
-  setTimeout(() => (tabbing = false));
+  handed = true;
+  setTimeout(() => {
+    handed = document.activeElement === frame;
+    guard();
+  });
 });
 document.addEventListener("focusout", (event) => {
   const field = /** @type {HTMLElement} */ (event.target);
   const named = event.relatedTarget;
   setTimeout(() => (shield.hidden = !writing(document.activeElement)));
-  if (handing || tabbing || (named !== null && named !== frame) || !writing(field)) return;
+  if (handed || (named !== null && named !== frame) || !writing(field)) return;
   takenFrom(field);
 });
 function takenFrom(field) {

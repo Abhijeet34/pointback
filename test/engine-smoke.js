@@ -4,13 +4,14 @@
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
 // Keys pressed after a note made by mouse edit nothing in the page.
 // A save of a Word export keeps the reviewer's place and Annotate.
+// A Tab from the note into the page leaves it loaded and unshielded.
 // And an add after the tab sat idle past Node's default keep-alive close is kept.
 // And a chrome face refused while the browser is offline leaves the review on screen.
 // The chrome, a rendered Markdown page and its pin follow a light and a dark preference.
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
-/* global document, location, getComputedStyle */
+/* global document, location, getComputedStyle, window */
 import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,6 +60,7 @@ async function smoke(engine) {
       ms.push(result.ms);
     }
     await act(browser, (page) => focusLeavesNoteAlone(page, lab, engine));
+    await act(browser, (page) => tabIntoThePage(page, lab, engine));
     await act(browser, addAfterAnIdle);
     await act(browser, (page) => faceRefusedOffline(page, lab));
     const schemes = [];
@@ -679,6 +681,40 @@ async function followsScheme(page, lab, scheme) {
   const want = scheme === "light" ? "oklch(0.21 0.012 260)" : "oklch(0.165 0.012 260)";
   assert.equal(halo, want, `${scheme}: the pin's halo`);
   return `${scheme} bar ${seen.bar.toFixed(2)}:1 and ground ${seen.ground.toFixed(2)}:1 from its paper`;
+}
+
+/**
+ * A Tab from the note into the page is the reviewer's own move: the page stays loaded and shown, and
+ * the shield goes, so their next press reaches the page. Firefox fires no focus-out in the chrome for
+ * that Tab, so neither may depend on one.
+ */
+async function tabIntoThePage(page, lab, engine) {
+  await openFocusFixture(page, lab, "tab-into");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
+  await artifact.evaluate(() => {
+    globalThis.pressed = 0;
+    window.addEventListener("mousedown", () => (globalThis.pressed += 1), true);
+  });
+  await page.keyboard.press("Shift+Tab");
+  await page.waitForFunction(() => document.activeElement?.id === "artifact");
+  await page.waitForFunction(() => document.getElementById("shield").hidden);
+  const spot = await page.evaluate(() => {
+    const box = document.getElementById("artifact").getBoundingClientRect();
+    return { x: box.left + 8, y: box.bottom - 8 };
+  });
+  await page.mouse.click(spot.x, spot.y);
+  await artifact.waitForFunction(() => globalThis.pressed === 1);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      card: !document.getElementById("card").hidden,
+      cover: document.getElementById("cover").hidden,
+      frame: getComputedStyle(document.getElementById("artifact")).display,
+    })),
+    { card: true, cover: true, frame: "block" },
+    `${engine}: a Tab from the note into the page held the page`,
+  );
 }
 
 /**
