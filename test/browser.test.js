@@ -1470,6 +1470,29 @@ test(
 );
 
 test(
+  "a reviewer's Shift+Tab into the page keeps it loaded when the page's frame reports the focus after the chrome's next task",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    // Chromium on a loaded runner moves the focus into the out-of-process frame only after the chrome's
+    // next task, which then sees it on nothing (ubuntu-24.04, run 38260138769). Running the chrome's
+    // tasks at the note's focus-out, before the frame has it, makes that order certain.
+    await holdTasks(page);
+    await page.eval(`document.addEventListener("focusout", () => runHeld(), { once: true })`);
+    await page.key("Tab", { keyCode: 9, modifiers: 8 });
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    const ran = JSON.parse(await page.eval("JSON.stringify(heldTasks.map((task) => task.focus))"));
+    assert.ok(ran.includes("BODY"), `a chrome task ran with the focus on nothing: ${ran}`);
+    // The chrome's check for a page's move, where it would run, is a task after the move.
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
+    await page.close();
+  },
+);
+
+test(
   "a page that takes the focus while the window is inactive is unloaded when the window comes back",
   { skip: !executable && "no browser found" },
   async () => {

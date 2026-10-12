@@ -1559,7 +1559,7 @@ function guard() {
 // reports a Tab into the frame only at the reviewer's next press in the page.
 let handed = false;
 document.addEventListener("focusin", (event) => {
-  if (event.target !== frame) handed = false;
+  if (event.target !== frame) handed = tabbing = false;
   guard();
 });
 /** Gives the frame the focus as the reviewer's own move, which `movedToPage` must not take for the page's. */
@@ -1589,15 +1589,23 @@ shield.addEventListener(
 // is a task later: still in the frame, the note gets it back through the unload. A Tab the reviewer
 // presses in the chrome is the keyboard way into the page, so the move it makes is left alone; whether
 // it went there is read a task later, and Firefox fires no focus-out for it, so the shield follows it.
+// Chromium can still have that Tab in flight to the out-of-process frame then, with the focus on
+// nothing, and say where it landed only with the window's blur (ubuntu-24.04, run 38260138769).
+let tabbing = false;
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Tab" || !event.isTrusted || !noteOpen()) return;
   away = undefined;
   handed = true;
+  tabbing = true;
   setTimeout(() => {
-    handed = document.activeElement === frame;
+    if (tabbing && document.activeElement !== document.body) tabLanded();
     guard();
   });
 });
+function tabLanded() {
+  tabbing = false;
+  handed = document.activeElement === frame;
+}
 // The element of the chrome the focus last left, which a move from nothing focused leaves in place: the
 // focus goes back there once the page is out.
 let left = /** @type {HTMLElement | null} */ (null);
@@ -1608,6 +1616,7 @@ document.addEventListener("focusout", (event) => {
   setTimeout(guard);
 });
 window.addEventListener("blur", () => {
+  if (tabbing) tabLanded();
   movedToPage();
   setTimeout(guard);
 });

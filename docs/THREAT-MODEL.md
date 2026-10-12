@@ -45,7 +45,7 @@ In scope:
   On that path, too, a key typed between the window's return and the wrapper taking the page out can reach the page, and that window is not measured.
   The ordering of a real click that activates the window cannot be expressed in the harness; the test presses over the page after the window is back, not as it returns.
   A page focus() in the same task as the window's blur is not separated from the blur by any test, since the harness cannot order the two in one task.
-  A page focus() that lands in the same task as the reviewer's Tab is taken as part of that handoff, since the two cannot be told apart in that task.
+  A page focus() that lands in the same task as the reviewer's Tab is taken as part of that handoff, since the two cannot be told apart in that task; where Chromium leaves that Tab in flight to the page's frame past the chrome's next task, a focus() before the window's blur reports where it landed is taken as part of it too.
   A Tab that leaves the document marks nothing, but the test harness does not drive a Tab out of the document, so no test covers that case.
   A reload that a save would bring waits while a margin edit is open after the page took the focus, and lands once the edit is saved or cancelled.
   It acts on the move itself, not on a report that the hide landed: on the hide design PR 64 shipped, with the frame moved out of the chrome's view first, 144 of 400 out-of-view rounds across runs 37241529478 (macos-15) and 37241527001 (ubuntu-24.04) never got the drawn report the hide waited for, and in 124 of those 400 a key reached the hidden page (transcript "tally: out-of-view probe rounds on the hide design, and the page-out window in CI at 0c5b837").
