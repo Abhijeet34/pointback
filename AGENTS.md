@@ -40,6 +40,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - `README.md` is a browser-suite fixture: its Install paragraph opens with `` `parse5` ``.
 - The vendored house files under `src/browser/house/` are never edited; move the pin with `node scripts/sync-house.js`.
   The chrome uses `--hw-*` roles and rem sizes only (`src/browser/chrome.css`).
+  The chrome, the rendered Markdown and the pins follow `prefers-color-scheme`; the chrome, `wrapper.html` and the Markdown page each declare `color-scheme: light dark`, and the pins' house values per scheme live in `ROLES` in `src/browser/sdk.js` (`docs/ENGINEERING-NOTES.md`).
 - Windows: `fileURLToPath`, never `new URL(...).pathname`; `realpathSync.native` wherever a path is watched or keyed; a read of a file another process is writing treats failure as "not yet"; in a test, no `shasum`, and spawning `npm` needs `shell: true`.
 
 ## Security boundaries
