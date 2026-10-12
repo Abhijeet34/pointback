@@ -505,8 +505,8 @@ test("bad input on the api is a 4xx, not a crash", async () => {
  * Opens an event stream and yields one parsed event at a time, so a test can await an event.
  * `closed` settles with the code the server closed it with, which is how it refuses a stream.
  */
-async function eventStream(path, token = srv.token) {
-  const socket = new WebSocket(base.replace("http:", "ws:") + path, ["events", `bearer.${token}`]);
+async function eventStream(path, token = srv.token, at = base) {
+  const socket = new WebSocket(at.replace("http:", "ws:") + path, ["events", `bearer.${token}`]);
   const events = [];
   const waiting = [];
   let ended = false;
@@ -608,6 +608,57 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
   assert.equal(await unknown.closed, 4404, "a review that does not exist is refused for good");
   const forged = await eventStream(`/api/${opened.key}/events`, "0".repeat(48));
   assert.equal(await forged.closed, 4401, "a stream without the token is refused for good");
+});
+
+test("an event stream whose client leaves with only a FIN gives its slot back at once", async () => {
+  // A daemon of its own, so no stream another test is still closing frees a slot on its behalf.
+  const stateDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-fin-"));
+  const daemon = await serve({ stateDir, port: 0, idleMs: 60_000 });
+  const at = `http://127.0.0.1:${daemon.port}`;
+  const streams = [];
+  let left;
+  try {
+    const k = (
+      await fetch(`${at}/api/sessions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${daemon.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ file: fixture }),
+      }).then((r) => r.json())
+    ).key;
+    // A tab that crashed: the kernel sends its FIN, and no close frame ever comes.
+    left = await new Promise((resolve, reject) => {
+      const req = request(`${at}/api/${k}/events`, {
+        headers: {
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-version": "13",
+          "sec-websocket-key": randomBytes(16).toString("base64"),
+          "sec-websocket-protocol": `events, bearer.${daemon.token}`,
+        },
+      });
+      req.on("upgrade", (res, socket) => resolve(socket.resume()));
+      req.on("response", () => reject(new Error("the raw stream was not upgraded")));
+      req.on("error", reject);
+      req.end();
+    });
+    while (streams.length + 1 < limits.eventStreams)
+      streams.push(await eventStream(`/api/${k}/events`, daemon.token, at));
+    const full = await eventStream(`/api/${k}/events`, daemon.token, at);
+    assert.equal(await full.closed, 4429, "every slot is held before the FIN");
+    left.end();
+    await until(() => left.closed, {
+      what: "the daemon to close a stream whose client sent only a FIN",
+    });
+    const next = await eventStream(`/api/${k}/events`, daemon.token, at);
+    streams.push(next);
+    assert.equal((await next.next())?.type, "hello", "the slot the FIN gave back is taken at once");
+  } finally {
+    left?.destroy();
+    for (const stream of streams) stream.close();
+    await Promise.all(streams.map((stream) => stream.closed));
+    await daemon.close();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });
 
 test("an event stream handshake from another origin or host, or without the subprotocol, is refused", async () => {
