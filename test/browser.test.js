@@ -321,12 +321,14 @@ test(
       "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 2",
     );
 
-    // Keyboard only from here. Adding a note hands focus back to the element in the artifact, so
-    // Shift+Arrow grows a real selection there and Enter opens the chrome card to type the note.
-    // The note was made with the mouse, so focus comes back without its box: one drawn now would
-    // read as a selection the reviewer never made.
-    await artifact.waitFor("document.activeElement && document.activeElement.id === 'p1'");
+    // Keyboard only from here. A note made by mouse gives the page its focus back with nothing in it
+    // focused and no box, which would read as a selection the reviewer never made. The keyboard
+    // moves on from the passage as from any click in it, so Shift+Tab comes back onto its block;
+    // there Shift+Arrow grows a real selection and Enter opens the chrome card to type the note.
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
     assert.equal(await highlights(artifact), 0, "no focus box after a note made by mouse");
+    await page.key("Tab", { keyCode: 9, modifiers: 8 });
+    await artifact.waitFor("document.activeElement.id === 'p1'");
     await page.key("Escape", { keyCode: 27 });
     for (let word = 0; word < 5; word += 1) await page.shiftArrow("right");
     assert.equal(
@@ -1689,6 +1691,54 @@ test(
 );
 
 test(
+  "keys pressed after a note made by mouse reach no element of the page: a field keeps its value, Space opens no card, and H moves on from the note",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const shown = `JSON.stringify({
+      field: document.getElementById("field").value,
+      focus: document.activeElement.id || document.activeElement.tagName,
+    })`;
+    // Space with nothing focused falls through to the browser's own page-down scroll, which lands
+    // on its own schedule, well after the key. Each selector gets its own review rather than reusing
+    // one tab, so a mouse note is never made on a page a previous round's Space is still scrolling.
+    for (const selector of ["#field", "#p1"]) {
+      const { session } = await focusCallsReview();
+      const { page, artifact } = await openReview(session.url);
+      await noteOn(page, artifact, selector, "Say what belongs here");
+      // The card gave the page its focus back, so the keys below go wherever the page holds it.
+      await page.waitFor("document.activeElement === document.getElementById('artifact')");
+      await artifact.waitFor("document.hasFocus()");
+      const heard = keyReports.length;
+      await page.key(" ", { code: "Space", keyCode: 32, text: " " });
+      await press(page, "x");
+      await until(() => keyReports.slice(heard).includes("keyup x"), {
+        what: "the page to hear the reviewer's keys",
+      });
+      // The page hears x's keyup only once its keydown has been acted on, so the field holds whatever
+      // it took.
+      assert.deepEqual(
+        JSON.parse(await artifact.eval(shown)),
+        { field: "", focus: "BODY" },
+        `after a note on ${selector}`,
+      );
+      // Space on a focused element proposes it in the keydown, and A is posted behind it through the
+      // same frames, so a chrome that has turned Annotate off has handled any proposal.
+      await press(page, "a");
+      await page.waitFor("document.body.dataset.annotate === '0'");
+      assert.equal(await page.eval("document.getElementById('card').hidden"), true, "no card");
+      await press(page, "a");
+      await page.waitFor("document.body.dataset.annotate === '1'");
+      if (selector === "#p1") {
+        // H moves on from the last note, as Tab does from a click: Shift+H goes to the heading before it.
+        await page.key("H", { code: "KeyH", keyCode: 72, text: "H", modifiers: 8 });
+        await artifact.waitFor("document.activeElement.id === 't'");
+      }
+      await page.close();
+    }
+  },
+);
+
+test(
   "a move of the focus from a note to a chrome control, or out of the window, leaves the page alone",
   { skip: !executable && "no browser found" },
   async () => {
@@ -2678,7 +2728,7 @@ test(
       await pointAt(page, artifact, "#title");
       await page.key("Escape", { keyCode: 27 });
       await page.waitFor("document.getElementById('card').hidden");
-      await artifact.waitFor("document.activeElement?.id === 'title'");
+      await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
     }
     await noteOn(page, artifact, "#title", "Make the title shorter");
     assert.equal(
@@ -6488,10 +6538,11 @@ test(
 
     const session = (await cli([plan], lab.env)).json().session;
     const { page, artifact } = await openReview(session.url);
-    // Into the page the way a reviewer starts: point at the title, then Escape back onto it.
+    // Into the page the way a reviewer starts: point at the title, then Escape. The page has the
+    // focus back with nothing in it focused, and Tab moves on from the title.
     await pointAt(page, artifact, "#title");
     await page.key("Escape", { keyCode: 27 });
-    await artifact.waitFor("document.activeElement.id === 'title'");
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
     const focused = `(() => {
       const e = document.activeElement;
       return e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + " " + e.textContent.trim().replace(/\\s+/g, " ").slice(0, 12).trim();
@@ -6576,11 +6627,11 @@ test(
       [["Rank the risks", "h2"]],
     );
 
-    // And from the page, after Enter has added a note and handed focus back to its block.
+    // And from the page, after Enter has added a note and handed the page its focus back.
     await pointAt(page, artifact, "#rollback h2");
     await page.type("Say who can roll back");
     await page.enter();
-    await artifact.waitFor("document.activeElement.textContent === 'Rollback'");
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
     await ctrlEnter();
     await page.waitFor(`${sent} === ${sentBefore + 2}`);
     polled = (await cli(["poll", plan, "--timeout-ms", "0"], lab.env)).json();
