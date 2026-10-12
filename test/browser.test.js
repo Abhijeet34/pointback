@@ -215,6 +215,22 @@ test(
   },
 );
 
+// Every DevTools message is handed to every listener on the connection, so one left behind by each
+// closed tab is work every later message pays for, for the rest of the suite.
+test(
+  "a closed tab leaves none of its listeners on the browser's connection",
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
+  async () => {
+    const other = await browser.page("about:blank");
+    const listening = other.browser.listeners.length;
+    const page = await browser.page(opened.session.url);
+    await page.frame();
+    await page.close();
+    assert.equal(other.browser.listeners.length, listening);
+    await other.close();
+  },
+);
+
 /** The reference implementation's snapshot: every element to depth 6 with 80 characters of text. */
 const REFERENCE_SNAPSHOT = `(() => {
   const lines = [];
@@ -4591,7 +4607,7 @@ const HEARS_LATE = `(() => {
 /** Collects what `HEARS_LATE` reports the page proposed, in the order the page posts it. */
 async function pageProposals(page, artifact) {
   const proposed = [];
-  page.browser.listeners.push((message) => {
+  page.listen((message) => {
     if (
       message.sessionId === artifact.sessionId &&
       message.method === "Runtime.consoleAPICalled" &&

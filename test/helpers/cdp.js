@@ -400,7 +400,15 @@ class Page {
   }
 
   close() {
+    for (const listener of this.listeners ?? [])
+      this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
     return this.browser.send("Target.closeTarget", { targetId: this.targetId });
+  }
+
+  /** Hands `listener` every message on the connection until this tab is closed. */
+  listen(listener) {
+    (this.listeners ??= []).push(listener);
+    this.browser.listeners.push(listener);
   }
 
   send(method, params) {
@@ -533,7 +541,7 @@ class Page {
     this.errors = [];
     this.failed = [];
     this.requests = new Map();
-    this.browser.listeners.push((message) => this.#track(message));
+    this.listen((message) => this.#track(message));
     // Enabled again so the contexts this page already has are announced to the tracker too.
     await this.send("Runtime.disable");
     for (const command of ["Runtime.enable", "Network.enable", "Log.enable"])
