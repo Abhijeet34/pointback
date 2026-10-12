@@ -6418,6 +6418,79 @@ test(
   },
 );
 
+/** The bar's parts whose boxes overlap, and how wide the file's name paints. */
+const BAR_PARTS = `JSON.stringify((() => {
+  const parts = [".brand", "#fileName", "#presence", "#textSizeButton", ".annotate", "#end"];
+  const boxes = parts.map((s) => document.querySelector(s).getBoundingClientRect());
+  const overlaps = [];
+  for (const [i, a] of boxes.entries())
+    for (const [j, b] of boxes.entries())
+      if (i < j && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom)
+        overlaps.push(parts[i] + " over " + parts[j]);
+  return { overlaps, file: document.getElementById("fileName").clientWidth };
+})())`;
+
+test(
+  "at every text size the bar and its text size steps fit a phone and a narrow window: nothing scrolls sideways, overlaps or leaves the screen",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const sizes = ["s", "m", "l", "xl", "xxl"];
+    const stepOf = (size) => `#textSize [data-size="${size}"]`;
+    const panel = "document.getElementById('textSizePanel')";
+    const seen = {};
+    // 320 and 390 are phones held upright, under the bar's two-line layout; 600 is the first width
+    // the bar is one line, where the name and the tools last shared it at the largest size.
+    for (const width of [320, 390, 600]) {
+      const page = await browser.page(session.url, { width, height: 800 });
+      try {
+        await page.waitFor("document.body.dataset.ready === '1'");
+        for (const size of sizes) {
+          await clickOn(page, "document.getElementById('textSizeButton')");
+          await page.waitFor(`${panel}.matches(':popover-open')`);
+          const step = `document.querySelector('${stepOf(size)}')`;
+          const [target] = JSON.parse(await page.eval(reachability([stepOf(size)]))).controls;
+          // A step off the screen is recorded below, at the size that put it there; the size is
+          // still taken, so every width and size is measured.
+          if (target.reachable) await clickOn(page, step);
+          else await page.eval(`${step}.click()`);
+          await page.waitFor(`document.documentElement.dataset.textSize === "${size}"`);
+          const steps = JSON.parse(await page.eval(reachability(sizes.map(stepOf))));
+          // Aa again closes the steps: Escape is the browser's to act on, and a key the chrome leaves
+          // to the browser can freeze headless Chromium on macOS (docs/ENGINEERING-NOTES.md).
+          await clickOn(page, "document.getElementById('textSizeButton')");
+          await page.waitFor(`!${panel}.matches(':popover-open')`);
+          const bar = JSON.parse(
+            await page.eval(reachability(["#presence", "#textSizeButton", "#annotate", "#end"])),
+          );
+          const { overlaps, file: name } = JSON.parse(await page.eval(BAR_PARTS));
+          seen[`${size} at ${width}`] = {
+            sideways: bar.sideways,
+            offScreen: [...steps.controls, ...bar.controls]
+              .filter((c) => !c.reachable)
+              .map((c) => c.selector),
+            overlaps,
+            // Four characters of the file's name, the least that still says which file this is.
+            fileShown: name >= 4 * 7,
+          };
+        }
+      } finally {
+        // Every later review in this browser opens at the size picked last.
+        await page.eval("localStorage.setItem('textSize', 'm')");
+        await page.close();
+      }
+    }
+    const fits = { sideways: [], offScreen: [], overlaps: [], fileShown: true };
+    assert.deepEqual(
+      seen,
+      Object.fromEntries(Object.keys(seen).map((at) => [at, fits])),
+      "the bar at each text size and width",
+    );
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
 const CELL = (row) => `main > table > tbody > tr:nth-of-type(${row}) > td:nth-of-type(2)`;
 
 /** Waits for the frame to paint `count` pins, and says where each stands against its target. */

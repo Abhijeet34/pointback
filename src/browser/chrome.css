@@ -72,13 +72,15 @@ body {
   font-size: var(--hw-text-sm);
 }
 
-/* Which review this is: the mark, the name and the file, the one part of the bar that may shrink. */
+/* Which review this is: the mark, the name and the file, the one part of the bar that may shrink,
+   down to the mark, the name and a few characters of the file; narrower, the tools take a line of
+   their own, at its right. */
 .bar-id {
   display: flex;
   flex: 1 1 0;
   align-items: center;
   gap: var(--hw-space-12);
-  min-width: 0;
+  min-width: min-content;
 }
 
 /* The mark and the wordmark are one unit: the mark keeps the identity when the name is dropped. */
@@ -105,7 +107,10 @@ body {
 }
 
 .bar-file {
-  min-width: 0;
+  flex: 1;
+  width: 0;
+  min-width: 4rem;
+  max-width: max-content;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -117,6 +122,7 @@ body {
   display: flex;
   flex: none;
   align-items: center;
+  margin-inline-start: auto;
   gap: var(--hw-space-12);
 }
 
@@ -545,11 +551,26 @@ body {
 }
 
 /* Below --hw-bp-sm (600px) the bar takes two lines, the file under review on the first, so a phone
-   reviewer still sees which file this is and no control has to break its label. */
+   reviewer still sees which file this is and no control has to break its label. At a large text size
+   the tools take a third line rather than run off the side, and End review keeps the right edge. The
+   text size's steps open from the bar's left edge, since Aa is no longer near the window's right, and
+   wrap rather than leave the screen. */
 @media (max-width: 599px) {
   .bar-tools {
     flex-basis: 100%;
+    flex-wrap: wrap;
     justify-content: space-between;
+    column-gap: var(--hw-space-8);
+  }
+
+  #end {
+    margin-inline-start: auto;
+  }
+
+  .text-size-panel[popover] {
+    left: var(--hw-gutter-sm);
+    right: auto;
+    max-width: calc(100vw - 2 * var(--hw-gutter-sm));
   }
 }
 
