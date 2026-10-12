@@ -78,6 +78,7 @@ In scope:
   A press over the page while a note has the focus is not taken for the page's own move (`test/browser.test.js`, in Chromium).
   The engine smoke's press-over-the-page step (`pressOverThePage` in `test/engine-smoke.js`) checks this on every scheduled run.
   A window that comes back with the page holding the focus is measured only in Chromium (`test/browser.test.js`); the engine smoke has no window-return step, so that path is unmeasured in WebKit and Firefox.
+  That test leaves the window by switching tabs, which hides the review; a switch to another app leaves it visible, and none of the three engines can express that state headless (Brave 155 with a second window in front, WebKit 26.6 and Firefox 155.0 with a second page in front, all keep the review's `document.hasFocus()` true), so whether the chrome hears that return while the page holds the focus is unmeasured.
 - State written where another user on the machine can read it: outside the state directory, with a mode other than `0600` in a `0700` directory on POSIX, or on Windows with any ACL entry beyond the current user (`src/state-dir.js`).
 - Any outbound connection opened by the process.
 - Markup in an artifact that changes what the injected review script does (`src/inject.js`).
