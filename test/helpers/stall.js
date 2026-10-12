@@ -11,6 +11,13 @@ export async function closedPort() {
 }
 
 /**
+ * A pid no process can have, standing for a daemon that exited: Windows hands out multiples of 4, Linux
+ * caps pids at 2^22 and macOS at 99999, so this odd int32 is refused as ESRCH on all three. An exited
+ * process's own pid would not do, since Windows gives it to the next process it starts.
+ */
+export const DEAD_PID = 2 ** 31 - 1;
+
+/**
  * Blocks the loop for `ms` on the tick after the next client socket's `connectionAttempt`, which Node
  * emits in `internalConnect` just before `connect(2)`. So the connect has gone out when the loop
  * blocks, and the refusal or answer is waiting behind the stall with the probe's expired timer.

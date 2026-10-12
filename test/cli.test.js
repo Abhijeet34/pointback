@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import {
   copyFileSync,
@@ -23,6 +23,7 @@ import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { bin, cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
 import { assertPrivate } from "./helpers/private.js";
+import { DEAD_PID } from "./helpers/stall.js";
 import { until } from "./helpers/wait.js";
 
 const lab = isolatedEnv();
@@ -888,10 +889,9 @@ test("an open whose first look misses a sibling's daemon starting uses that daem
     assert.equal((await cli([fixture], racing.env)).code, 0);
     sibling = racing.serverInfo();
     await new Promise((r) => stopped.listen(0, "127.0.0.1", r));
-    const exited = spawnSync(process.execPath, ["-e", ""]).pid;
     writeFileSync(
       join(racing.dir, "server.json"),
-      JSON.stringify({ ...sibling, pid: exited, port: stopped.address().port }),
+      JSON.stringify({ ...sibling, pid: DEAD_PID, port: stopped.address().port }),
     );
 
     const opened = await cli([copies(1)[0]], racing.env);
@@ -921,10 +921,9 @@ test("a stop whose first look misses a just-started daemon stops it, never names
     assert.equal((await cli([fixture], racing.env)).code, 0);
     sibling = racing.serverInfo();
     await new Promise((r) => stopped.listen(0, "127.0.0.1", r));
-    const exited = spawnSync(process.execPath, ["-e", ""]).pid;
     writeFileSync(
       join(racing.dir, "server.json"),
-      JSON.stringify({ ...sibling, pid: exited, port: stopped.address().port }),
+      JSON.stringify({ ...sibling, pid: DEAD_PID, port: stopped.address().port }),
     );
 
     assert.deepEqual((await cli(["stop"], racing.env)).json(), { status: "stopped" });
@@ -1266,14 +1265,13 @@ test("an open whose daemon proves its token and then never answers says so withi
 test("a record whose process has exited blocks nothing, and a live daemon on its port is neither named nor sent its token", async () => {
   const stale = isolatedEnv();
   const live = isolatedEnv();
-  const exited = spawnSync(process.execPath, ["-e", ""]).pid;
   try {
     assert.equal((await cli([fixture], live.env)).code, 0);
     const livePort = live.serverInfo().port;
     writeFileSync(
       join(stale.dir, "server.json"),
       JSON.stringify({
-        pid: exited,
+        pid: DEAD_PID,
         port: livePort,
         token: RECORDED_TOKEN,
         version: "0.0.0-other",
