@@ -1136,6 +1136,11 @@ function placeCard(rects) {
 }
 
 window.addEventListener("message", (event) => {
+  // The wrapper's first load, judged here behind the wrapper's own word (below).
+  if (event.source === window && event.data?.type === "wrapper-loaded") {
+    if (!wrapperReady) frame.src = `${wrapperOrigin}/wrapper.html`;
+    return;
+  }
   // Only the wrapper this page framed is heard; the page under review reaches the chrome only through
   // it, never directly.
   if (event.source !== frame.contentWindow || event.origin !== wrapperOrigin) return;
@@ -1532,17 +1537,12 @@ function focusFrame() {
 // It is set from here rather than the markup, so it cannot announce itself before this script listens.
 // A first load that ends without the wrapper announcing itself was refused (an error page stands in
 // its place, and nothing else would ever replace it), so it is loaded once more; the page under
-// review gets the same one chance in `pageLoaded`. A healthy wrapper is loaded once only because its
-// own message reaches here before its frame's load event: measured on 80 of 80 tabs, unthrottled and
-// at 6x CPU throttle, and pinned by the in-suite healthy-wrapper test, but not guaranteed by the
-// platform. If that message ever came after the load, the wrapper and the page would be loaded once
-// more at most, since this listener acts once: never a loop, never a dead end.
-frame.addEventListener(
-  "load",
-  () => {
-    if (!wrapperReady) frame.src = `${wrapperOrigin}/wrapper.html`;
-  },
-  { once: true },
-);
+// review gets the same one chance in `pageLoaded`. The load is judged through this window's own
+// message queue, behind the wrapper's message already in it, since WebKit and Firefox fire a frame's
+// load event ahead of the messages it posted, and reloaded every healthy wrapper. This listener acts
+// once, so a wrapper is loaded twice at most: never a loop, never a dead end.
+frame.addEventListener("load", () => postMessage({ type: "wrapper-loaded" }, location.origin), {
+  once: true,
+});
 frame.src = `${wrapperOrigin}/wrapper.html`;
 boot();

@@ -116,8 +116,17 @@ async function open(page, url) {
   await page.waitForFunction(() => document.body?.dataset.ready === "1");
 }
 
-/** Open a file, point at an element, write a note, send, and a poll returns it. */
+/**
+ * Open a file, point at an element, write a note, send, and a poll returns it. The page and the
+ * frame it is shown in each load once: WebKit loaded both twice, and its second page replaced the
+ * frame under whatever the reviewer was doing in the first.
+ */
 async function coreAct(page, lab) {
+  const loads = { page: 0, wrapper: 0 };
+  page.on("framenavigated", (frame) => {
+    if (frame.url().includes("/artifact/")) loads.page += 1;
+    else if (frame.url().endsWith("/wrapper.html")) loads.wrapper += 1;
+  });
   const { session } = (await cli([fixture], lab.env)).json();
   await open(page, session.url);
   // Annotate starts on; the click below is the reviewer's gesture the chrome waits for.
@@ -138,6 +147,9 @@ async function coreAct(page, lab) {
     polled.prompts.map(({ prompt, selector, tag }) => ({ prompt, selector, tag })),
     [{ prompt: NOTE, selector: "#title", tag: "h1" }],
   );
+  // Read once the note made in the page has come back: the chrome heard the page's load before the
+  // note it proposed, and showing it again is decided only there, so no load is still to come.
+  assert.deepEqual(loads, { page: 1, wrapper: 1 }, "the page and its wrapper loaded once each");
 }
 
 /**
