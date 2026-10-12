@@ -12,6 +12,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - Delivery is at-least-once, by an `ack` cursor and a session `epoch` (`#answer` in `src/session-store.js`, `poll-cursor.json`).
   A tab learns of sent notes only from the event stream, so Send and End never refetch the session (`changeDrafts` and `sending` in `src/browser/chrome.js`).
 - One daemon per state directory: a start claims `daemon.<n>.lock` before it loads a session or binds (`claimDaemon` in `src/daemon-lock.js`), and `#persist` refuses a write only when the session file holds a readable session written more times than this process's copy.
+  A stopped daemon stamps `stoppedAt` in its lock and a start whose process began before that stamp steps aside, and an open waits for a start in progress with `START_WALL_MS` as its only clock (`ensureServer` in `src/client.js`).
 - The daemon never closes an idle keep-alive connection on Node's timer (`keepAliveTimeout = 0` in `src/server.js`), so the browser always closes first; only the 30 min idle-out closes one (`docs/ENGINEERING-NOTES.md`, `test/server.test.js`).
 - A review shows HTML or Markdown only (`artifactKind` in `src/markdown.js`); the daemon idles out and evicts at `limits.sessions`, never a review with a tab open (`touch` in `src/server.js`, `#evict` in `src/session-store.js`).
 - `src/browser/` is static, excluded from coverage, and tested only by `test/browser.test.js` over the CDP harness in `test/helpers/cdp.js`.

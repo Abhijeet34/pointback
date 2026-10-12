@@ -10,6 +10,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -537,6 +538,20 @@ function copies(count) {
   });
 }
 
+/** A fresh folder for the gate files of `test/helpers/gated-start.js`, outside any state directory. */
+const gates = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-gates-"));
+
+/** A `pointback server` whose stderr is kept, for a test that needs the daemon's own process. */
+function daemonProcess(env) {
+  const daemon = spawn(process.execPath, [bin, "server"], {
+    env,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let said = "";
+  daemon.stderr.on("data", (d) => (said += d));
+  return { daemon, said: () => said };
+}
+
 // An agent's parallel tool calls are the usual way two commands meet a state directory with no
 // daemon on it. Each start spawns one; on 0.1.6 every one of them bound a port and loaded the
 // sessions, and every CLI but the last to write server.json gave up after 10 s.
@@ -594,6 +609,57 @@ test("eight cold opens wait for a winning daemon that is slow to come up, while 
     assert.deepEqual([...ports], [String(slow.serverInfo().port)], "every review on one daemon");
   } finally {
     await slow.stop();
+  }
+});
+
+// On windows-2025 every process ran icacls twice on each private directory it opened, a read and a
+// grant, at 0.6 s each on average and 4.4 s at most: most of a cold start (docs/ENGINEERING-NOTES.md).
+// A start on a directory that is already private now only reads it.
+test(
+  "an open on Windows only reads the ACL of a state directory that is already private",
+  { skip: process.platform !== "win32" && "icacls is Windows only" },
+  async () => {
+    const warm = isolatedEnv();
+    const log = join(gates(), "icacls.log");
+    const env = loading(warm.env, "count-icacls.js", { TEST_ICACLS_LOG: log });
+    try {
+      assert.equal((await cli([fixture], env)).code, 0);
+      assert.deepEqual((await cli(["stop"], env)).json(), { status: "stopped" });
+      writeFileSync(log, "");
+      const opened = await cli([fixture], env);
+      assert.equal(opened.code, 0, opened.stderr);
+      const runs = readFileSync(log, "utf8").trim().split("\n");
+      console.log(`icacls runs for an open on a private directory: ${runs.join(", ")}`);
+      assert.deepEqual(
+        runs.filter((run) => run.endsWith("write")),
+        [],
+        "no ACL was written",
+      );
+      assert.equal(runs.length, 3, "the CLI read the state directory, the daemon it and sessions");
+      assertPrivate(warm.dir, 0o700);
+    } finally {
+      await warm.stop();
+    }
+  },
+);
+
+// At background QoS beside a 128-thread CPU burn on macOS, an open said "server did not start: the
+// daemon it started is still running after 10096 ms and 43 probes" with nothing in the log: the daemon
+// took 72 to 147 s there to reach its listen, and an open gave a start 10 s and 20 looks however long
+// the machine held it before its claim. Here the daemon claims no sooner than 11 s after it began.
+test("an open waits for the daemon it started for as long as that daemon is alive and coming up", async () => {
+  const held = isolatedEnv();
+  try {
+    const started = Date.now();
+    const opened = await cli(
+      [copies(1)[0]],
+      loading(held.env, "slow-start.js", { TEST_CLAIM_AT_MS: "11000" }),
+    );
+    console.log(`the open answered after ${Date.now() - started} ms`);
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.equal(new URL(opened.json().session.url).port, String(held.serverInfo().port));
+  } finally {
+    await held.stop();
   }
 });
 
@@ -786,6 +852,62 @@ test("a daemon that cannot start is reported by what it said, not by where it wr
   } finally {
     squatter.close();
     await blocked.stop();
+  }
+});
+
+// A start whose state directory was removed between its claim and its publish threw out of the start
+// with its server listening and no idle-out armed, so it never exited: six such daemons were found left
+// running by test runs on 2026-10-06. The bind is held until the directory is gone.
+test("a daemon whose state directory is removed before it publishes exits instead of listening on", async () => {
+  const lost = isolatedEnv();
+  const bindGate = join(gates(), "bind");
+  const { daemon, said } = daemonProcess(
+    loading(lost.env, "gated-start.js", { TEST_BIND_GATE: bindGate, POINTBACK_IDLE_MS: "600000" }),
+  );
+  try {
+    await until(() => existsSync(`${bindGate}.reached`), {
+      what: "the daemon to claim the directory and reach its bind",
+    });
+    rmSync(lost.dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    writeFileSync(bindGate, "");
+    await until(() => daemon.exitCode !== null, { what: "the daemon to exit" });
+    assert.equal(daemon.exitCode, 1);
+    assert.match(said(), /ENOENT/, "and it said why");
+  } finally {
+    daemon.kill();
+    await lost.stop();
+  }
+});
+
+// windows-2025, 3 of about 2160 traced rounds: a stop right after concurrent opens was followed by a
+// daemon one of those opens had spawned and that was still booting, which claimed the directory the
+// stop freed and ran on after it. Here such a start is held before any of its own code runs until the
+// stop has returned. An open after the stop still gets a daemon.
+test("a start that began before a stop steps aside after it, and an open after the stop starts one", async () => {
+  const stopping = isolatedEnv();
+  const bootGate = join(gates(), "boot");
+  const { daemon, said } = daemonProcess(
+    loading(stopping.env, "gated-start.js", { TEST_BOOT_GATE: bootGate }),
+  );
+  try {
+    assert.equal((await cli([fixture], stopping.env)).code, 0);
+    await until(() => existsSync(`${bootGate}.reached`), {
+      what: "the concurrent start to be booting",
+    });
+    assert.deepEqual((await cli(["stop"], stopping.env)).json(), { status: "stopped" });
+    writeFileSync(bootGate, "");
+    await until(() => daemon.exitCode !== null, {
+      what: "the start begun before the stop to exit",
+    });
+    assert.equal(daemon.exitCode, 0, said());
+    assert.match(said(), /stopped after this start began/);
+    assert.deepEqual((await cli(["stop"], stopping.env)).json(), { status: "not-running" });
+    const opened = await cli([fixture], stopping.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    assert.ok(pidAlive(stopping.serverInfo().pid), "the open after the stop started a daemon");
+  } finally {
+    daemon.kill();
+    await stopping.stop();
   }
 });
 
