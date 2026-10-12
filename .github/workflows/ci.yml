@@ -38,7 +38,7 @@ jobs:
     # A backstop, never the mechanism. A job that outlives this is reported
     # `cancelled`, which carries no verdict and which the `checks` aggregate can
     # only refuse; the steps below therefore end themselves first. Ten minutes
-    # against a run that takes about thirty seconds.
+    # against a run that takes three to four (175 to 239 s, 2026-10-12).
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -138,7 +138,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          # This tree has one runtime dependency and six dev ones, so there is no
+          # This tree has two runtime dependencies and seven dev ones, so there is no
           # backlog to grandfather and no reason to start above the floor.
           fail-on-severity: low
           # A dev dependency here is not "not shipped": src/browser/ is served to

@@ -41,7 +41,7 @@ Output is JSON on stdout.
 
 Environment:
   ${envPrefix}STATE_DIR        where state is kept (default: ~/${stateDirName})
-  ${envPrefix}PORT             the server's port (default: any free one)
+  ${envPrefix}PORT             the server's port (default: the last server's, or any free one)
   ${envPrefix}NO_OPEN          set to open no browser tab
   ${envPrefix}IDLE_MS          how long an idle server waits before it exits (default: ${limits.idleShutdownMs})
   ${envPrefix}POLL_REQUEST_MS  how long one request of a poll is held before the CLI asks again (default and maximum: ${limits.pollRequestMs})`;
@@ -199,9 +199,9 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   let result;
   for (;;) {
     const timeoutMs = split ? Math.min(remaining, requestMs) : remaining;
-    result = await api(server, "GET", `/api/poll?${query}&timeoutMs=${timeoutMs}`).catch(
-      refused(canonical),
-    );
+    result = await api(server, "GET", `/api/poll?${query}&timeoutMs=${timeoutMs}`, undefined, {
+      holdMs: split ? timeoutMs : 0,
+    }).catch(refused(canonical));
     remaining = deadline - Date.now();
     if (!split || result.status !== "waiting" || remaining <= 0) break;
   }

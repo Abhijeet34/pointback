@@ -15,8 +15,8 @@ updates:
       prefix: "chore"
       include: scope
     groups:
-      # One pull request through one CI run, rather than five. These actions are
-      # all first-party and move together.
+      # One pull request through one CI run, rather than five. These actions
+      # move together.
       actions:
         patterns: ["*"]
 
@@ -32,7 +32,7 @@ updates:
       prefix: "chore"
       include: scope
     groups:
-      # The runtime dependency is separated from the toolchain because the two
+      # The runtime dependencies are separated from the toolchain because the two
       # carry different risk: one ships in the tarball, the other never leaves CI.
       runtime:
         dependency-type: production

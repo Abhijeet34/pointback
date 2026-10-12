@@ -15,9 +15,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { after, test } from "node:test";
 import { pidAlive } from "../src/daemon-lock.js";
+import { tokenProof } from "../src/http-guard.js";
 import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { bin, cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
@@ -445,6 +446,62 @@ test("a file that is neither HTML nor Markdown is refused with a message and exi
   assert.equal(opened.json().session.status, "opened");
 });
 
+test("what a page's CSS loads from outside its folder is refused by name, through the sheets it links too", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-css-"));
+  const site = join(dir, "site");
+  mkdirSync(join(site, "css"), { recursive: true });
+  const page = join(site, "peers.html");
+  writeFileSync(
+    page,
+    `<!doctype html><style>
+/* url(../commented.png) names nothing */
+@font-face { font-family: Peer; src: url("/fonts/peer.woff2") format("woff2"); }
+@font-face { font-family: Kept; src: url(kept.woff2); }
+</style>
+<link rel="stylesheet" href="css/site.css">
+<h1 style="background-image: url('../banner.png')">Peers</h1>`,
+  );
+  // Two sheets that import each other: each is read once, and resolves from its own address.
+  writeFileSync(
+    join(site, "css", "site.css"),
+    `@import "../../theme.css";
+@import url(more.css);
+h1 { border-image: url(../../border.png) 30; }
+p { background: url(data:image/png;base64,AAAA); }`,
+  );
+  writeFileSync(
+    join(site, "css", "more.css"),
+    `@import "site.css";
+p { background: url(../kept.png); }
+h2 { background: URL( "../../more (2).png" ); }`,
+  );
+  const opened = await cli([page], lab.env);
+  assert.equal(opened.code, 0, opened.stderr);
+  assert.deepEqual(opened.json().refused_assets, [
+    "/fonts/peer.woff2",
+    "../banner.png",
+    "../../border.png",
+    "../../theme.css",
+    "../../more (2).png",
+  ]);
+  // A root that holds the page's folder and its parent serves all but the absolute path.
+  const rooted = await cli([page, "--root", dir], lab.env);
+  assert.equal(rooted.code, 0, rooted.stderr);
+  assert.deepEqual(rooted.json().refused_assets, ["/fonts/peer.woff2"]);
+});
+
+test("a page whose <base> does not parse opens, its loads resolved from the page as the browser does", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-base-"));
+  const page = join(dir, "page.html");
+  writeFileSync(
+    page,
+    `<!doctype html><base href="http://["><img src="../above.png"><p>bad base</p>`,
+  );
+  const opened = await cli([page], lab.env);
+  assert.equal(opened.code, 0, opened.stderr);
+  assert.deepEqual(opened.json().refused_assets, ["../above.png"]);
+});
+
 test("--root resolves relative to where the agent is, and is refused where it means nothing", async () => {
   const repo = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-cli-root-"));
   mkdirSync(join(repo, "sheets"));
@@ -640,18 +697,25 @@ test(
     const env = loading(warm.env, "count-icacls.js", { TEST_ICACLS_LOG: log });
     try {
       assert.equal((await cli([fixture], env)).code, 0);
-      assert.deepEqual((await cli(["stop"], env)).json(), { status: "stopped" });
-      writeFileSync(log, "");
-      const opened = await cli([fixture], env);
-      assert.equal(opened.code, 0, opened.stderr);
-      const runs = readFileSync(log, "utf8").trim().split("\n");
-      console.log(`icacls runs for an open on a private directory: ${runs.join(", ")}`);
-      assert.deepEqual(
-        runs.filter((run) => run.endsWith("write")),
-        [],
-        "no ACL was written",
-      );
-      assert.equal(runs.length, 3, "the CLI read the state directory, the daemon it and sessions");
+      // A trailing separator once cost the daemon a second read of the same directory.
+      for (const spelled of [warm.dir, warm.dir + sep]) {
+        assert.deepEqual((await cli(["stop"], env)).json(), { status: "stopped" });
+        writeFileSync(log, "");
+        const opened = await cli([fixture], { ...env, POINTBACK_STATE_DIR: spelled });
+        assert.equal(opened.code, 0, opened.stderr);
+        const runs = readFileSync(log, "utf8").trim().split("\n");
+        console.log(`icacls runs for an open on ${spelled}: ${runs.join(", ")}`);
+        assert.deepEqual(
+          runs.filter((run) => run.endsWith("write")),
+          [],
+          "no ACL was written",
+        );
+        assert.equal(
+          runs.length,
+          3,
+          "the CLI read the state directory, the daemon it and sessions",
+        );
+      }
       assertPrivate(warm.dir, 0o700);
     } finally {
       await warm.stop();
@@ -1097,6 +1161,37 @@ test("a recorded server that accepts the connection but never answers blocks the
   }
 });
 
+// A daemon that proves its token and then never answers held the open for Node's own 300 s, past
+// any agent's tool call, and then said only "fetch failed".
+test("an open whose daemon proves its token and then never answers says so within its bound", async () => {
+  const other = isolatedEnv();
+  const stalled = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    if (url.pathname !== "/health") return;
+    const proof = tokenProof(RECORDED_TOKEN, url.searchParams.get("challenge"));
+    res.end(JSON.stringify({ app: name, version, pid: process.pid, proof }));
+  });
+  await new Promise((r) => stalled.listen(0, "127.0.0.1", r));
+  const port = stalled.address().port;
+  await recordServer(other.dir, port);
+  try {
+    const began = performance.now();
+    // Bounded at twice the CLI's 30 s, so a CLI that waits on Node's 300 s fails here by name.
+    const opened = await cli([fixture], other.env, { timeoutMs: 60_000 });
+    console.log(`the open answered in ${Math.round(performance.now() - began)} ms`);
+    assert.equal(opened.code, 1, opened.stdout);
+    assert.equal(
+      opened.stderr,
+      `error: the ${name} daemon on port ${port} did not answer POST /api/sessions within 30 s, so it may be stalled; end the process listening on port ${port} and retry\n`,
+    );
+    assert.equal(existsSync(join(other.dir, "daemon.1.lock")), false, "no daemon was started");
+  } finally {
+    stalled.closeAllConnections();
+    stalled.close();
+    await other.stop();
+  }
+});
+
 test("a record whose process has exited blocks nothing, and a live daemon on its port is neither named nor sent its token", async () => {
   const stale = isolatedEnv();
   const live = isolatedEnv();
@@ -1254,7 +1349,10 @@ test("a reply that meets a session another process rewrote is made once more and
   await daemon(lab).note(key, "the note the reply answers");
   const [{ uid }] = (await cli(["poll", file, "--timeout-ms", "500"], lab.env)).json().prompts;
   const path = join(lab.dir, "sessions", `${key}.json`);
-  writeFileSync(`${path}.tmp`, readFileSync(path));
+  // Written once more than the daemon's copy, so the daemon refuses the first reply with a 409.
+  const newer = JSON.parse(readFileSync(path, "utf8"));
+  newer.writes += 1;
+  writeFileSync(`${path}.tmp`, JSON.stringify(newer));
   renameSync(`${path}.tmp`, path);
   const replied = await cli(["reply", file, String(uid), "--done"], lab.env);
   assert.equal(replied.code, 0, replied.stderr);

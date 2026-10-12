@@ -15,12 +15,13 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   A stopped daemon stamps `stoppedAt` in its lock and a start whose process began before that stamp steps aside, and an open waits for a start in progress with `START_WALL_MS` as its only clock (`ensureServer` in `src/client.js`).
 - The daemon never closes an idle keep-alive connection on Node's timer (`keepAliveTimeout = 0` in `src/server.js`), so the browser always closes first; only the 30 min idle-out closes one (`docs/ENGINEERING-NOTES.md`, `test/server.test.js`).
 - A frame's load is judged through the judging window's own `postMessage`, behind the frame's announcement already queued, never at the load event, which WebKit and Firefox fire first (`loaded` in `src/browser/wrapper.js`, `wrapper-loaded` in `src/browser/chrome.js`, `docs/ENGINEERING-NOTES.md`); a page and its wrapper load once per open in every engine (`coreAct` in `test/engine-smoke.js`).
+- A review's page is rendered and parsed once per content of its file (`page` in `src/session-store.js`); serve it and scan what it loads from there, never from the file again.
 - A review shows HTML or Markdown only (`artifactKind` in `src/markdown.js`); the daemon idles out and evicts at `limits.sessions`, never a review with a tab open (`touch` in `src/server.js`, `#evict` in `src/session-store.js`).
 - `src/browser/` is static, excluded from coverage, and tested only by `test/browser.test.js` over the CDP harness in `test/helpers/cdp.js`.
   Never import Playwright into `test/*.test.js`; WebKit and Firefox are `npm run smoke` only.
   The smoke gates the release pull request, so it opens a review with `open` (the chrome's `ready`), never `page.goto` (`docs/ENGINEERING-NOTES.md`).
   Drive Annotate with the CDP harness, never chrome-devtools-axi, which never moves focus into the out-of-process frame.
-  The harness's launch keeps the browser out of the system keychain (`--use-mock-keychain`, `--password-store=basic` in `startBrowser`); without them macOS asks the developer for their login password mid-suite.
+  The harness's launch keeps the browser out of the system keychain (`--use-mock-keychain`, `--password-store=basic` in `launchBrowser`); without them macOS asks the developer for their login password mid-suite.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
   The browser suite shares one daemon, which never evicts a review holding notes and refuses an open past `limits.sessions`; its `afterEach` releases what each test leaves.
 - A test that mocks `setTimeout` makes its HTTP requests with `node:http`, never `fetch`, which stalls on a reused connection under the mock on Node 24.20.0 (`docs/ENGINEERING-NOTES.md`).

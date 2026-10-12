@@ -17,6 +17,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
+import MarkdownIt from "markdown-it";
 import { limits } from "../src/limits.js";
 import { SessionStore } from "../src/session-store.js";
 import { serve } from "../src/server.js";
@@ -420,6 +421,44 @@ test("a Markdown file opens as a sandboxed page, and any other kind of file is r
       name,
     );
   }
+});
+
+test("a page is rendered once for each content its file has, however often it is opened, connected to and fetched", async (t) => {
+  // Every Markdown render goes through markdown-it's parse, so counting it counts renders.
+  const renders = [];
+  const parse = MarkdownIt.prototype.parse;
+  t.after(() => (MarkdownIt.prototype.parse = parse));
+  MarkdownIt.prototype.parse = function (source, env) {
+    renders.push(source);
+    return parse.call(this, source, env);
+  };
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-render-"));
+  const file = join(root, "report.md");
+  writeFileSync(file, "# Report\n\nDraft one.\n");
+  const { key: report } = await post("/api/sessions", { file });
+  // What a tab does: connect, which reports what the page loads, then fetch the page itself.
+  const shown = async () => {
+    const res = await fetch(base + (await get(`/api/${report}/session`)).artifactUrl);
+    return res.text();
+  };
+  const first = await shown();
+  assert.match(first, /Draft one\./);
+  for (let i = 0; i < 9; i += 1) assert.equal(await shown(), first);
+  await post("/api/sessions", { file });
+  assert.equal(
+    renders.length,
+    1,
+    "one open, ten connects and ten fetches of one content render it once",
+  );
+
+  // Each new content is rendered, including one the same size as the last.
+  writeFileSync(file, "# Report\n\nDraft two.\n");
+  assert.match(await shown(), /Draft two\./);
+  writeFileSync(file, "# Report\n\nDraft six.\n");
+  assert.match(await shown(), /Draft six\./);
+  assert.equal(await shown(), await shown());
+  assert.equal(renders.length, 3);
+  rmSync(root, { recursive: true, force: true });
 });
 
 test("prompts queue, show in the chat, and reach one poller with anchors intact", async () => {

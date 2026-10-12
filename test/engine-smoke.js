@@ -4,6 +4,7 @@
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
 // Keys pressed after a note made by mouse edit nothing in the page.
 // And an add after the tab sat idle past Node's default keep-alive close is kept.
+// And a chrome face refused while the browser is offline leaves the review on screen.
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
@@ -55,6 +56,7 @@ async function smoke(engine) {
     }
     await act(browser, (page) => focusLeavesNoteAlone(page, lab, engine));
     await act(browser, addAfterAnIdle);
+    await act(browser, (page) => faceRefusedOffline(page, lab, engine));
     return `${named} passed; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds; probe keys reaching the page per round ${probes.join(", ")}; move to unloaded ms per round ${ms.join(", ")}; the key channel reported ${control} keys of the page's own`;
   } catch (error) {
     throw Object.assign(error, { named });
@@ -117,7 +119,8 @@ async function open(page, url) {
 /**
  * Open a file, point at an element, write a note, send, and a poll returns it. The page and the
  * frame it is shown in each load once: WebKit loaded both twice, and its second page replaced the
- * frame under whatever the reviewer was doing in the first.
+ * frame under whatever the reviewer was doing in the first. Nothing logs a console error on the way:
+ * WebKit logged one on every load for a message the chrome posted before its frame listened.
  */
 async function coreAct(page, lab) {
   const loads = { page: 0, wrapper: 0 };
@@ -125,6 +128,8 @@ async function coreAct(page, lab) {
     if (frame.url().includes("/artifact/")) loads.page += 1;
     else if (frame.url().endsWith("/wrapper.html")) loads.wrapper += 1;
   });
+  const errors = [];
+  page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
   const { session } = (await cli([fixture], lab.env)).json();
   await open(page, session.url);
   // Annotate starts on; the click below is the reviewer's gesture the chrome waits for.
@@ -148,6 +153,7 @@ async function coreAct(page, lab) {
   // Read once the note made in the page has come back: the chrome heard the page's load before the
   // note it proposed, and showing it again is decided only there, so no load is still to come.
   assert.deepEqual(loads, { page: 1, wrapper: 1 }, "the page and its wrapper loaded once each");
+  assert.deepEqual(errors, [], "the review logged no console error");
 }
 
 /**
@@ -601,6 +607,43 @@ async function addAfterAnIdle(page) {
     await daemon.close();
     rmSync(lab.dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
+}
+
+/**
+ * The chrome's code face is still loading when the browser goes offline, and fails: the review stays
+ * on screen and says the browser is offline, never the browser's error page a reload would bring,
+ * and back online the chrome reloads for the face. WebKit leaves a refused face `unloaded` and fires
+ * no `loadingerror`, so there the chrome never learns of it and only the notice clears.
+ */
+async function faceRefusedOffline(page, lab, engine) {
+  const held = [];
+  await page.route("**/house/fonts/ibm-plex-mono/**", (route) =>
+    held.length === 0 ? held.push(route) : route.continue(),
+  );
+  const { session } = (await cli([fixture], lab.env)).json();
+  await open(page, session.url);
+  await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
+  await page.context().setOffline(true);
+  await held[0].abort("internetdisconnected");
+  await page.waitForFunction(() =>
+    /offline/.test(document.getElementById("noticeText").textContent),
+  );
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      path: location.pathname.split("/")[1],
+      file: document.getElementById("fileName").textContent,
+      navigation: performance.getEntriesByType("navigation")[0].type,
+    })),
+    { path: "session", file: "plan.html", navigation: "navigate" },
+  );
+  await page.context().setOffline(false);
+  await page.waitForFunction(
+    (reload) =>
+      (!reload || performance.getEntriesByType("navigation")[0]?.type === "reload") &&
+      document.body?.dataset.ready === "1" &&
+      document.getElementById("noticeText").textContent === "",
+    engine !== "webkit",
+  );
 }
 
 const requested = process.argv.slice(2);

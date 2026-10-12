@@ -56,7 +56,7 @@ pointback stop                      # stops the background server and returns on
 ```
 
 `poll` waits 60000 ms unless `--timeout-ms` says otherwise, and at most 600000.
-Every command prints JSON on stdout.
+Every command prints JSON on stdout; `--help` and `--version` print plain text.
 Opening a file prints where the review is and what to do next:
 
 ```json
@@ -72,7 +72,7 @@ Opening a file prints where the review is and what to do next:
 
 The page loads its own stylesheets, scripts and images from the review's root, which is the file's own folder unless `--root <dir>` names a wider one that holds it.
 A page that links `../components.css` and `../../exports/variables.css`, as a design system's component sheet does, renders unstyled under the default because both files sit above its folder; `--root` at the repository's top makes them reachable.
-When the page's markup loads anything from outside the root, the open output lists it under `refused_assets` and its `next_step` says to open again with `--root`, and the tab says the same to the reviewer once, above the status line.
+When the page loads anything from outside the root, named in its markup or in a CSS `url()` or `@import` in the page or in a stylesheet under the root, the open output lists it under `refused_assets` and its `next_step` says to open again with `--root`, and the tab says the same to the reviewer once, above the status line.
 The root is resolved to its real path when the review opens, so a symlinked spelling cannot stretch it, and nothing outside it is served: not by `../`, not by an encoding, not by a symlink inside it that points out.
 Every open sets the root again, so opening the file without `--root` goes back to its folder.
 The root is also everything the page under review can load, so name the narrowest folder that holds its assets.
@@ -249,7 +249,7 @@ The frame can leave the page under review too: a link followed with Annotate off
 Only the page under review announces itself to the chrome, so a page that loads without doing so is covered, where the reviewer is looking, by a notice saying the frame went to a page that is missing or is not the file, with a button back to it.
 A first load that comes back unannounced is asked for once more before that, and so is a first load of the frame the page sits in, because a load the network refused looks exactly like a page that went elsewhere.
 While a note being written holds a reload back, a refused first load of the page gets the cover at once, without the second ask.
-A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
+A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled; it also waits while the browser is offline or the tab is not connected, since the browser would refuse that reload too, and runs once both are back. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
 A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
 The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
 A note opened before the page has heard the last card close unloads the page at once, with a line saying why, and the page comes back when that note is done; that unload is not counted against the page.
@@ -301,7 +301,7 @@ Tests use `node:test`; the type check covers `bin`, `src` and `scripts`, and tes
 Coverage thresholds are enforced in `package.json`, not reported and forgotten.
 `scripts/check-deps.js` states the dependency direction of `src/` as an ordered list of layers and fails on an upward import or a cycle; `test/deps.test.js` proves it catches both.
 `test/browser.test.js` drives the slice in a real headless Chromium-family browser over the DevTools protocol using Node's built-in `WebSocket`, by mouse and by keyboard, at 800x600.
-One case runs at 390x844, where the margin becomes a band under the page: it fails if anything in the chrome scrolls sideways or if Annotate, End review, the note card, the note or Send is off screen or covered where a press would land.
+One case runs at 390x844, a phone held upright, where the bar takes two lines: it fails if anything in the chrome scrolls sideways or if Annotate, End review, the note card, the note or Send is off screen or covered where a press would land.
 The artifact runs in a sandboxed, opaque-origin iframe, which Chromium puts in a process of its own and leaves out of the page's frame tree, so the test reads its DOM through an auto-attached session and drives it with page-level input.
 A dispatched press, path and release does make a real DOM selection: the test asserts that with annotate off, before any passage assertion leans on it.
 It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROWSER=/path/to/binary`; `POINTBACK_BROWSER=none` skips it loudly.

@@ -184,7 +184,9 @@ async function boot() {
       setText(sendButton, "Not connected");
       setText(
         statusLine,
-        "Not connected. This page opens the review when your agent next runs its command.",
+        navigator.onLine
+          ? "Not connected. This page opens the review when your agent next runs its command."
+          : "Not connected. This browser is offline, and this page opens the review once it is back online.",
       );
       await pause(failures);
     }
@@ -231,7 +233,9 @@ function show() {
 function holdsReload() {
   return editing || unloaded || (tookFocus && editingNote !== null);
 }
-globalThis.recover?.hold(() => holdsReload() || editingNote !== null);
+// A reload while the review does not answer lands on the browser's error page, so it waits for the
+// connection to come back as well.
+globalThis.recover?.hold(() => holdsReload() || editingNote !== null || connection !== "live");
 
 function showPage() {
   if (holdsReload()) {
@@ -581,7 +585,6 @@ function notesChanged() {
   render();
 }
 
-/** A live region announces every write, so an unchanged status is left alone. */
 /** Says which of the page's files the review does not serve, the reason a page paints unstyled. */
 function tellOutside(outside = []) {
   const one = outside.length === 1;
@@ -593,6 +596,7 @@ function tellOutside(outside = []) {
   );
 }
 
+/** A live region announces every write, so an unchanged status is left alone. */
 function setText(element, text) {
   if (element.textContent !== text) element.textContent = text;
 }
@@ -620,6 +624,9 @@ function elapsed(since) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+// The stream can outlive the browser going offline, so the notice follows the browser's own word.
+for (const type of ["online", "offline"]) addEventListener(type, () => session && render());
+
 /** One line at the top of the margin for whatever has taken the page out of its normal state. */
 function renderNotice() {
   const [text, action] = fileGone
@@ -633,17 +640,22 @@ function renderNotice() {
               `This page can no longer reach its review. Run ${appName} on this file again for a fresh page; your notes are kept there.`,
               false,
             ]
-          : connection === "lost"
+          : !navigator.onLine
             ? [
-                `The review server stopped answering. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
+                "This browser is offline. Your notes are kept, and this page catches up once it is back online.",
                 false,
               ]
-            : !liveReload
+            : connection === "lost"
               ? [
-                  "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                  `The review server stopped answering. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
                   false,
                 ]
-              : [null, false];
+              : !liveReload
+                ? [
+                    "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                    false,
+                  ]
+                : [null, false];
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
   takeOverButton.hidden = !action;
@@ -746,7 +758,7 @@ function mark(entry, sent, n) {
   head.append(target);
   li.append(head);
   if (missingPins.has(n)) li.append(missingLine());
-  li.append(edited ? editor(entry, n) : noteText(entry));
+  li.append(edited ? editor(n) : noteText(entry));
   if (entry.reply) li.append(replyLine(entry));
   if (!sent && !edited) {
     const edit = document.createElement("button");
@@ -800,7 +812,7 @@ function missingLine() {
 }
 
 /** A queued note edited where it stands: Enter saves, Shift+Enter breaks the line, Escape keeps it. */
-function editor(entry, n) {
+function editor(n) {
   const form = document.createElement("form");
   form.className = "mark-editor";
   const box = document.createElement("textarea");
@@ -978,7 +990,10 @@ function describe(entry) {
 const locatorOf = (note) => [kindOf(note), describe(note)].filter(Boolean).join(" · ");
 
 function post(message) {
-  // To the wrapper, which hands it on to the page under review.
+  // To the wrapper, which hands it on to the page under review. Nothing goes before the page's first
+  // `ready`: the frame may still hold its first document, of this origin, which WebKit refuses with a
+  // console error, and `init` carries all of it once the page listens.
+  if (!nonce) return;
   frame.contentWindow?.postMessage({ ...message, nonce }, wrapperOrigin);
 }
 
@@ -1341,7 +1356,7 @@ const frameTextSize = () =>
 textSize.addEventListener("change", () => {
   const size = textSize.querySelector("[aria-checked=true]")?.getAttribute("data-size") ?? "m";
   document.documentElement.dataset.textSize = size;
-  if (nonce && frameTextSize()) post({ type: "text-size", size });
+  if (frameTextSize()) post({ type: "text-size", size });
   try {
     localStorage.setItem(TEXT_SIZE_KEY, size);
   } catch {
