@@ -488,10 +488,20 @@ export class SessionStore {
       // Refused because another process holds a newer copy; a throw here would end the daemon.
       if (!(error instanceof HttpError)) throw error;
       const adopted = this.#sessions.get(key);
-      if (adopted) this.#events.emit(key, { type: "reload", revision: adopted.revision });
+      if (adopted)
+        this.#events.emit(key, {
+          type: "reload",
+          revision: adopted.revision,
+          outside: this.outside(key),
+        });
       return adopted?.revision ?? 0;
     }
-    this.#events.emit(key, { type: "reload", revision: session.revision });
+    // A save can add or drop a file the page loads from outside its root, and the tab says which.
+    this.#events.emit(key, {
+      type: "reload",
+      revision: session.revision,
+      outside: this.outside(key),
+    });
     return session.revision;
   }
 

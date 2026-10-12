@@ -658,6 +658,34 @@ function componentSheet() {
 }
 
 test(
+  "a save that makes the page load a file outside its folder says so in the tab it reloads, and one that stops says nothing",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const { page } = await openReview((await cli([file], lab.env)).json().session.url);
+    const outsideLine =
+      "(() => { const line = document.getElementById('outside'); return line.checkVisibility() ? line.textContent : null; })()";
+    await page.waitFor(FOLLOWING);
+    assert.equal(await page.eval(outsideLine), null, "every file the page loads is served");
+
+    // The line is drawn from the event that reloads the page, so it is there once the save shows.
+    writeFileSync(
+      file,
+      html.replace("</head>", '<link rel="stylesheet" href="../shared.css" /></head>'),
+    );
+    await page.waitFor("document.body.dataset.revision === '1'");
+    assert.equal(
+      await page.eval(outsideLine),
+      "../shared.css is outside the folder this review serves, so the page shows without it. Your agent can open it with --root to include it.",
+    );
+    writeFileSync(file, html);
+    await page.waitFor("document.body.dataset.revision === '2'");
+    assert.equal(await page.eval(outsideLine), null, "the save that drops it takes the line away");
+    await page.close();
+  },
+);
+
+test(
   "a sheet whose styles live above its folder paints styled under --root, and only there",
   { skip: !executable && "no browser found" },
   async () => {

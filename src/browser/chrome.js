@@ -362,6 +362,7 @@ function apply(event) {
     current = false;
     letCardGo();
   } else if (event.type === "reload") {
+    tellOutside(event.outside);
     // A reload means the file is there to read, including one that came back after it was gone.
     fileGone = false;
     followAnnotate();
