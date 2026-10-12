@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { health, refusingServer, stopServer } from "../src/client.js";
+import { ensureServer, health, refusingServer, stopServer } from "../src/client.js";
 import { tokenProof } from "../src/http-guard.js";
 import { name } from "../src/identity.js";
 import { closedPort, stallNextTick, stallOnConnect } from "./helpers/stall.js";
+import { until } from "./helpers/wait.js";
 
 // A daemon that crashed leaves its record; once its pid belongs to another process, only the port
 // can tell. A start stalled past the probe's 1.5 s timeout comes back to the port's refusal and an
@@ -93,3 +95,45 @@ test(
     }
   },
 );
+
+// Every look an open takes at a start in progress can be held by starvation up to a probe's 20 s wall
+// ceiling, so an open had no bound on the whole. Here the record names a port that accepts and never
+// answers, the daemon the open starts is held before its own code runs for good, and this process gets
+// about 50 ms of every 150: the open still answers at its wall bound, 2 s here.
+test("an open answers at its whole-start wall bound though every look is held and starvation spends no running time", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-client-"));
+  const bootGate = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-gates-")), "boot");
+  const silent = createServer(() => {});
+  await new Promise((resolve) => silent.listen(0, "127.0.0.1", resolve));
+  const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+  const record = { port: silent.address().port, pid: exited, token: "d".repeat(48) };
+  writeFileSync(join(dir, "server.json"), JSON.stringify(record));
+  const environment = {
+    ...process.env,
+    POINTBACK_STATE_DIR: dir,
+    NODE_OPTIONS: `--import=${new URL("./helpers/gated-start.js", import.meta.url).href}`,
+    TEST_BOOT_GATE: bootGate,
+  };
+  const started = performance.now();
+  let answered;
+  ensureServer(dir, environment, 2_000).then(
+    () => (answered = "a server"),
+    (error) => (answered = error),
+  );
+  try {
+    for (let turn = 0; answered === undefined && turn < 200; turn += 1) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const elapsed = performance.now() - started;
+    console.log(`the open answered after ${Math.round(elapsed)} ms`);
+    assert.ok(answered instanceof Error, `the open answered with ${answered}`);
+    assert.match(answered.message, /server did not start: the daemon it started is still/);
+    assert.ok(elapsed < 5_000, `answered ${Math.round(elapsed)} ms in, past its 2 s bound`);
+  } finally {
+    silent.closeAllConnections();
+    silent.close();
+    await until(() => existsSync(`${bootGate}.reached`), { what: "the held daemon to boot" });
+    process.kill(Number(readFileSync(`${bootGate}.reached`, "utf8")));
+  }
+});

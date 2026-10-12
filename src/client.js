@@ -22,10 +22,11 @@ export function readServerInfo(stateDir) {
 /**
  * What answers on the recorded port, and whether it proved it holds the recorded token. Only a
  * proven server is ever sent the token: the port of a daemon that exited can be taken by anything.
+ * `ceiling` caps the probe's wall time.
  */
-export async function health(info) {
+export async function health(info, ceiling) {
   const challenge = randomBytes(16).toString("hex");
-  const probe = probeTimeout(1500);
+  const probe = probeTimeout(1500, ceiling);
   try {
     const res = await fetch(`http://127.0.0.1:${info.port}/health?challenge=${challenge}`, {
       signal: probe.signal,
@@ -63,8 +64,11 @@ export async function api(info, method, path, body, retried = false, signal) {
 /**
  * Returns a live server, starting one when none answers. A server of another version
  * is asked to stop first, so the CLI and the daemon never disagree about the protocol.
+ * The whole of it is bounded by `wallMs` of wall time: every look it takes is capped at what is left.
  */
-export async function ensureServer(stateDir, environment = process.env) {
+export async function ensureServer(stateDir, environment = process.env, wallMs = START_WALL_MS) {
+  const began = performance.now();
+  const left = () => Math.max(0, began + wallMs - performance.now());
   const older = ({ port, pid }) =>
     new Error(
       `an older ${name} daemon${Number.isInteger(pid) ? ` (pid ${pid})` : ""} on port ${port} did not stop; end that process and retry`,
@@ -72,18 +76,18 @@ export async function ensureServer(stateDir, environment = process.env) {
   const serves = (status) => status?.proven && status.version === version;
   const existing = readServerInfo(stateDir);
   if (existing) {
-    const status = await health(existing);
+    const status = await health(existing, left());
     if (serves(status)) return existing;
     if (status?.proven || (status?.app === name && recordHolds(existing, status)))
-      await stopServer(stateDir, existing, status);
+      await stopServer(stateDir, existing, status, Math.min(STOP_BACKSTOP_MS, left()));
   }
   // A second daemon beside one that did not stop would split the directory, so the start refuses.
   // The record is read afresh there, and a concurrent start's daemon may have published it since
   // the look above: one that proves the token and runs this version is used, never named as older.
-  const holding = await refusingServer(stateDir);
+  const holding = await refusingServer(stateDir, left());
   if (holding) {
     const info = readServerInfo(stateDir);
-    if (info && serves(await health(info))) return info;
+    if (info && serves(await health(info, left()))) return info;
     throw older(holding);
   }
   const log = openSync(join(stateDir, "server.log"), "a", 0o600);
@@ -101,10 +105,10 @@ export async function ensureServer(stateDir, environment = process.env) {
   };
   let child = start();
   // Bounded by attempts as well as by the clock. Every turn of this loop can cost a health probe its
-  // running-time budget of 1.5 s and a look at the lock's holder its CONNECT_MS, or under sustained
-  // starvation up to PROBE_CEILING_MS of wall time each, so a budget written only in milliseconds is
-  // really a budget in however many looks the machine can afford - and a busy windows-2025 runner
-  // affords few. This loop has no whole-operation wall bound under starvation yet.
+  // running-time budget of 1.5 s and a look at the lock's holder its CONNECT_MS, so a budget written
+  // only in milliseconds is really a budget in however many looks the machine can afford - and a busy
+  // windows-2025 runner affords few. Under sustained starvation each look could also take a probe's
+  // whole wall ceiling, so every look is capped at what is left of START_WALL_MS.
   // Any proven daemon will do, because concurrent starts each spawn one and only one keeps the
   // directory; the rest exit 0. A start that stepped aside for a daemon that has since let go,
   // one caught on its way out, is replaced.
@@ -112,16 +116,15 @@ export async function ensureServer(stateDir, environment = process.env) {
   // write to the lock, so a holder the lock still calls starting is waited for (measurements in
   // docs/ENGINEERING-NOTES.md). A failed start means "not coming" only once no live holder is left,
   // and a write stamped later than now, by a clock set back since, extends nothing.
-  const startedAt = Date.now();
-  let since = startedAt;
+  let since = Date.now();
   let probes = 0;
   const lapsed = () => probes >= START_PROBES && Date.now() - since >= STARTING_MS;
   for (;;) {
     probes += 1;
     const info = readServerInfo(stateDir);
-    if (info && serves(await health(info))) return info;
+    if (info && serves(await health(info, left()))) return info;
     if (child.exitCode !== null || lapsed()) {
-      const held = await daemonHolds(stateDir);
+      const held = await daemonHolds(stateDir, left());
       if (held) {
         if (held.wroteAt <= Date.now()) since = Math.max(since, held.wroteAt);
       } else if (child.exitCode === 0) {
@@ -129,10 +132,10 @@ export async function ensureServer(stateDir, environment = process.env) {
         since = Date.now();
       } else if (child.exitCode !== null) break;
     }
-    if (lapsed()) break;
+    if (lapsed() || left() === 0) break;
     await sleep(50);
   }
-  throw new Error(startFailure(stateDir, child, Date.now() - startedAt, probes));
+  throw new Error(startFailure(stateDir, child, Math.round(performance.now() - began), probes));
 }
 
 /**
@@ -170,6 +173,13 @@ export async function stopServer(stateDir, info, status, backstopMs = STOP_BACKS
 
 /** How long a daemon that answered "stopping" gets to exit before it is said not to have stopped. */
 const STOP_TIMEOUT_MS = 5_000;
+/**
+ * The wall bound on a whole start, so an open always answers within it. Sized over the slowest start
+ * measured on a CI runner, eight cold opens at once on windows-2025 in 13249 ms (138 hunt logs, docs/
+ * ENGINEERING-NOTES.md), and the worst stalled probe, 11670 ms, at over four times either, while an
+ * open's answer still fits a two-minute tool call with room for the CLI's own boot.
+ */
+const START_WALL_MS = 60_000;
 /**
  * The wall backstop on the whole stop: STOP_TIMEOUT_MS plus the worst stalled probe measured, 11670 ms
  * (windows-2025 hunt 37349003233, job 111894797244), rounded up to 20 s. A stop is given up at it even
@@ -215,10 +225,10 @@ export function recordHolds(record, status) {
  * connection and is too busy to answer, with its token or with the token retired. A server that was
  * asked to stop and did not is still there, so a start and `stop` both need to name it.
  */
-export async function refusingServer(stateDir) {
+export async function refusingServer(stateDir, ceiling) {
   const record = readJson(join(stateDir, "server.json"));
   if (!Number.isInteger(record?.port) || !recordHolds(record, null)) return null;
-  const probe = probeTimeout(1500);
+  const probe = probeTimeout(1500, ceiling);
   try {
     const challenge = randomBytes(16).toString("hex");
     const res = await fetch(`http://127.0.0.1:${record.port}/health?challenge=${challenge}`, {

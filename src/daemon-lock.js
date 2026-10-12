@@ -81,8 +81,8 @@ export function probeTimeout(ms, ceiling = PROBE_CEILING_MS) {
  * or for another pid, is not it; a daemon too busy to answer within CONNECT_MS of running time is, so
  * a timeout counts as alive.
  */
-async function isDaemon(port, pid) {
-  const probe = probeTimeout(CONNECT_MS);
+async function isDaemon(port, pid, ceiling) {
+  const probe = probeTimeout(CONNECT_MS, ceiling);
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: probe.signal });
     const status = /** @type {any} */ (await res.json());
@@ -98,7 +98,7 @@ async function isDaemon(port, pid) {
  * "live", "dead", or "gone" when the file vanished under the read and the scan must be redone, when
  * the lock was last written, wherever that could be read, and when its holder was stopped, if it was.
  */
-async function holder(stateDir, generation) {
+async function holder(stateDir, generation, ceiling) {
   let held;
   let wroteAt;
   try {
@@ -119,18 +119,20 @@ async function holder(stateDir, generation) {
   if (parsed.released || !Number.isInteger(parsed.pid) || !pidAlive(parsed.pid))
     return { state: "dead", wroteAt, stoppedAt };
   if (!Number.isInteger(parsed.port)) return starting;
-  return { state: (await isDaemon(parsed.port, parsed.pid)) ? "live" : "dead", wroteAt, stoppedAt };
+  const live = await isDaemon(parsed.port, parsed.pid, ceiling);
+  return { state: live ? "live" : "dead", wroteAt, stoppedAt };
 }
 
 /**
  * When the live daemon holding the state directory, started or still starting, last wrote its lock
  * (its claim, then its port), or null when none holds it. The time is undefined when it could not be
- * read. A holder with no port yet is live for STARTING_MS from that time, and no longer.
+ * read. A holder with no port yet is live for STARTING_MS from that time, and no longer. `ceiling`
+ * caps the wall time of the look at its port.
  */
-export async function daemonHolds(stateDir) {
+export async function daemonHolds(stateDir, ceiling) {
   const top = generations(stateDir)[0];
   if (top === undefined) return null;
-  const { state, wroteAt } = await holder(stateDir, top);
+  const { state, wroteAt } = await holder(stateDir, top, ceiling);
   return state === "live" ? { wroteAt } : null;
 }
 
