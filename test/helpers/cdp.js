@@ -331,7 +331,9 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
      * launch. Run after every test, so none of it runs on into the next one.
      */
     async release() {
+      browser.closedIds = [];
       for (const { targetId, type } of (await browser.send("Target.getTargets")).targetInfos) {
+        if (type === "page" && !launched.tabs.has(targetId)) browser.closedIds.push(targetId);
         // A tab a test closed itself can still be listed, and is gone by the time it is closed here.
         if (type === "page" && !launched.tabs.has(targetId))
           await browser.send("Target.closeTarget", { targetId }).catch((error) => {

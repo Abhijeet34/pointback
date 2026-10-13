@@ -243,6 +243,7 @@ test(
     const tabs = targetInfos
       .filter(({ type, targetId }) => type === "page" && targetId !== page.targetId)
       .map(({ url }) => new URL(url).pathname.replace(/[0-9a-f]{16}/, "<key>"));
+    console.log("PROBE tabs", JSON.stringify({ closed: page.browser.closedIds, self: page.targetId, targets: targetInfos.filter((t) => t.type === "page").map((t) => [t.targetId, t.url]) }));
     const loaded = await page
       .navigate(opened.session.url)
       .then(() => page.waitFor("document.body?.dataset.ready === '1'"))
