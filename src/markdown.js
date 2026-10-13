@@ -6,6 +6,12 @@ const KINDS = { ".html": "html", ".htm": "html", ".md": "markdown", ".markdown":
 /** What a review can show: an HTML page, Markdown rendered into one, or null for anything else. */
 export const artifactKind = (file) => KINDS[extname(file).toLowerCase()] ?? null;
 
+/** Why a review cannot show this file, or null when it can: one wording for open, poll, end and reply. */
+export const unreviewable = (file) =>
+  artifactKind(file)
+    ? null
+    : `${basename(file)} cannot be reviewed: open an HTML (.html, .htm) or Markdown (.md, .markdown) file`;
+
 // Raw HTML stays on: the rendered page runs in the same opaque-origin sandbox as any HTML artifact.
 const md = new MarkdownIt({ html: true });
 const LINES = "data-source-lines";
