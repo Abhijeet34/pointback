@@ -226,11 +226,7 @@ function removeProfile(profile) {
   }
 }
 
-/** `commandMs` is how long a DevTools command may go unanswered; only a test of that wait shortens it. */
-export async function launchBrowser(
-  executable,
-  { width = 1200, height = 800, commandMs = COMMAND_MS } = {},
-) {
+export async function launchBrowser(executable, { width = 1200, height = 800 } = {}) {
   const deadline = Date.now() + LAUNCH_MS;
   const folder = installFolder(executable);
   if (folder) await readInstall(executable, folder, deadline);
@@ -300,9 +296,7 @@ export async function launchBrowser(
   /** What the launch itself left open, which `release` keeps. */
   let launched;
   try {
-    browser = await connect(await devToolsUrl(child, executable, profile, deadline), deadline, {
-      commandMs,
-    });
+    browser = await connect(await devToolsUrl(child, executable, profile, deadline), deadline);
     // Every renderer that crashes, with the address it held, for `describe` to name.
     const urls = new Map();
     browser.crashes = [];
@@ -390,12 +384,14 @@ export async function launchBrowser(
  * The DevTools connection, on what is left of the launch's deadline: a browser that has written its
  * port can still be paging itself in off a cold disk before it answers.
  *
- * A command left unanswered for `commandMs` is followed by one Browser.getVersion, which tells the two
- * stalls apart. A page whose script is busy, or whose awaited promise never settles, leaves the browser
- * answering; a browser that stopped answering everything (once, locally, at 52e25a1: every test after
- * the first waited its own 30 s on Target.createTarget) fails every later command at once with that name.
+ * A command left unanswered for its `ms` (COMMAND_MS unless a test of that wait shortens it for one
+ * command) is followed by one Browser.getVersion, which tells the two stalls apart. A page whose script
+ * is busy, or whose awaited promise never settles, leaves the browser answering; a browser that stopped
+ * answering everything (once, locally, at 52e25a1: every test after the first waited its own 30 s on
+ * Target.createTarget) fails every later command at once with that name. A command whose own reply
+ * comes while that probe is out was slow, not stalled, and its reply is returned.
  */
-export function connect(url, deadline, { commandMs = COMMAND_MS } = {}) {
+export function connect(url, deadline) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url);
     const pending = new Map();
@@ -413,63 +409,66 @@ export function connect(url, deadline, { commandMs = COMMAND_MS } = {}) {
       );
       socket.close();
     }, left);
-    const exchange = (method, params, sessionId, ms) => {
+    const exchange = (method, params, sessionId) => {
       const id = nextId++;
       socket.send(JSON.stringify({ id, method, params, sessionId }));
-      return new Promise((res, rej) => {
-        // Unref'd: while the socket is open it holds the loop and this still fires, and
-        // once the socket is gone there is no caller left for it to keep waiting for.
-        const deadline = setTimeout(() => {
-          pending.delete(id);
-          rej(
-            Object.assign(new Error(`the browser sent no reply to ${method} within ${ms} ms`), {
-              unanswered: true,
-            }),
-          );
-        }, ms).unref();
-        const done = (fn) => (value) => {
-          clearTimeout(deadline);
-          fn(value);
-        };
-        pending.set(id, { res: done(res), rej: done(rej) });
-      });
+      return { id, reply: new Promise((res, rej) => pending.set(id, { res, rej })) };
+    };
+    const late = Symbol("late");
+    /** The reply, or `late` once `ms` pass without one. */
+    const within = (reply, ms) => {
+      let timer;
+      // Unref'd: while the socket is open it holds the loop and this still fires, and
+      // once the socket is gone there is no caller left for it to keep waiting for.
+      const waited = new Promise((res) => (timer = setTimeout(res, ms, late).unref()));
+      return Promise.race([reply, waited]).finally(() => clearTimeout(timer));
     };
     // Shared, so the commands that time out together cost one probe between them.
     const answers = () =>
-      (probing ??= exchange("Browser.getVersion", {}, undefined, PROBE_MS)
-        .then(
-          () => true,
-          () => false,
-        )
-        .finally(() => (probing = null)));
+      (probing ??= (async () => {
+        const { id, reply } = exchange("Browser.getVersion", {});
+        // An error reply is an answer too: the browser read the probe and replied.
+        const answer = await within(
+          reply.catch(() => true),
+          PROBE_MS,
+        );
+        if (answer !== late) return true;
+        pending.delete(id);
+        return false;
+      })().finally(() => (probing = null)));
     socket.addEventListener("open", () => {
       clearTimeout(timer);
       resolve({
         socket,
         listeners,
-        async send(method, params = {}, sessionId) {
+        async send(method, params = {}, sessionId, ms = COMMAND_MS) {
           if (stopped) throw stopped;
-          try {
-            return await exchange(method, params, sessionId, commandMs);
-          } catch (error) {
-            if (!error.unanswered) throw error;
-            if (stopped) throw stopped;
-            if (await answers()) {
-              throw new Error(
-                `${error.message}, yet it answered Browser.getVersion at once: what stalled is ` +
-                  `${sessionId ? "the page it was sent to, its script busy or an awaited promise never settled" : "this one command"}, not the browser`,
-                { cause: error },
-              );
-            }
-            stopped ??= new Error(
-              `the browser stopped answering DevTools: no reply to ${method} within ${commandMs} ms, ` +
-                `nor to Browser.getVersion within ${PROBE_MS} ms after it, so every later command fails with this`,
-              { cause: error },
+          const { id, reply } = exchange(method, params, sessionId);
+          const early = await within(reply, ms);
+          if (early !== late) return early;
+          // The browser answers its own commands in the order it read them, so a slow one's reply
+          // beats the probe's (docs/ENGINEERING-NOTES.md, hunt 38291498209).
+          const first = await Promise.race([
+            reply.then((value) => ({ value })),
+            answers().then((alive) => ({ alive })),
+          ]);
+          if ("value" in first) return first.value;
+          pending.delete(id);
+          if (stopped) throw stopped;
+          const unanswered = `the browser sent no reply to ${method} within ${ms} ms`;
+          if (first.alive) {
+            throw new Error(
+              `${unanswered}, yet it answered Browser.getVersion at once: what stalled is ` +
+                `${sessionId ? "the page it was sent to, its script busy or an awaited promise never settled" : "this one command"}, not the browser`,
             );
-            for (const waiter of pending.values()) waiter.rej(stopped);
-            pending.clear();
-            throw stopped;
           }
+          stopped ??= new Error(
+            `the browser stopped answering DevTools: no reply to ${method} within ${ms} ms, ` +
+              `nor to Browser.getVersion within ${PROBE_MS} ms after it, so every later command fails with this`,
+          );
+          for (const waiter of pending.values()) waiter.rej(stopped);
+          pending.clear();
+          throw stopped;
         },
       });
     });
@@ -531,8 +530,9 @@ class Page {
     this.browser.listeners.push(listener);
   }
 
-  send(method, params) {
-    return this.browser.send(method, params, this.sessionId);
+  /** `ms` shortens the wait for this one command's reply, for a test of that wait. */
+  send(method, params, ms) {
+    return this.browser.send(method, params, this.sessionId, ms);
   }
 
   /**

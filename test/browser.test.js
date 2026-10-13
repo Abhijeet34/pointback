@@ -448,15 +448,17 @@ test(
 
 // A command goes unanswered either because the page it went to never settles or because the browser
 // stopped, and the two need different fixes, so the failure says which. Each case launches a browser of
-// its own with a short command wait, so the shared one is never stalled and the case takes seconds.
+// its own, so the shared one is never stalled, and shortens the wait for only the command it stalls:
+// on macos-15 a 1000 ms wait on the whole launch failed it (hunt 38291498209).
 test(
   "a page that never answers is named as the stall, and the browser goes on answering",
   { skip: !executable && "no browser found", timeout: LAUNCH_BOUND_MS + MARGIN_MS },
   async () => {
-    const own = await launchBrowser(executable, { commandMs: 1000 });
+    const own = await launchBrowser(executable);
     try {
       const page = await own.page("about:blank");
-      await assert.rejects(page.eval("new Promise(() => {})"), {
+      const never = { expression: "new Promise(() => {})", awaitPromise: true };
+      await assert.rejects(page.send("Runtime.evaluate", never, 1000), {
         message:
           "the browser sent no reply to Runtime.evaluate within 1000 ms, yet it answered " +
           "Browser.getVersion at once: what stalled is the page it was sent to, its script busy " +
@@ -478,11 +480,11 @@ test(
     timeout: LAUNCH_BOUND_MS + MARGIN_MS,
   },
   async () => {
-    const own = await launchBrowser(executable, { commandMs: 1000 });
+    const own = await launchBrowser(executable);
     try {
       const page = await own.page("about:blank");
       process.kill(own.pid, "SIGSTOP");
-      const stopped = await page.eval("1").then(
+      const stopped = await page.send("Runtime.evaluate", { expression: "1" }, 1000).then(
         () => assert.fail("a stopped browser answered"),
         (error) => error.message,
       );
@@ -492,6 +494,32 @@ test(
           "nor to Browser.getVersion within 5000 ms after it, so every later command fails with this",
       );
       await assert.rejects(own.page("about:blank"), { message: stopped });
+    } finally {
+      process.kill(own.pid, "SIGCONT");
+      await own.close();
+    }
+  },
+);
+
+// A reply that comes past its wait but ahead of the probe the wait set off was slow, not stalled. The
+// browser is stopped so the command cannot be answered within its 1 ms, and resumed once that has passed.
+test(
+  "a command answered past its wait but ahead of the probe is returned, never named a stall",
+  {
+    skip: (!executable && "no browser found") || (process.platform === "win32" && "no SIGSTOP"),
+    timeout: LAUNCH_BOUND_MS + MARGIN_MS,
+  },
+  async () => {
+    const own = await launchBrowser(executable);
+    try {
+      const page = await own.page("about:blank");
+      process.kill(own.pid, "SIGSTOP");
+      const slow = page.browser.send("Target.getTargets", {}, undefined, 1);
+      // Set after the command's own 1 ms timer, so it fires after that one has.
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      process.kill(own.pid, "SIGCONT");
+      const { targetInfos } = await slow;
+      assert.ok(targetInfos.some(({ targetId }) => targetId === page.targetId));
     } finally {
       process.kill(own.pid, "SIGCONT");
       await own.close();
