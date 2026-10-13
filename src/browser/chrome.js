@@ -178,13 +178,7 @@ async function boot() {
       // idle-out and the agent's next command, or one connect Windows refused
       // (docs/ENGINEERING-NOTES.md); the review is still there, so the page waits for it, and the
       // bar and Send say it is not connected rather than offering what cannot work yet.
-      if (error.answered) {
-        connection = "gone";
-        renderPresence();
-        statusLine.textContent =
-          "This link no longer works. Run the command on the file again to get a fresh one.";
-        return;
-      }
+      if (error.answered) return spent();
       connection = "lost";
       renderPresence();
       setText(sendButton, "Not connected");
@@ -202,7 +196,6 @@ async function boot() {
   document.title = `${session.fileName} · ${app.app}`;
   document.getElementById("fileName").textContent = session.fileName;
   sync(session);
-  tellOutside(session.outside);
   render();
   listen();
   startHeartbeat(typeof app.idleMs === "number" ? app.idleMs : 1_800_000);
@@ -211,8 +204,10 @@ async function boot() {
 /** Adopts the state the server just described, reloading the page under review if it moved on. */
 function sync(state) {
   revision = state.revision;
-  // A later open with another --root moves the page's own address, so a tab promoted back follows it.
+  // A later open with another --root moves the page's own address, so a tab promoted back follows it,
+  // and changes which of the page's files the review serves.
   session.artifactUrl = state.artifactUrl;
+  tellOutside(state.outside);
   presence = state.presence;
   ended = state.ended;
   // The sent notes come with every hello, so a reply that landed while this page was away shows.
@@ -280,6 +275,9 @@ async function listen() {
       code = await follow(() => {
         failures = 0;
         connection = "live";
+        // Any stream that opens takes the review over, so a Take over pressed while none was open,
+        // with nothing to close, is done here, not left to swallow the next ordinary close.
+        retaking = false;
         // Published for the same reason as ready: `connection` reads live from the health check on,
         // before the stream opens, and a stream connect Windows refuses is lost for a pause then
         // retried, so only this says the page is following its review (docs/ENGINEERING-NOTES.md).
@@ -307,11 +305,21 @@ async function listen() {
     render();
     await pause(failures);
   }
+  spent();
+}
+
+/** This page's link is spent: nothing can be added or sent from it again, and it says so once. */
+function spent() {
   connection = "gone";
+  followAnnotate();
   render();
 }
 
-/** Follows the event stream until it closes, and answers with the code it closed with. */
+/**
+ * Follows the event stream until it closes, and answers with the code it closed with. The page is
+ * following once the hello the server sends first is applied, not when the stream opens: until then
+ * what it last heard of the review, the agent's presence among it, predates the reconnect.
+ */
 function follow(opened) {
   return new Promise((resolve) => {
     // The token rides as an offered subprotocol, since a WebSocket can carry no header.
@@ -319,8 +327,11 @@ function follow(opened) {
       "events",
       `bearer.${token}`,
     ]);
-    stream.addEventListener("open", opened);
-    stream.addEventListener("message", (event) => apply(JSON.parse(event.data)));
+    stream.addEventListener("message", (event) => {
+      const data = JSON.parse(event.data);
+      apply(data);
+      if (data.type === "hello") opened();
+    });
     stream.addEventListener("close", (event) => resolve(event.code));
   });
 }
@@ -450,11 +461,12 @@ function render() {
             ? "Review ended"
             : "Send to agent"
           : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
-  annotateSwitch.disabled = ended !== null || fileGone;
+  annotateSwitch.disabled = ended !== null || fileGone || connection === "gone";
   // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
   cardAdd.disabled = offline;
   renderReason();
-  endButton.disabled = ended !== null || fileGone;
+  // Ending is a call to the review, so it waits for the connection as Send does.
+  endButton.disabled = ended !== null || fileGone || offline;
   // A failure the reviewer needs to see outlives the render that would otherwise write over it.
   setText(
     statusLine,
@@ -992,9 +1004,9 @@ function setAnnotate(on) {
   render();
 }
 
-/** Puts Annotate where the reviewer left it, unless a gone file or an ended review rules it out. */
+/** Puts Annotate where the reviewer left it, unless a gone file, an ended review or a spent link rules it out. */
 function followAnnotate() {
-  const on = wantAnnotate && !fileGone && ended === null;
+  const on = wantAnnotate && !fileGone && ended === null && connection !== "gone";
   if (on === annotate) return;
   if (!on) letCardGo();
   setAnnotate(on);
@@ -1033,9 +1045,13 @@ const gesture = (active) =>
 let composing = null;
 // Set when a forced close kept the card open, so the card can say why it is still there.
 let held = false;
+// The element a note made by keyboard was on, when closing it reloads the page: the page loaded in its
+// place has no target to give the focus back to, so it is named in that page's `init`.
+let refocusOnShow = null;
 
 function openCompose(note, label, outline, rects, from) {
   composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
+  refocusOnShow = null;
   if (!from) endWait();
   // A refusal belongs only to the words it refused; a fresh card gets a clean reason line.
   cardProblem = null;
@@ -1062,6 +1078,9 @@ function closeCompose(refocus) {
   if (card.hidden) return;
   card.hidden = true;
   const from = composing?.from;
+  // The same reloads `renderCover` and the line below make.
+  if (refocus && !from && composing?.keyboard && !fileGone && (unloaded || deferredReload))
+    refocusOnShow = composing.note.selector;
   composing = null;
   held = false;
   editing = false;
@@ -1165,17 +1184,22 @@ window.addEventListener("message", (event) => {
   const { active, message: data } = event.data;
   if (data?.type === "ready") {
     nonce = crypto.randomUUID();
+    // Only to a reviewer still on the frame: one who moved on keeps the focus where they went.
+    const refocus = document.activeElement === frame ? refocusOnShow : null;
+    refocusOnShow = null;
     post({
       type: "init",
       annotate,
       scroll: lastScroll,
       pins: pinData(),
       textSize: frameTextSize(),
+      ...(refocus && { refocus }),
     });
     document.body.dataset.ready = "1";
     announced = true;
-    // A page loaded since the card closed has no focus of its own to bring back.
-    endWait();
+    // A page loaded since the card closed has no focus of its own to bring back, unless it was given
+    // one, which it answers as closed.
+    if (!refocus) endWait();
     if (strayed) {
       // Back is about to be hidden under the reviewer, so the focus goes where Back led.
       const onBack = document.activeElement === backButton;
@@ -1208,6 +1232,7 @@ window.addEventListener("message", (event) => {
     const { selector, lines, tag, text, target } = data.note;
     const note = { selector, lines, tag, text, target };
     openCompose(note, locatorOf(note), data.structure, data.rects);
+    composing.keyboard = data.keyboard === true;
   } else if (data.type === "key") {
     // The review's keys pressed in the page. Like a target, a key is heard only under the
     // reviewer's own press in the frame; the controls it reaches are the ones the bar offers.

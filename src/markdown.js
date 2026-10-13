@@ -74,11 +74,11 @@ export function renderMarkdown(source, file) {
   }
   const title = md.utils.escapeHtml(basename(file));
   return `<!doctype html>
-<html data-theme="dark">
+<html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="light dark">
 <title>${title}</title>
 ${MARKDOWN_STYLES.map((href) => `<link rel="stylesheet" href="${href}">`).join("\n")}
 </head>
