@@ -547,7 +547,7 @@ echo "$m $p $f" >> "$GH_CALLS"
   assert.equal(review.parameters.require_extra_approval_for_unattributed_changes, true);
 });
 
-test("publishing is off unless a repository variable says otherwise", () => {
+test("publishing runs only while a repository variable says so", () => {
   assert.match(workflows["release.yml"], /vars\.NPM_PUBLISH_ENABLED == 'true'/);
   // Trusted publishing generates provenance on its own; the explicit flag only
   // adds a way for the publish to fail. Asked of the command, not the file,
