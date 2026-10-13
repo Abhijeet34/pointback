@@ -123,7 +123,7 @@
       // This page replaced one unloaded for a note made by keyboard, so the element the note was on
       // gets the focus back here, as `closeTarget` gives it, and the chrome is told it is done.
       if (typeof data.refocus === "string") {
-        if (annotate) document.querySelector(data.refocus)?.focus({ preventScroll: true });
+        if (annotate) query(data.refocus)?.focus({ preventScroll: true });
         send({ type: "closed" });
       }
       setTextSize(data.textSize);

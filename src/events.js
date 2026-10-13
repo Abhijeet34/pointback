@@ -65,6 +65,8 @@ export class EventStreams {
     } catch {
       // The file's directory is gone too, so there is nothing to watch; the tab's hello says `gone`.
     }
+    // Only now, with the watch on, so a save is either numbered here or seen by the watch.
+    this.#store.catchUp(key);
     const group = {
       streams: [],
       stop: () => {

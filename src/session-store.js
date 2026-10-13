@@ -24,6 +24,7 @@ import {
   readPollCursor,
   writeJsonAtomic,
 } from "./state-dir.js";
+import { signature } from "./watch.js";
 
 /**
  * Sessions live in a Map keyed by the path hash, so a key can only ever find a session
@@ -71,6 +72,8 @@ export class SessionStore {
   #seen = new Map();
   /** Each session's page as `page` last made it; weak, so an evicted session takes its page along. */
   #pages = new WeakMap();
+  /** Each session's file as its revision last numbered it, so a save no watcher saw is still one. */
+  #numbered = new WeakMap();
 
   /**
    * `stateDir` holds one file per session under `sessions/`, so a mutation rewrites only the session
@@ -115,6 +118,7 @@ export class SessionStore {
       upgraded = true;
     }
     this.#sessions.set(key, session);
+    this.#numbered.set(session, signature(session.file));
     if (upgraded) this.#persist(session);
     return true;
   }
@@ -213,6 +217,7 @@ export class SessionStore {
         lastActive: now,
       };
       this.#sessions.set(key, session);
+      this.#numbered.set(session, signature(canonical));
     } else {
       session.lastActive = now;
       session.root = assets;
@@ -493,6 +498,7 @@ export class SessionStore {
     // to renumber, so tolerate the gap rather than throwing inside the fs.watch callback.
     const session = this.#sessions.get(key);
     if (!session) return 0;
+    this.#numbered.set(session, signature(session.file));
     if (!existsSync(session.file)) {
       this.#gone(session);
       return session.revision;
@@ -509,6 +515,15 @@ export class SessionStore {
     }
     this.#events.emit(key, { type: "reload", revision: session.revision });
     return session.revision;
+  }
+
+  /**
+   * Numbers a change the file took while nothing watched it: a save between one tab's stream closing
+   * and the next opening, as across a reload, is otherwise the new watch's baseline and never shown.
+   */
+  catchUp(key) {
+    const session = this.#sessions.get(key);
+    if (session && signature(session.file) !== this.#numbered.get(session)) this.fileChanged(key);
   }
 
   /**
