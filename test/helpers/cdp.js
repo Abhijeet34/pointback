@@ -331,13 +331,21 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
      * launch. Run after every test, so none of it runs on into the next one.
      */
     async release() {
-      for (const { targetId, type } of (await browser.send("Target.getTargets")).targetInfos) {
+      const left = async () =>
+        (await browser.send("Target.getTargets")).targetInfos.filter(
+          ({ targetId, type }) => type === "page" && !launched.tabs.has(targetId),
+        );
+      for (const { targetId } of await left()) {
         // A tab a test closed itself can still be listed, and is gone by the time it is closed here.
-        if (type === "page" && !launched.tabs.has(targetId))
-          await browser.send("Target.closeTarget", { targetId }).catch((error) => {
-            if (!/No target with given id/.test(error.message)) throw error;
-          });
+        await browser.send("Target.closeTarget", { targetId }).catch((error) => {
+          if (!/No target with given id/.test(error.message)) throw error;
+        });
       }
+      // Target.closeTarget answers before its tab is gone: the next test listed one still closing in
+      // 5 of 20 windows-2025 jobs of hunt 38369282851.
+      await until(async () => (await left()).length === 0, {
+        what: "the tabs a test left to close",
+      });
       await browser.send("Fetch.disable");
       browser.listeners.length = launched.listeners;
     },
