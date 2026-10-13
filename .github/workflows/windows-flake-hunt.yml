@@ -72,7 +72,7 @@ jobs:
         timeout-minutes: 12
         run: |
           set -euo pipefail
-          bash probe.sh 2>&1 | tee "$RUNNER_TEMP/check.log"
+          npm run check 2>&1 | tee "$RUNNER_TEMP/check.log"
 
       # The same steps as the engines job in cross-platform.yml.
       - name: Install ${{ inputs.engine }}
