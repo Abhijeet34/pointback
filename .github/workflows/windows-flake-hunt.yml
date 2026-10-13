@@ -27,7 +27,7 @@ jobs:
   hunt:
     name: attempt ${{ matrix.attempt }}
     runs-on: ${{ inputs.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       # Twenty independent verdicts: one red attempt must not cancel the other nineteen,
       # which are the measurement.
@@ -69,12 +69,12 @@ jobs:
 
       - name: check
         if: inputs.engine == ''
-        timeout-minutes: 12
+        timeout-minutes: 40
         run: |
           set -euo pipefail
-          # PROBE (evidence branch only): the browser suite alone, twice.
+          # PROBE (evidence branch only): the whole check, twice, as the failures ran.
           status=0
-          for i in 1 2; do node --test --test-force-exit --test-timeout=60000 test/browser.test.js 2>&1 | tee -a "$RUNNER_TEMP/check.log" || status=1; done
+          for i in 1 2; do npm test 2>&1 | tee -a "$RUNNER_TEMP/check.log" || status=1; done
           exit $status
 
       # The same steps as the engines job in cross-platform.yml.

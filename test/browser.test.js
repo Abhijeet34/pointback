@@ -8188,6 +8188,41 @@ async function noteOnInstall(page, artifact, text) {
       return { sy: scrollY, ih: innerHeight, ch: document.documentElement.clientHeight, p: [r.top, r.bottom], pre: [pre.top, pre.bottom],
         hit: hit && hit.tagName + ':' + hit.textContent.slice(0, 30), sel: getSelection().isCollapsed, fonts: document.fonts.status };
     })())`);
+  // Every scroll the page makes, who made it, and every message it hears, from here on.
+  await artifact.eval(`(() => {
+    const t0 = performance.now();
+    const log = (globalThis.probeLog = []);
+    const at = () => Math.round(performance.now() - t0);
+    const where = () => new Error().stack.split("\\n").slice(2, 5).map((l) => l.trim()).join(" < ");
+    for (const name of ["scrollTo", "scrollBy", "scroll"]) {
+      const original = window[name];
+      window[name] = function (...args) {
+        log.push([at(), name, JSON.stringify(args), scrollY, where()]);
+        return original.apply(this, args);
+      };
+    }
+    for (const [proto, name] of [[Element.prototype, "scrollIntoView"], [HTMLElement.prototype, "focus"]]) {
+      const original = proto[name];
+      proto[name] = function (...args) {
+        log.push([at(), name, this.tagName, JSON.stringify(args), scrollY, where()]);
+        return original.apply(this, args);
+      };
+    }
+    let last = scrollY;
+    addEventListener("scroll", () => { if (scrollY !== last) log.push([at(), "scrolled", last, scrollY]); last = scrollY; }, true);
+    addEventListener("message", (e) => log.push([at(), "message", e.data?.type, scrollY]), true);
+    new ResizeObserver(() => log.push([at(), "resized", innerWidth, innerHeight, document.documentElement.scrollHeight])).observe(document.documentElement);
+  })()`);
+  await page.eval(`(() => {
+    const t0 = performance.now();
+    const log = (globalThis.probeLog = []);
+    new ResizeObserver(() => {
+      const r = document.getElementById("artifact").getBoundingClientRect();
+      log.push([Math.round(performance.now() - t0), "frame", r.top, r.height, document.querySelector(".bar").offsetHeight]);
+    }).observe(document.getElementById("artifact"));
+  })()`);
+  const logs = async () =>
+    `page ${await artifact.eval("JSON.stringify(globalThis.probeLog)")} chrome ${await page.eval("JSON.stringify(globalThis.probeLog)")}`;
   console.log("PROBE before", await chromeBoxes(), await pageState());
   const frameBox = JSON.parse(await page.eval(FRAME_BOX));
   const box = JSON.parse(
@@ -8211,6 +8246,7 @@ async function noteOnInstall(page, artifact, text) {
     JSON.stringify(nowFrame),
     await chromeBoxes(),
     await pageState({ x: point.x - nowFrame.left, y: point.y - nowFrame.top }),
+    await logs(),
   );
   await page.click(point.x, point.y);
   await page.waitFor(
@@ -8231,6 +8267,7 @@ async function noteOnInstall(page, artifact, text) {
       "[...document.querySelectorAll('.mark-tag')].map((e) => e.textContent).join('|')",
     ),
     await pageState(),
+    await logs(),
   );
   return selector;
 }
