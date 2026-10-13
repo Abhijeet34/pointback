@@ -811,7 +811,7 @@
   // is tall, the pin moves beside the line's end, before its start, under its end, to the right of
   // the block, then onto the top right corner of the target's own box; failing all of those, to
   // whichever covers least. A spot nearer another control's box than its own target's would read
-  // as a note on that control, so it is taken only when no other spot is left.
+  // as a note on that control, so it is taken only when every other spot covers something.
   // A table cell has no room above its words, so its pin stays inside the cell, off the rows around it.
   // Every note on one target is placed as one block, `size` across and down, so a second pin stands
   // beside the first and a row too long for the frame goes on under itself (`layRow`).
@@ -836,11 +836,11 @@
   const distance = (x, y, r) =>
     Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
 
-  // Whether a block at `spot` stands nearer the box of a control, picture, code block or table other
-  // than its target than the target's own boxes.
-  const strays = (spot, { width, height }, avoid, element, own) => {
-    const x = spot.left + width / 2;
-    const y = spot.top + height / 2;
+  // Whether a row at `spot` reads as on something else: its first pin stands nearer the box of a
+  // control, picture, code block or table other than its target than the target's own boxes.
+  const strays = (spot, { width }, avoid, element, own) => {
+    const x = spot.left + Math.min(width, PIN) / 2;
+    const y = spot.top + PIN / 2;
     const near = Math.min(...own.map((r) => distance(x, y, r)));
     return avoid.some(
       ({ rect, owner }) =>
@@ -849,6 +849,12 @@
         distance(x, y, rect) < near,
     );
   };
+
+  // What straying adds to a spot's cost: less than covering any word does, an overlap counting from
+  // 0.25 px², so a pin never covers words to keep near its target, and more than a clean spot.
+  const STRAY = 0.1;
+  const costAt = (spot, size, avoid, element, own) =>
+    overlapArea(spot, size, avoid, element) + (strays(spot, size, avoid, element, own) ? STRAY : 0);
 
   function pinSpot(anchor, avoid, bounds, size) {
     const { width, height } = size;
@@ -877,7 +883,6 @@
       return {
         left: Math.max(box.left, Math.min(right + HALO, box.right - width)),
         top: Math.max(box.top, Math.min(lineTop - height, box.bottom - height)),
-        astray: false,
         own: rects,
       };
     }
@@ -904,11 +909,9 @@
     }));
     let best = null;
     for (const spot of candidates) {
-      const area = overlapArea(spot, size, avoid, element);
-      const astray = strays(spot, size, avoid, element, rects);
-      if (area === 0 && !astray) return { ...spot, astray, own: rects };
-      if (!best || astray < best.astray || (astray === best.astray && area < best.area))
-        best = { ...spot, area, astray, own: rects };
+      const cost = costAt(spot, size, avoid, element, rects);
+      if (cost === 0) return { ...spot, own: rects };
+      if (!best || cost < best.cost) best = { ...spot, cost, own: rects };
     }
     return best;
   }
@@ -1019,15 +1022,18 @@
       // no room left beside it in the frame starts again under it, at its own natural column.
       const right = bounds.right - origin.left - width;
       const element = elementFor(anchor);
-      const areaAt = (cx, cy) => {
-        const at = { left: cx + origin.left, top: cy + origin.top };
-        return placed.some(
+      const areaAt = (cx, cy) =>
+        placed.some(
           (p) => p.x - width < cx && cx < p.x + p.width && p.y - height < cy && cy < p.y + p.height,
-        ) ||
-          (!spot.astray && strays(at, size, avoid, element, spot.own))
+        )
           ? Infinity
-          : overlapArea(at, size, avoid, element);
-      };
+          : costAt(
+              { left: cx + origin.left, top: cy + origin.top },
+              size,
+              avoid,
+              element,
+              spot.own,
+            );
       let bestX = x;
       let bestY = y;
       let bestArea = areaAt(x, y);
