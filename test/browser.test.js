@@ -6857,6 +6857,163 @@ test(
   },
 );
 
+/** A private copy of the form fixture: four fields to a row, each with its label and hint or error. */
+function copyOfForm() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-form-"));
+  const file = join(dir, "form.html");
+  copyFileSync(join(dirname(fixture), "form.html"), file);
+  return file;
+}
+
+/** Every control's box in the page's viewport, by its id. */
+const CONTROL_BOXES = `JSON.stringify([...document.querySelectorAll("input, textarea, select, button")].map((c) => {
+  const r = c.getBoundingClientRect();
+  return { id: c.id, left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+}))`;
+
+const distanceTo = (x, y, r) =>
+  Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+
+test(
+  "a field's pin stands nearer its own field than any other control, on no word, at every width",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const strays = {};
+    const fields = ["#say", "#print", "#type", "#agent"];
+    for (const width of [390, 800, 1440, 2560]) {
+      const file = copyOfForm();
+      const url = (await cli([file], lab.env)).json().session.url;
+      const { page, artifact } = await openReview(url, { width, height: 900 });
+      const pins = await pinsOnEach(page, artifact, fields);
+      const controls = JSON.parse(await artifact.eval(CONTROL_BOXES));
+      strays[width] = [
+        ...pins.flatMap((pin, i) => {
+          const x = (pin.left + pin.right) / 2;
+          const y = (pin.top + pin.bottom) / 2;
+          const own = controls.find((c) => `#${c.id}` === fields[i]);
+          const mine = distanceTo(x, y, own);
+          return controls
+            .filter((c) => c !== own && distanceTo(x, y, c) < mine)
+            .map(
+              (c) =>
+                `${pin.name} centred at ${Math.round(x)}, ${Math.round(y)} is ${Math.round(distanceTo(x, y, c))} px from #${c.id}, ${Math.round(mine)} px from its own ${fields[i]}`,
+            );
+        }),
+        ...(await wordsUnderPins(artifact, pins)),
+        ...(await pinsOffFrame(artifact, pins)),
+      ];
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(strays, { 390: [], 800: [], 1440: [], 2560: [] });
+  },
+);
+
+/**
+ * Where the open card stands against what it must leave in view, in the tab's coordinates: the
+ * target, its label and the hint or error tied to it, and the frame it must stay inside.
+ */
+async function cardAgainst(page, artifact, ids) {
+  const frame = JSON.parse(
+    await page.eval(`(() => {
+      const f = document.getElementById("artifact");
+      const r = f.getBoundingClientRect();
+      const c = document.getElementById("card").getBoundingClientRect();
+      return JSON.stringify({
+        left: r.left + f.clientLeft, top: r.top + f.clientTop, width: f.clientWidth, height: f.clientHeight,
+        card: { left: c.left, top: c.top, right: c.right, bottom: c.bottom },
+      });
+    })()`),
+  );
+  const boxes = JSON.parse(
+    await artifact.eval(`JSON.stringify(${JSON.stringify(ids)}.map((id) => {
+      const r = document.getElementById(id).getBoundingClientRect();
+      return { id, left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    }))`),
+  );
+  const { card } = frame;
+  const round = (r) => [r.left, r.top, r.right, r.bottom].map(Math.round).join(",");
+  const covered = boxes
+    .map((b) => ({
+      ...b,
+      left: b.left + frame.left,
+      right: b.right + frame.left,
+      top: b.top + frame.top,
+      bottom: b.bottom + frame.top,
+    }))
+    // Only what shows in the frame can be covered; a box the page scrolled out of view is not.
+    .filter((b) => b.bottom > frame.top && b.top < frame.top + frame.height)
+    .filter(
+      (b) =>
+        card.left < b.right - 0.5 &&
+        b.left < card.right - 0.5 &&
+        card.top < b.bottom - 0.5 &&
+        b.top < card.bottom - 0.5,
+    )
+    .map((b) => `the card ${round(card)} covers #${b.id} ${round(b)}`);
+  const hidden = boxes
+    .map((b) => b.top + frame.top)
+    .filter((top) => top < frame.top || top > frame.top + frame.height)
+    .map(() => `the card's target is out of the frame's view`);
+  const outside =
+    card.left < frame.left - 0.5 ||
+    card.right > frame.left + frame.width + 0.5 ||
+    card.top < frame.top - 0.5 ||
+    card.bottom > frame.top + frame.height + 0.5
+      ? [
+          `the card ${round(card)} runs past the frame ${round({ left: frame.left, top: frame.top, right: frame.left + frame.width, bottom: frame.top + frame.height })}`,
+        ]
+      : [];
+  return [...covered, ...hidden.slice(0, 1), ...outside];
+}
+
+test(
+  "the note card leaves a field, its label and its hint or error in view, inside the frame, at every width",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const seen = {};
+    // Each field with what the card must leave in view; at 390 the textarea's block is centred in
+    // the frame first, where the card fits on neither side of it until the page scrolls.
+    const fields = [
+      ["say", ["say", "say-hint"]],
+      ["print", ["print", "print-error"]],
+      ["type", ["type"]],
+      ["agent", ["agent", "agent-hint"]],
+    ];
+    for (const width of [390, 800, 1440, 2560]) {
+      const file = copyOfForm();
+      const url = (await cli([file], lab.env)).json().session.url;
+      const { page, artifact } = await openReview(url, { width, height: 844 });
+      seen[width] = [];
+      for (const [id, kept] of fields) {
+        const ids = [...kept, `${id}-label`];
+        await artifact.eval(`(() => {
+          for (const label of document.querySelectorAll("label")) label.id ||= label.htmlFor + "-label";
+          window.scrollTo({ top: 0, behavior: "instant" });
+          ${id === "agent" ? `document.getElementById("agent").parentElement.scrollIntoView({ block: "center", behavior: "instant" });` : ""}
+        })()`);
+        await pointAt(page, artifact, `#${id}`);
+        // A card that has to scroll the page moves it a moment after it opens, so the property is
+        // waited for, and what the card covered on the last look is what a failure reports.
+        let last = [];
+        await until(
+          async () => {
+            last = await cardAgainst(page, artifact, ids);
+            return last.length === 0;
+          },
+          { what: `the card on #${id} at ${width}` },
+        ).catch(() => {});
+        seen[width].push(...last.map((problem) => `#${id}: ${problem}`));
+        await page.eval("document.getElementById('cardCancel').click()");
+        await page.waitFor("document.body.dataset.handoff === 'settled'");
+      }
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(seen, { 390: [], 800: [], 1440: [], 2560: [] });
+  },
+);
+
 test(
   "more notes on one heading than fit across the frame stand in lines inside it, off every word",
   { skip: !executable && "no browser found" },
@@ -7715,6 +7872,52 @@ test(
     await page.send("Emulation.setEmulatedMedia", { features: [] });
     await page.close();
     rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "the highlight keeps 3:1 on a white page and a dark one, whichever scheme the reviewer prefers, in screenshot pixels",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const seen = {};
+    // A page under review keeps its own ground whatever the reviewer prefers: plan.html is white,
+    // the dark fixture near black.
+    for (const [name, file] of [
+      ["white page", copyOfFixture().file],
+      ["dark page", copyOfDark()],
+    ]) {
+      const session = (await cli([file], lab.env)).json().session;
+      const { page, artifact } = await openReview(session.url, { width: 1440, height: 900 });
+      await pointAt(page, artifact, "h1");
+      const frame = JSON.parse(await page.eval(FRAME_BOX));
+      const heading = JSON.parse(
+        await artifact.eval("JSON.stringify(document.querySelector('h1').getBoundingClientRect())"),
+      );
+      for (const scheme of ["light", "dark"]) {
+        await page.send("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-color-scheme", value: scheme }],
+        });
+        await artifact.waitFor(`matchMedia("(prefers-color-scheme: ${scheme})").matches`);
+        await artifact.eval(SETTLED);
+        const shot = await screenshotOf(page);
+        const ground = shot.pixel(Math.round(frame.left + 4), Math.round(frame.top + 4));
+        // The highlight's top edge, read down from just above the heading's box, where its 2 px
+        // ring stands 2 px clear of the box.
+        const x = Math.round(frame.left + heading.left + 10);
+        const ring = Math.max(
+          ...[1, 2, 3, 4, 5, 6].map((dy) =>
+            contrast(shot.pixel(x, Math.round(frame.top + heading.top) - dy), ground),
+          ),
+        );
+        seen[`${scheme} scheme on a ${name}`] = Number(ring.toFixed(2));
+      }
+      await page.send("Emulation.setEmulatedMedia", { features: [] });
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    console.log(`highlight edges: ${JSON.stringify(seen)}`);
+    const under = Object.entries(seen).filter(([, ratio]) => ratio < 3);
+    assert.deepEqual(under, [], `the highlight under 3:1: ${JSON.stringify(seen)}`);
   },
 );
 
