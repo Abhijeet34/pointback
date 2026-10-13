@@ -1209,11 +1209,15 @@ function revealed(rects) {
   return rects.map((r) => ({ ...r, top: r.top - by, bottom: r.bottom - by }));
 }
 
+/** Where the open card was placed for, so a card that grows can be placed for it again. */
+let placedFor = null;
+
 /**
  * Places the card inside the frame beside what the reviewer pointed at: under it, or over it when
  * there is no room under it, so the target and the hint or error the page ties to it stay in view.
  */
 function placeCard(rects) {
+  placedFor = rects;
   const mount = frame.parentElement;
   const bounds = mount.getBoundingClientRect();
   // The page's own coordinates start inside the frame's border.
@@ -1232,6 +1236,13 @@ function placeCard(rects) {
   const left = Math.min(span.left, frame.clientWidth - width - margin);
   card.style.left = `${originX + Math.max(margin, left)}px`;
 }
+
+// A card grows after it is placed when its reason line shows, the reviewer drags its field taller or
+// picks a larger text size; placed again before that paints, it never runs past the foot of the frame,
+// where it would scroll the whole chrome and narrow the page under review.
+new ResizeObserver(() => {
+  if (!card.hidden) placeCard(placedFor);
+}).observe(card);
 
 window.addEventListener("message", (event) => {
   // The wrapper's first load, judged here behind the wrapper's own word (below).
