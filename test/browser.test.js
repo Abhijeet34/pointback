@@ -4128,15 +4128,17 @@ async function reviewIn(page) {
  * 5 in 100000 of Chrome's new loopback connects: each goes to a path the daemon refuses, which the
  * chrome hears exactly as a refused connect, a stream closed without opening. Three keep it lost for
  * 3 s (`pause` waits 500, 1000 and 1500 ms), longer than a review takes to open, so what a test does
- * next never races the reconnect.
+ * next never races the reconnect. `Infinity` refuses every connect until the test sets
+ * `window.refuseStreams` to 0.
  */
 async function refuseStream(page, count) {
   await page.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `(() => {
       const Real = WebSocket;
       window.refusedStreams = 0;
+      window.refuseStreams = ${count};
       window.WebSocket = function (url, protocols) {
-        if (window.refusedStreams >= ${count}) return new Real(url, protocols);
+        if (window.refusedStreams >= window.refuseStreams) return new Real(url, protocols);
         window.refusedStreams += 1;
         return new Real(String(url).replace("/events", "/refused"), protocols);
       };
@@ -4165,6 +4167,46 @@ test(
     );
     assert.equal(await page.eval("window.refusedStreams"), 3, "three stream connects failed");
     await page.close();
+  },
+);
+
+test(
+  "a save made while the page reloads reaches the page, numbered, once its stream opens",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page } = await openReview(session.url);
+    try {
+      // The reloaded chrome shows the page as it was, and its stream stays refused until the save
+      // is on disk: the order a refused connect on Windows left to chance.
+      await refuseStream(page, Infinity);
+      await page.reload();
+      await page.waitFor("document.body.dataset.revision === '0' && window.refusedStreams > 0");
+      const { port, token } = lab.serverInfo();
+      await until(
+        async () => {
+          const opened = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, origin: `http://127.0.0.1:${port}` },
+            body: JSON.stringify({ file }),
+          });
+          return (await opened.json()).live === false;
+        },
+        { what: "the daemon to hear the old stream close, so no tab follows the review" },
+      );
+      writeFileSync(file, html.replace("<main>", '<main><p id="saved">Saved mid-reload</p>'));
+      await page.eval("window.refuseStreams = 0");
+      await page.waitFor("document.body.dataset.revision === '1'");
+      const artifact = await page.frame();
+      assert.equal(
+        await artifact.eval("document.getElementById('saved')?.textContent"),
+        "Saved mid-reload",
+        "the reviewer sees the save",
+      );
+    } finally {
+      await page.close();
+    }
   },
 );
 
