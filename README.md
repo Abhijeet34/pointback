@@ -327,11 +327,11 @@ The chrome is built from the house design system, [halderworks-design](https://g
 Every size is rem on the house ramp, so `data-text-size` on `<html>` (13 to 22 px at the root) grows the whole chrome.
 The bar's Aa button opens the five steps, S to XL and XXL, in a house popover, and the size reaches a rendered Markdown page, the review's own, while an HTML page keeps the sizes its author set; this browser keeps the choice for the next review, and each step is a share of the browser's own default size, so a reviewer who raised that keeps the raise.
 The faces are Archivo for the interface, IBM Plex Mono for file names, and Literata for a rendered Markdown page's prose, served by the daemon from `src/browser/house/fonts/` with their OFL texts, so a review makes no request off loopback.
-The pins inside the page under review cannot load the chrome's sheets, so `sdk.js` draws them with the house pin's shape and its dark roles as literals.
+The pins inside the page under review cannot load the chrome's sheets, so `sdk.js` draws them with the house pin's shape and its roles, light and dark, as literals.
 Its brand ramps, `roles.css`, `scales.css`, `components.css`, `radiogroup.js` (the segmented control's arrow keys) and the three faces are vendored byte for byte into `src/browser/house/`, and `src/browser/house/pin.json` records the commit they came from and each file's SHA-256; `.gitattributes` keeps that directory out of line-ending normalisation, because IBM Plex Mono's `OFL.txt` is CRLF upstream.
 A copy rather than a package, because the house publishes no package and the chrome makes no request off the daemon; a commit rather than a branch, because a look that changes when someone else merges is not one anybody reviewed.
 `test/house.test.js` fails if a vendored file differs from its recorded digest, so a hand edit there is drift: change the house and move the pin with `node scripts/sync-house.js ../halderworks-design`, which refuses a checkout with an uncommitted change to any file it vendors.
-Dark is pinned by `data-theme="dark"` on `chrome.html`; the light theme resolves from the same roles and is deliberately not offered.
+The chrome and a rendered Markdown page follow the reviewer's `prefers-color-scheme`, light or dark, from the same roles.
 `docs/GIT-WORKFLOW.md` covers how a change reaches `main`, how a release is cut, and what npm does and does not permit when one has to be withdrawn.
 
 ## Contributing, security and support
