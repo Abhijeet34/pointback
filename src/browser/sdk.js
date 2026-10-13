@@ -298,8 +298,13 @@
         focusable.push(element);
       }
     }
-    if (open)
-      outlineRects(open.tag === "text" ? open.rects : [open.element.getBoundingClientRect()]);
+    if (open) outlineRects(openRects());
+  }
+
+  // A passage keeps its range rather than the rects it was selected at, so a scroll, a resize or a
+  // box scrolling inside the page draws its ring where its words now are, as an element's is drawn.
+  function openRects() {
+    return open.range ? open.range.getClientRects() : [open.element.getBoundingClientRect()];
   }
 
   function outlineRects(rects) {
@@ -511,6 +516,8 @@
       },
       lines: sourceLines(range.startContainer, range.endContainer),
       rects: range.getClientRects(),
+      // A copy, since the selection's own range follows the reviewer's next selection.
+      range: range.cloneRange(),
     };
   }
 
@@ -1227,7 +1234,7 @@
   const reoutline = () => {
     if (!annotate) return;
     if (!open) outline(focusShown ? candidate(document.activeElement) : null);
-    else if (open.tag !== "text") outline(open.element);
+    else outlineRects(openRects());
   };
   window.addEventListener("scroll", reoutline, { capture: true, passive: true });
   window.addEventListener("resize", reoutline);
