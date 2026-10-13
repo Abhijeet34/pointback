@@ -79,7 +79,7 @@
   };
   const pinHost = document.createElement("div");
   pinHost.style.cssText =
-    "all:initial;position:absolute;inset:0 auto auto 0;width:0;height:0;z-index:2147483646";
+    "all:initial;position:absolute;inset:0 auto auto 0;width:0;height:0;z-index:2147483647";
   const pinRoot = pinHost.attachShadow({ mode: "closed" });
   pinRoot.innerHTML = `
     <style>
@@ -1233,6 +1233,7 @@
     { passive: true },
   );
 
-  document.documentElement.append(pinHost, host);
+  // The pins paint over the highlight, whose ring would otherwise cut through a pin on its target's corner.
+  document.documentElement.append(host, pinHost);
   send({ type: "ready" });
 })();
