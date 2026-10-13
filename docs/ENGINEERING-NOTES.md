@@ -63,6 +63,8 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   `skills/pointback/SKILL.md` is the agent-facing copy of the CLI contract and ships outside the npm package, so change it with any command, flag or field it names.
 - A reviewer's work survives the tab and the daemon.
   Unsent notes are drafts on the session (`addDraft`/`send` in `src/session-store.js`), never tab storage, and a restart reuses the port and token in `server.json` so an open tab reconnects (`serve` in `src/server.js`, `listen` in `src/browser/chrome.js`).
+  A restart whose recorded port cannot be had takes a new one, and Windows refuses such a bind with `EACCES` where another account's socket, or an exclusive one, holds the port on the wildcard address (`PORT_GONE`).
+  On EADDRINUSE alone, windows-2025 hunt 38316222104 job 115033372086 had every open on the cli suite's shared directory exit 1 with nothing printed, two minutes after a test stopped its daemon: each restart died on `listen EACCES` for the recorded port.
   Because the token outlives the process, nothing may present it to a server that has not answered a fresh challenge with `tokenProof` (`src/http-guard.js`): the CLI's `health` and the chrome's `health` both check it first, the chrome's `connection`, which `api` requires, goes live only on a proven answer (`boot` and `listen` in `src/browser/chrome.js`), and a token shown to an unproven server, or carried to a new port, is replaced.
   `test/cli.test.js` asserts a squatter on the old port sees nothing but the challenge, and `test/browser.test.js` that a tab whose health check is answered without proof sends nothing carrying the token.
 - The artifact frame is opaque-origin, so every asset load from it is a CORS request.

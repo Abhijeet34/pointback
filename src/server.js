@@ -28,6 +28,11 @@ import { DRAFT_ID_PATTERN, EPOCH_PATTERN, SessionStore } from "./session-store.j
 import { readJson, writeJsonAtomic } from "./state-dir.js";
 import { acceptWebSocket, isWebSocketHandshake, offeredProtocols } from "./websocket.js";
 
+/**
+ * What a bind to the recorded port fails with once it cannot be had. Windows answers EACCES, not
+ * EADDRINUSE, where another account's socket or an exclusive one holds the port on the wildcard address.
+ */
+const PORT_GONE = new Set(["EADDRINUSE", "EACCES"]);
 /** How often a running daemon looks that it still holds its state directory: one directory read. */
 const LOCK_CHECK_MS = 2_000;
 const browserDir = new URL("./browser/", import.meta.url);
@@ -88,7 +93,7 @@ const contentTypes = {
  *
  * A restart comes back on the port and with the token the last server recorded, so a tab opened
  * before an idle-out, a stop or an upgrade reconnects on its own. `port` 0 asks for exactly that,
- * falling back to an ephemeral port when the old one is taken; any other port is used as given.
+ * falling back to an ephemeral port when the old one is taken or refused; any other port is used as given.
  *
  * Resolves to null when another daemon already serves the state directory: two would each hold their
  * own copy of every session and overwrite the other's. A start that loses the race to publish its
@@ -178,7 +183,7 @@ export async function serve({
   try {
     await listen(port || reused);
   } catch (error) {
-    if (port !== 0 || reused === 0 || error.code !== "EADDRINUSE") throw error;
+    if (port !== 0 || reused === 0 || !PORT_GONE.has(error.code)) throw error;
     await listen(0);
     console.error(
       `port ${reused} is taken, so tabs opened before this start cannot reconnect; listening on ${boundPort()}`,

@@ -1282,6 +1282,31 @@ test("a stopped daemon comes back on the address and token an open tab already h
   }
 });
 
+// windows-2025 hunt job 115033372086: the shared daemon was stopped, and two minutes later every open
+// on its directory printed nothing and exited 1, its restart refused the recorded port with EACCES,
+// where only EADDRINUSE fell back to a new port.
+test("a stopped daemon whose port the system now refuses with EACCES comes back on another", async () => {
+  const own = isolatedEnv();
+  try {
+    assert.equal((await cli([fixture], own.env)).code, 0);
+    const before = own.serverInfo();
+    assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+    const opened = await cli(
+      [fixture],
+      loading(own.env, "refused-port.js", { TEST_REFUSED_PORT: String(before.port) }),
+    );
+    assert.equal(opened.code, 0, opened.stderr);
+    const after = own.serverInfo();
+    assert.notEqual(after.port, before.port);
+    assert.notEqual(after.token, before.token, "a token is never carried to a new port");
+    const { session } = opened.json();
+    assert.ok(session.url.startsWith(`http://127.0.0.1:${after.port}/`), session.url);
+    assert.equal((await fetch(session.url)).status, 200, "the review it answered with opens");
+  } finally {
+    await own.stop();
+  }
+});
+
 // The loop closes on the agent's side: every note can be answered done, declined or with a
 // question, the answer is what the reviewer's tab is sent, and a uid the review never issued is
 // refused rather than stored against nothing.
