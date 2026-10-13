@@ -4495,22 +4495,101 @@ async function pointAt(page, artifact, selector) {
   );
 }
 
-/** A real click on an element of the artifact, in from its left edge, after scrolling it into view. */
-async function clickIn(page, artifact, selector, at) {
-  const frameBox = JSON.parse(await page.eval(FRAME_BOX));
-  const box = JSON.parse(
-    await artifact.eval(`(() => {
-      const element = document.querySelector(${JSON.stringify(selector)});
-      element.scrollIntoView({ block: "nearest", behavior: "instant" });
-      return JSON.stringify(element.getBoundingClientRect());
-    })()`),
-  );
-  const point = {
-    x: frameBox.left + box.left + (at?.x ?? Math.min(30, box.width / 2)),
-    y: frameBox.top + box.top + (at?.y ?? box.height / 2),
+/**
+ * Kept in the page under review from a click's first measure: every scroll it makes, with the call
+ * that made it, and what the click's press landed on, reported through the `pressLanded` binding as
+ * it lands, so a press that follows a link is still heard. The press is read even where Annotate
+ * stops it on a control, since the SDK's listener runs ahead of any a test adds. Once per document.
+ */
+const RECORD_PRESS = `(() => {
+  if (globalThis.pressLog) return;
+  const log = (globalThis.pressLog = { scrolls: [], pressed: false, selector: null });
+  const at = () => Math.round(performance.now()) + " ms";
+  const caller = () => new Error().stack.split("\\n").slice(3, 5).map((line) => line.trim()).join(" < ");
+  for (const [owner, name] of [[window, "scrollTo"], [window, "scrollBy"], [window, "scroll"],
+    [Element.prototype, "scrollIntoView"], [Element.prototype, "scrollTo"], [Element.prototype, "scrollBy"]]) {
+    const original = owner[name];
+    owner[name] = function (...args) {
+      log.scrolls.push(at() + " " + name + "(" + JSON.stringify(args) + ") at scrollY " + scrollY + ", " + caller());
+      return original.apply(this, args);
+    };
+  }
+  let last = scrollY;
+  addEventListener("scroll", () => {
+    if (scrollY !== last) log.scrolls.push(at() + " scrollY " + last + " -> " + scrollY);
+    last = scrollY;
+  }, true);
+  const press = (event) => {
+    if (event.type !== "pointerdown" || log.pressed) return;
+    const target = event.target;
+    const name = target instanceof Element ? target.tagName.toLowerCase() + (target.id ? "#" + target.id : "") : String(target);
+    log.pressed = true;
+    const inside = Boolean(log.selector && document.querySelector(log.selector)?.contains(target));
+    globalThis.pressLanded?.(JSON.stringify({ inside, name, scrollY, scrolls: log.scrolls }));
   };
-  await page.pointerInto(artifact, point);
-  await page.click(point.x, point.y);
+  for (const name of ["stopImmediatePropagation", "stopPropagation"]) {
+    const original = Event.prototype[name];
+    Event.prototype[name] = function () {
+      press(this);
+      return original.call(this);
+    };
+  }
+  addEventListener("pointerdown", press, true);
+})()`;
+
+/**
+ * A real click on an element of the artifact, in from its left edge, after scrolling it into view.
+ * The point is measured again once the pointer is in the frame, which can take seconds on
+ * windows-2025, and the press must land inside the element: a page that moved under the click
+ * fails here, naming what it hit and every scroll meanwhile, not as a note on something else.
+ */
+async function clickIn(page, artifact, selector, at) {
+  const measure = async (first) => {
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+    const box = JSON.parse(
+      await artifact.eval(`(() => {
+        ${RECORD_PRESS};
+        pressLog.pressed = false;
+        pressLog.selector = ${JSON.stringify(selector)};
+        if (${first}) pressLog.scrolls = [];
+        const element = document.querySelector(${JSON.stringify(selector)});
+        element.scrollIntoView({ block: "nearest", behavior: "instant" });
+        pressLog.scrolls.push(Math.round(performance.now()) + " ms measured at scrollY " + scrollY);
+        return JSON.stringify({ ...element.getBoundingClientRect().toJSON(), scrollY });
+      })()`),
+    );
+    return {
+      x: frameBox.left + box.left + (at?.x ?? Math.min(30, box.width / 2)),
+      y: frameBox.top + box.top + (at?.y ?? box.height / 2),
+      scrollY: box.scrollY,
+    };
+  };
+  let landed = null;
+  const hear = ({ sessionId, method, params }) => {
+    if (sessionId !== artifact.sessionId || method !== "Runtime.bindingCalled") return;
+    if (params.name === "pressLanded") landed = JSON.parse(params.payload);
+  };
+  await artifact.send("Runtime.addBinding", { name: "pressLanded" });
+  artifact.browser.listeners.push(hear);
+  try {
+    await page.pointerInto(artifact, await measure(true));
+    const point = await measure(false);
+    await page.click(point.x, point.y);
+    // A press that reached no element of the page never reports; the assertion names that.
+    await until(() => landed, { what: `the press on ${selector} to reach the page` }).catch(
+      () => {},
+    );
+    landed ??= { name: "nothing in the page", scrolls: [] };
+    landed.point = point;
+  } finally {
+    artifact.browser.listeners.splice(artifact.browser.listeners.indexOf(hear), 1);
+  }
+  assert.ok(
+    landed.inside,
+    `the press at ${landed.point.x},${landed.point.y} landed on ${landed.name}, not ${selector}: the ` +
+      `frame stood at scrollY ${landed.point.scrollY} when measured and ${landed.scrollY} at the press; its scrolls:\n  ` +
+      landed.scrolls.join("\n  "),
+  );
 }
 
 /**
