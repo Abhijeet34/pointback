@@ -187,6 +187,17 @@ function claim(stateDir, generation) {
       return false;
     },
     /**
+     * Whether this daemon still holds the directory: not once its lock is gone with the directory
+     * removed under it, or a later generation tops it. Only a missing directory reads as lost.
+     */
+    holds() {
+      try {
+        return held();
+      } catch (error) {
+        return error.code !== "ENOENT";
+      }
+    },
+    /**
      * Records that this daemon was asked to stop. The port stays named, so the directory is still held
      * until this process exits and a start meanwhile comes back on the port once it is free.
      */

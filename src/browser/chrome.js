@@ -87,6 +87,8 @@ let liveReload = true;
 // Live only once a health answer proves the server holds this page's token (`health`), since `api`
 // sends the token only while live.
 let connection = "lost";
+// Lost because the server refused the stream for too many open (4429), not because nothing answered.
+let crowded = false;
 let editing = false;
 let deferredReload = false;
 // The ids of the notes a send has in flight: Send stays shut until the stream reports them sent,
@@ -164,6 +166,18 @@ async function health() {
 
 const pause = (failures) =>
   new Promise((resolve) => setTimeout(resolve, Math.min(500 * failures, 5000)));
+
+/** Resolves once the reviewer can see this tab. */
+const seen = () =>
+  new Promise((resolve) => {
+    const check = () => {
+      if (document.visibilityState !== "visible") return;
+      document.removeEventListener("visibilitychange", check);
+      resolve(undefined);
+    };
+    document.addEventListener("visibilitychange", check);
+    check();
+  });
 
 async function boot() {
   let app;
@@ -278,6 +292,7 @@ async function listen() {
         // Any stream that opens takes the review over, so a Take over pressed while none was open,
         // with nothing to close, is done here, not left to swallow the next ordinary close.
         retaking = false;
+        crowded = false;
         // Published for the same reason as ready: `connection` reads live from the health check on,
         // before the stream opens, and a stream connect Windows refuses is lost for a pause then
         // retried, so only this says the page is following its review (docs/ENGINEERING-NOTES.md).
@@ -302,8 +317,12 @@ async function listen() {
     }
     failures += 1;
     connection = "lost";
+    crowded = code === 4429;
     render();
     await pause(failures);
+    // Every try touches the daemon, so a tab crowded out tries only while the reviewer can see it:
+    // a hidden one kept the daemon from ever idling out.
+    if (crowded) await seen();
   }
   spent();
 }
@@ -327,6 +346,8 @@ function follow(opened) {
       "events",
       `bearer.${token}`,
     ]);
+    // Followed from its hello, not its open: the server takes the handshake before it refuses a
+    // stream for too many (4429), and counting that open reset the backoff to 500 ms every time.
     stream.addEventListener("message", (event) => {
       const data = JSON.parse(event.data);
       apply(data);
@@ -645,17 +666,22 @@ function renderNotice() {
                 "This browser is offline. Your notes are kept, and this page catches up once it is back online.",
                 false,
               ]
-            : connection === "lost"
+            : connection === "lost" && crowded
               ? [
-                  `The review server stopped answering. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
+                  "Too many review tabs are open, so this page is not following its review. Close one and this page reconnects.",
                   false,
                 ]
-              : !liveReload
+              : connection === "lost"
                 ? [
-                    "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                    `The review server stopped answering. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
                     false,
                   ]
-                : [null, false];
+                : !liveReload
+                  ? [
+                      "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                      false,
+                    ]
+                  : [null, false];
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
   takeOverButton.hidden = !action;
@@ -906,7 +932,7 @@ function replyLine(entry) {
       openCompose(
         { selector, lines, tag, text, target, answers: entry.uid },
         `Answer: ${entry.reply.message}`,
-        undefined,
+        shownStructure,
         [{ left: Infinity, bottom: box.top - frameBox.top }],
         answer,
       );
@@ -1048,6 +1074,8 @@ let held = false;
 // The element a note made by keyboard was on, when closing it reloads the page: the page loaded in its
 // place has no target to give the focus back to, so it is named in that page's `init`.
 let refocusOnShow = null;
+// The outline of the page as last shown, which an answer carries: it points at no target of its own.
+let shownStructure;
 
 function openCompose(note, label, outline, rects, from) {
   composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
@@ -1215,6 +1243,7 @@ window.addEventListener("message", (event) => {
   } else if (data.type === "closed") {
     endWait();
   } else if (data.type === "shown") {
+    shownStructure = data.structure;
     document.body.dataset.revision = String(shownRevision);
   } else if (data.type === "target" && data.note && typeof data.note === "object") {
     // The artifact proposes a target; the reviewer's instruction is composed in the chrome, never

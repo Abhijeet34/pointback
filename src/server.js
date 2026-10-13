@@ -28,6 +28,13 @@ import { DRAFT_ID_PATTERN, EPOCH_PATTERN, SessionStore } from "./session-store.j
 import { readJson, writeJsonAtomic } from "./state-dir.js";
 import { acceptWebSocket, isWebSocketHandshake, offeredProtocols } from "./websocket.js";
 
+/**
+ * What a bind to the recorded port fails with once it cannot be had. Windows answers EACCES, not
+ * EADDRINUSE, where another account's socket or an exclusive one holds the port on the wildcard address.
+ */
+const PORT_GONE = new Set(["EADDRINUSE", "EACCES"]);
+/** How often a running daemon looks that it still holds its state directory: one directory read. */
+const LOCK_CHECK_MS = 2_000;
 const browserDir = new URL("./browser/", import.meta.url);
 // Read once at startup like the chrome page itself: these bytes never change while the
 // daemon runs, and a Map keeps a request for "__proto__" from finding anything.
@@ -86,7 +93,7 @@ const contentTypes = {
  *
  * A restart comes back on the port and with the token the last server recorded, so a tab opened
  * before an idle-out, a stop or an upgrade reconnects on its own. `port` 0 asks for exactly that,
- * falling back to an ephemeral port when the old one is taken; any other port is used as given.
+ * falling back to an ephemeral port when the old one is taken or refused; any other port is used as given.
  *
  * Resolves to null when another daemon already serves the state directory: two would each hold their
  * own copy of every session and overwrite the other's. A start that loses the race to publish its
@@ -97,6 +104,7 @@ export async function serve({
   stateDir,
   port = 0,
   idleMs = limits.idleShutdownMs,
+  // Called once the daemon has closed itself: idle, or no longer holding its state directory.
   onIdle = () => {},
 }) {
   const recorded = join(stateDir, "server.json");
@@ -106,6 +114,7 @@ export async function serve({
   const store = new SessionStore(stateDir, { live: (key) => streams.live(key) });
   const streams = new EventStreams(store);
   let idleTimer;
+  let lockCheck;
   // The daemon idles out on inactivity. An open tab keeps it alive by heartbeating while the reviewer
   // is on it, not merely by holding a stream open, so a review left and walked away from releases the
   // process instead of pinning it forever. Every request - a poll, a heartbeat - is that activity.
@@ -154,6 +163,7 @@ export async function serve({
   const close = () =>
     new Promise((resolve) => {
       clearTimeout(idleTimer);
+      clearInterval(lockCheck);
       streams.closeAll();
       for (const socket of sockets) socket.destroy();
       server.close(() => resolve(undefined));
@@ -173,7 +183,7 @@ export async function serve({
   try {
     await listen(port || reused);
   } catch (error) {
-    if (port !== 0 || reused === 0 || error.code !== "EADDRINUSE") throw error;
+    if (port !== 0 || reused === 0 || !PORT_GONE.has(error.code)) throw error;
     await listen(0);
     console.error(
       `port ${reused} is taken, so tabs opened before this start cannot reconnect; listening on ${boundPort()}`,
@@ -205,6 +215,14 @@ export async function serve({
     throw error;
   }
   touch();
+  // A daemon whose state directory was removed under it serves on where no stop can find it, beside
+  // the daemon the next start brings up there, so it closes once its lock is gone.
+  lockCheck = setInterval(() => {
+    if (lock.holds()) return;
+    console.error(`${stateDir} no longer holds this daemon's lock, so it is closing`);
+    close().then(onIdle);
+  }, LOCK_CHECK_MS);
+  lockCheck.unref();
   return { port: bound, token, close, server };
 }
 
