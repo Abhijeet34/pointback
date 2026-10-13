@@ -26,8 +26,6 @@ export const FILES = {
   "fonts/archivo/OFL.txt": "fonts/archivo/OFL.txt",
   "fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2":
     "fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2",
-  "fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2":
-    "fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2",
   "fonts/ibm-plex-mono/OFL.txt": "fonts/ibm-plex-mono/OFL.txt",
   "fonts/literata/literata-latin-opsz-normal.woff2":
     "fonts/literata/literata-latin-opsz-normal.woff2",

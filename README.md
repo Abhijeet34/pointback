@@ -236,10 +236,10 @@ It carries seven things.
 - **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back turns Annotate on again, if the reviewer had wanted it on, and reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
 
-When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send turns off until it is back, and a note being written stays in its card with Add note held until then.
+When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send and End review turn off until it is back, and a note being written stays in its card with Add note held until then.
 It keeps trying, because a daemon that idled out or was stopped comes back at the agent's next command on the same port with the same token, and the tab picks the review up from there.
-A tab opened while nothing answers waits the same way, including when the request for the review itself goes unanswered; only an answer makes it say the link no longer works, an HTTP error or a health check that does not prove the token.
-If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection; running the command on the file again opens a fresh tab with the notes in it.
+A tab opened while nothing answers waits the same way, including when the request for the review itself goes unanswered; only an answer makes it say it can no longer reach its review, an HTTP error or a health check that does not prove the token.
+If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection, and turns Annotate off, since nothing pointed at can be added from it; running the command on the file again opens a fresh tab with the notes in it.
 
 The agent's end, a gone file or another tab taking over never closes a card with words in it.
 The card stays open with the reason on it, and Add note still keeps the note with the others.
@@ -250,6 +250,7 @@ Only the page under review announces itself to the chrome, so a page that loads 
 A first load that comes back unannounced is asked for once more before that, and so is a first load of the frame the page sits in, because a load the network refused looks exactly like a page that went elsewhere.
 While a note being written holds a reload back, a refused first load of the page gets the cover at once, without the second ask.
 A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled; it also waits while the browser is offline or the tab is not connected, since the browser would refuse that reload too, and runs once both are back. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
+While a note is being written, a shield lies over the page: a press on it hands the page the focus, and the wheel over it scrolls the page by the same distance while the focus stays in the note.
 A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
 The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
 A note opened before the page has heard the last card close unloads the page at once, with a line saying why, and the page comes back when that note is done; that unload is not counted against the page.
@@ -285,7 +286,7 @@ Windows has no such bits, so the state directory's ACL is reset to a single full
 A review is a bounded thing that ends, not state that piles up.
 The daemon idles out after `POINTBACK_IDLE_MS` of no activity, and a review tab keeps it alive only while the reviewer is on it: the tab heartbeats while its page is visible and stops when it is hidden, so a review left open and walked away from releases the process rather than pinning it open for good.
 Sessions are capped at `sessions` in `src/limits.js`; opening past the cap disposes the least-recently-active session, an ended review before a running one, so `sessions/` holds at most that many files no matter how many files have been reviewed.
-A session with a tab open on it, a poll attached or within its grace, or notes not yet sent or received is never the one disposed; when every session held is one of those, the new open is refused and names those three causes, and `skills/pointback/SKILL.md` gives the way out for each.
+A session with a tab open on it, a poll attached or within its grace, or notes not yet sent or received is never the one disposed; when every session held is one of those, the new open is refused with a line for each cause, saying how to clear it and which files it holds, and opening a file whose review is already held still works.
 After a hundred reviews on a long-lived machine, then, there is one small loopback daemon that exits on its own when idle, and a `sessions/` directory bounded to the most recent sessions, each holding that session's path and the notes sent in it.
 
 The process opens no outbound connection, ever; `test/egress.test.js` proves it across the whole slice.
@@ -327,11 +328,11 @@ The chrome is built from the house design system, [halderworks-design](https://g
 Every size is rem on the house ramp, so `data-text-size` on `<html>` (13 to 22 px at the root) grows the whole chrome.
 The bar's Aa button opens the five steps, S to XL and XXL, in a house popover, and the size reaches a rendered Markdown page, the review's own, while an HTML page keeps the sizes its author set; this browser keeps the choice for the next review, and each step is a share of the browser's own default size, so a reviewer who raised that keeps the raise.
 The faces are Archivo for the interface, IBM Plex Mono for file names, and Literata for a rendered Markdown page's prose, served by the daemon from `src/browser/house/fonts/` with their OFL texts, so a review makes no request off loopback.
-The pins inside the page under review cannot load the chrome's sheets, so `sdk.js` draws them with the house pin's shape and its dark roles as literals.
+The pins inside the page under review cannot load the chrome's sheets, so `sdk.js` draws them with the house pin's shape and its roles, light and dark, as literals.
 Its brand ramps, `roles.css`, `scales.css`, `components.css`, `radiogroup.js` (the segmented control's arrow keys) and the three faces are vendored byte for byte into `src/browser/house/`, and `src/browser/house/pin.json` records the commit they came from and each file's SHA-256; `.gitattributes` keeps that directory out of line-ending normalisation, because IBM Plex Mono's `OFL.txt` is CRLF upstream.
 A copy rather than a package, because the house publishes no package and the chrome makes no request off the daemon; a commit rather than a branch, because a look that changes when someone else merges is not one anybody reviewed.
 `test/house.test.js` fails if a vendored file differs from its recorded digest, so a hand edit there is drift: change the house and move the pin with `node scripts/sync-house.js ../halderworks-design`, which refuses a checkout with an uncommitted change to any file it vendors.
-Dark is pinned by `data-theme="dark"` on `chrome.html`; the light theme resolves from the same roles and is deliberately not offered.
+The chrome and a rendered Markdown page follow the reviewer's `prefers-color-scheme`, light or dark, from the same roles.
 `docs/GIT-WORKFLOW.md` covers how a change reaches `main`, how a release is cut, and what npm does and does not permit when one has to be withdrawn.
 
 ## Contributing, security and support

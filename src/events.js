@@ -35,7 +35,7 @@ export class EventStreams {
     group.streams.push(write);
     this.#count += 1;
     if (previous) previous({ type: "superseded" });
-    write({ type: "hello", ...this.#store.status(key) });
+    write({ type: "hello", ...this.#state(key) });
     return () => this.#close(key, write);
   }
 
@@ -90,6 +90,14 @@ export class EventStreams {
       return;
     }
     // The tab that was hidden behind this one takes the review back, catching up on what it missed.
-    if (wasCurrent) group.streams.at(-1)({ type: "current", ...this.#store.status(key) });
+    if (wasCurrent) group.streams.at(-1)({ type: "current", ...this.#state(key) });
+  }
+
+  /**
+   * What a tab must match, with the files its page goes without: a tab whose stream was down when an
+   * open rerooted the review hears of it only here.
+   */
+  #state(key) {
+    return { ...this.#store.status(key), outside: this.#store.outside(key) };
   }
 }
