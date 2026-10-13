@@ -29,11 +29,12 @@
   // cannot load the chrome's sheets. The reviewer's preference reaches it through the color-scheme the
   // chrome and the wrapper declare. `--halo` rings every pin in the scheme's darkest role (--hw-ink in
   // light, --hw-bg in dark), so a pin keeps a 3:1 edge on a white page and a dark one; `--ring` is the
-  // highlight, on --hw-focus in light, where the accent solid is under 2:1 on white.
+  // highlight, on the house focus ring in both schemes: the page under review may be white or dark
+  // whatever the reviewer prefers, and the dark accent solid is under 2:1 on white.
   const ROLES = `
     :host { --hw-accent: oklch(0.78 0.12 230); --hw-on-accent: oklch(0.21 0.012 260); --hw-accent-text: oklch(0.489 0.097 230); --hw-surface: #fff; --hw-focus: oklch(0.619 0.108 230); --hw-green-9: oklch(0.55 0.14 150); --hw-amber-9: oklch(0.573 0.124 70); --hw-gray-9: oklch(0.566 0.012 260); --hw-on-solid: #fff; --halo: oklch(0.21 0.012 260); --ring: var(--hw-focus); }
     @media (prefers-color-scheme: dark) {
-      :host { --hw-on-accent: oklch(0.165 0.012 260); --hw-accent-text: oklch(0.663 0.12 230); --hw-surface: oklch(0.195 0.012 260); --hw-focus: oklch(0.516 0.102 230); --halo: oklch(0.165 0.012 260); --ring: var(--hw-accent); }
+      :host { --hw-on-accent: oklch(0.165 0.012 260); --hw-accent-text: oklch(0.663 0.12 230); --hw-surface: oklch(0.195 0.012 260); --hw-focus: oklch(0.516 0.102 230); --halo: oklch(0.165 0.012 260); }
     }`;
 
   // Only the selection highlight lives in the artifact; the note card lives in the chrome, so the
@@ -550,7 +551,7 @@
         text: hit.text,
         ...(hit.target && { target: hit.target }),
       },
-      rects: [...hit.rects].map((r) => ({
+      rects: [...hit.rects, ...(hit.tag === "text" ? [] : fieldWords(hit.element))].map((r) => ({
         left: r.left,
         top: r.top,
         right: r.right,
@@ -560,6 +561,27 @@
       })),
       structure: pageOutline(),
     });
+  }
+
+  // A field's label, and the hint or error sentence the page ties to it, drawn against the field, are
+  // what a note on the field is often about, so the card is placed clear of them as well as of it.
+  function fieldWords(element) {
+    const box = element.getBoundingClientRect();
+    const described = (element.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .slice(0, 8)
+      .map((id) => id && document.getElementById(id));
+    return [...(element.labels ?? []), ...described]
+      .map((words) => words?.getBoundingClientRect())
+      .filter(
+        (r) =>
+          r &&
+          r.width > 0 &&
+          r.height > 0 &&
+          r.left < box.right &&
+          r.right > box.left &&
+          Math.max(r.top - box.bottom, box.top - r.bottom) <= PIN,
+      );
   }
 
   // Whether the focused element is outlined; not after a note made by mouse, until a key is pressed.
@@ -786,8 +808,10 @@
   // opens with a code chip is marked where its line ends rather than where the chip does, and a
   // control by its box, which is what the reviewer sees of it. Where that spot would cover words, a
   // control, a picture, a code block or another pin, as it does between paragraphs closer than a pin
-  // is tall, the pin moves beside the line's end, before its start, under its end, then to the right
-  // of the block; failing all of those, to whichever covers least.
+  // is tall, the pin moves beside the line's end, before its start, under its end, to the right of
+  // the block, then onto the top right corner of the target's own box; failing all of those, to
+  // whichever covers least. A spot nearer another control's box than its own target's would read
+  // as a note on that control, so it is taken only when no other spot is left.
   // A table cell has no room above its words, so its pin stays inside the cell, off the rows around it.
   // Every note on one target is placed as one block, `size` across and down, so a second pin stands
   // beside the first and a row too long for the frame goes on under itself (`layRow`).
@@ -807,6 +831,23 @@
       if (w > 0.5 && h > 0.5) area += w * h;
     }
     return area;
+  };
+
+  const distance = (x, y, r) =>
+    Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+
+  // Whether a block at `spot` stands nearer the box of a control, picture, code block or table other
+  // than its target than the target's own boxes.
+  const strays = (spot, { width, height }, avoid, element, own) => {
+    const x = spot.left + width / 2;
+    const y = spot.top + height / 2;
+    const near = Math.min(...own.map((r) => distance(x, y, r)));
+    return avoid.some(
+      ({ rect, owner }) =>
+        owner &&
+        !(owner === element || owner.contains(element) || element.contains(owner)) &&
+        distance(x, y, rect) < near,
+    );
   };
 
   function pinSpot(anchor, avoid, bounds, size) {
@@ -836,6 +877,8 @@
       return {
         left: Math.max(box.left, Math.min(right + HALO, box.right - width)),
         top: Math.max(box.top, Math.min(lineTop - height, box.bottom - height)),
+        astray: false,
+        own: rects,
       };
     }
     // Level with the line's middle, or with the top of a box taller than a pin.
@@ -854,6 +897,7 @@
       { left: Math.min(...line.map((r) => r.left)) - width - GAP, top: beside },
       { left: right - width, top: lineBottom + GAP },
       { left: element.getBoundingClientRect().right + GAP, top: beside },
+      { left: right - width / 2, top: lineTop - height / 2 },
     ].map(({ left, top }) => ({
       left: Math.min(Math.max(left, bounds.left), bounds.right - width),
       top: Math.max(top, bounds.top),
@@ -861,8 +905,10 @@
     let best = null;
     for (const spot of candidates) {
       const area = overlapArea(spot, size, avoid, element);
-      if (area === 0) return spot;
-      if (!best || area < best.area) best = { ...spot, area };
+      const astray = strays(spot, size, avoid, element, rects);
+      if (area === 0 && !astray) return { ...spot, astray, own: rects };
+      if (!best || astray < best.astray || (astray === best.astray && area < best.area))
+        best = { ...spot, area, astray, own: rects };
     }
     return best;
   }
@@ -973,12 +1019,15 @@
       // no room left beside it in the frame starts again under it, at its own natural column.
       const right = bounds.right - origin.left - width;
       const element = elementFor(anchor);
-      const areaAt = (cx, cy) =>
-        placed.some(
+      const areaAt = (cx, cy) => {
+        const at = { left: cx + origin.left, top: cy + origin.top };
+        return placed.some(
           (p) => p.x - width < cx && cx < p.x + p.width && p.y - height < cy && cy < p.y + p.height,
-        )
+        ) ||
+          (!spot.astray && strays(at, size, avoid, element, spot.own))
           ? Infinity
-          : overlapArea({ left: cx + origin.left, top: cy + origin.top }, size, avoid, element);
+          : overlapArea(at, size, avoid, element);
+      };
       let bestX = x;
       let bestY = y;
       let bestArea = areaAt(x, y);

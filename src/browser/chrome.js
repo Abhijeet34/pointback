@@ -1068,7 +1068,7 @@ function openCompose(note, label, outline, rects, from) {
   cardAdd.textContent = answer ? "Add answer" : "Add note";
   cardText.value = "";
   card.hidden = false;
-  placeCard(rects);
+  placeCard(from ? rects : revealed(rects));
   // Rendered first, so a page held out of view is hidden before the note can take the focus.
   render();
   cardText.focus();
@@ -1142,19 +1142,58 @@ window.addEventListener("blur", () => {
   });
 });
 
-/** Places the card over the artifact at the spot the reviewer pointed at, clamped to the mount. */
+// How far the card stands from what it is placed by and from the frame's edges.
+const CARD_GAP = 8;
+
+/** What the card keeps in view, in the page's coordinates: every box it was given, and the last one's left. */
+function spanOf(rects) {
+  const boxes = Array.isArray(rects) && rects.length ? rects : [{ left: 0, bottom: 0 }];
+  return {
+    left: boxes[boxes.length - 1].left,
+    top: Math.min(...boxes.map((r) => r.top ?? r.bottom)),
+    bottom: Math.max(...boxes.map((r) => r.bottom)),
+  };
+}
+
+/**
+ * The boxes a card for a target on the page is placed by. Where the frame has no room for the card
+ * on either side of the target, as a phone's short frame often has not, the page scrolls the target
+ * up until the card fits under it. simplified: assumes the page scrolls that far; a target near the
+ * foot of a page too short to scroll leaves the card over its lower part.
+ */
+function revealed(rects) {
+  const span = spanOf(rects);
+  const height = card.offsetHeight;
+  const room = frame.clientHeight - CARD_GAP - height;
+  if (span.bottom + CARD_GAP <= room || span.top - CARD_GAP - height >= CARD_GAP) return rects;
+  const by = Math.min(span.bottom + CARD_GAP - room, span.top - CARD_GAP);
+  if (!(by > 0)) return rects;
+  post({ type: "scroll-by", x: 0, y: by });
+  return rects.map((r) => ({ ...r, top: r.top - by, bottom: r.bottom - by }));
+}
+
+/**
+ * Places the card inside the frame beside what the reviewer pointed at: under it, or over it when
+ * there is no room under it, so the target and the hint or error the page ties to it stay in view.
+ */
 function placeCard(rects) {
   const mount = frame.parentElement;
   const bounds = mount.getBoundingClientRect();
   // The page's own coordinates start inside the frame's border.
   const frameBox = frame.getBoundingClientRect();
-  const r = Array.isArray(rects) && rects.length ? rects[rects.length - 1] : { left: 0, bottom: 0 };
   const originX = frameBox.left + frame.clientLeft - bounds.left;
   const originY = frameBox.top + frame.clientTop - bounds.top;
-  const top = Math.min(originY + r.bottom + 8, bounds.height - card.offsetHeight - 8);
-  const left = Math.min(originX + r.left, bounds.width - card.offsetWidth - 8);
-  card.style.top = `${Math.max(8, top)}px`;
-  card.style.left = `${Math.max(8, left)}px`;
+  const span = spanOf(rects);
+  const { offsetWidth: width, offsetHeight: height } = card;
+  const room = frame.clientHeight - CARD_GAP - height;
+  const below = span.bottom + CARD_GAP;
+  const above = span.top - CARD_GAP - height;
+  const top = below <= room || above < CARD_GAP ? below : above;
+  card.style.top = `${originY + Math.max(CARD_GAP, Math.min(top, room))}px`;
+  // A frame barely wider than the card shares what is left between its two sides.
+  const margin = Math.max(0, Math.min(CARD_GAP, (frame.clientWidth - width) / 2));
+  const left = Math.min(span.left, frame.clientWidth - width - margin);
+  card.style.left = `${originX + Math.max(margin, left)}px`;
 }
 
 window.addEventListener("message", (event) => {
