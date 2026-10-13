@@ -637,7 +637,7 @@ function renderNotice() {
         ? ["Another tab took over this review, so this page has stopped updating.", true]
         : connection === "gone"
           ? [
-              `This page can no longer reach its review. Run ${appName} on this file again for a fresh page; your notes are kept there.`,
+              "This page can no longer reach its review. Ask your agent to open this file again for a fresh page; your notes are kept there.",
               false,
             ]
           : !navigator.onLine

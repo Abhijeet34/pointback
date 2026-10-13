@@ -617,6 +617,11 @@ test(
   },
 );
 
+// A reviewer runs no commands, so a tab that has lost its review sends them to their agent, as the
+// page for an ended review's link does.
+const GONE_NOTICE =
+  "This page can no longer reach its review. Ask your agent to open this file again for a fresh page; your notes are kept there.";
+
 test(
   "a stale link tells the reviewer what to do instead of a blank page",
   { skip: !executable && "no browser found" },
@@ -625,10 +630,7 @@ test(
     const text = await page.waitFor(
       "document.getElementById('notice').checkVisibility() && document.getElementById('noticeText').textContent",
     );
-    assert.match(
-      text,
-      /can no longer reach its review\. Run .+ on this file again for a fresh page/,
-    );
+    assert.equal(text, GONE_NOTICE);
   },
 );
 
@@ -1261,6 +1263,55 @@ test(
     await back.waitFor("document.hasFocus() && document.activeElement.id === 'p1'");
     await page.tab();
     await back.waitFor("document.activeElement.id === 'p2'");
+    await page.close();
+  },
+);
+
+// Word exports wrap content in namespaced tags such as `w:sdt`, so the selector of a paragraph
+// inside one is no CSS a browser parses; the page loaded after the note must still come up whole.
+test(
+  "a note made by keyboard inside a Word tag, added while a save waits, leaves the saved page with its pin",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const file = join(mkdtempSync(join(lab.dir, "word-")), "minutes.html");
+    const html =
+      '<!doctype html><html lang="en"><head><meta charset="utf-8" /><title>Minutes</title></head>' +
+      '<body><main><h1 id="t">Minutes</h1><w:sdt><p>The cache was cold for an hour.</p></w:sdt>' +
+      "<p>Alerts fired late.</p></main></body></html>";
+    writeFileSync(file, html);
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#t");
+    await page.key("Escape", { keyCode: 27 });
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
+    await page.tab();
+    await artifact.waitFor(
+      "document.activeElement.textContent === 'The cache was cold for an hour.'",
+    );
+    await page.enter();
+    await page.waitFor(
+      `!document.getElementById('card').hidden && document.activeElement === ${card}`,
+    );
+    await page.type("Say which cache");
+    writeFileSync(file, html.replace("Alerts fired late.", "Alerts fired late, at 02:10."));
+    await page.waitFor(
+      `document.getElementById('status').textContent === ${JSON.stringify("The file changed. This page updates as soon as you finish this note.")}`,
+    );
+    await page.enter();
+    await page.waitFor("document.body.dataset.revision === '1'");
+    const saved = await page.frame();
+    const pins = await until(
+      async () => {
+        const shown = await pinsOn(saved);
+        return shown.length === 1 && shown;
+      },
+      { what: "the note's pin in the saved page" },
+    );
+    assert.match(pins[0].name, /^Note 1, /);
+    assert.equal(
+      await saved.eval("document.querySelector('main').textContent.includes('at 02:10')"),
+      true,
+    );
     await page.close();
   },
 );
@@ -4862,9 +4913,9 @@ test(
       await page.waitFor("document.getElementById('presence').dataset.state === 'gone'", {
         timeoutMs: 20_000,
       });
-      assert.match(
+      assert.equal(
         await page.eval("document.getElementById('noticeText').textContent"),
-        /can no longer reach its review\. Run .+ on this file again for a fresh page/,
+        GONE_NOTICE,
       );
       assert.deepEqual(
         JSON.parse(await page.eval(SAID_GONE)),
@@ -4985,8 +5036,7 @@ test(
           seen: {
             presence: "Disconnected",
             status: "",
-            notice:
-              "This page can no longer reach its review. Run the command on this file again for a fresh page; your notes are kept there.",
+            notice: GONE_NOTICE,
           },
           end: { disabled: true, cursor: "not-allowed" },
           annotate: { on: false, disabled: true, cursor: "not-allowed" },
@@ -5225,9 +5275,9 @@ test(
       await away.page.waitFor("document.getElementById('presence').dataset.state === 'gone'", {
         timeoutMs: 20_000,
       });
-      assert.match(
+      assert.equal(
         await away.page.eval("document.getElementById('noticeText').textContent"),
-        /can no longer reach its review\. Run .+ on this file again for a fresh page/,
+        GONE_NOTICE,
       );
 
       const reopened = await cli([file], own.env);
