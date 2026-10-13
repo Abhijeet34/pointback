@@ -662,6 +662,34 @@ function componentSheet() {
 }
 
 test(
+  "a save that makes the page load a file outside its folder says so in the tab it reloads, and one that stops says nothing",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const { page } = await openReview((await cli([file], lab.env)).json().session.url);
+    const outsideLine =
+      "(() => { const line = document.getElementById('outside'); return line.checkVisibility() ? line.textContent : null; })()";
+    await page.waitFor(FOLLOWING);
+    assert.equal(await page.eval(outsideLine), null, "every file the page loads is served");
+
+    // The line is drawn from the event that reloads the page, so it is there once the save shows.
+    writeFileSync(
+      file,
+      html.replace("</head>", '<link rel="stylesheet" href="../shared.css" /></head>'),
+    );
+    await page.waitFor("document.body.dataset.revision === '1'");
+    assert.equal(
+      await page.eval(outsideLine),
+      "../shared.css is outside the folder this review serves, so the page shows without it. Your agent can open it with --root to include it.",
+    );
+    writeFileSync(file, html);
+    await page.waitFor("document.body.dataset.revision === '2'");
+    assert.equal(await page.eval(outsideLine), null, "the save that drops it takes the line away");
+    await page.close();
+  },
+);
+
+test(
   "a sheet whose styles live above its folder paints styled under --root, and only there",
   { skip: !executable && "no browser found" },
   async () => {
@@ -2571,6 +2599,26 @@ test(
     await pointAt(page, artifact, "#title");
     assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: "", reason: null });
     await second.close();
+    await page.close();
+  },
+);
+
+test(
+  "the card opened after a note was added and sent starts empty",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.waitFor(FOLLOWING);
+    await noteOn(page, artifact, "#title", "Cut the title to four words");
+    await clickOn(page, "document.getElementById('send')");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    await pointAt(page, artifact, "#p1");
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: "", reason: null });
+    assert.deepEqual(
+      (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts.map((p) => p.prompt),
+      ["Cut the title to four words"],
+    );
     await page.close();
   },
 );
@@ -5093,6 +5141,89 @@ test(
       assert.deepEqual(
         polled.prompts.map((p) => p.prompt),
         ["Name the queue in the title", "Say how long each step takes"],
+      );
+      await page.close();
+    } finally {
+      await own.stop();
+    }
+  },
+);
+
+/** Each unsent note's Edit, × and an open edit's Save as they paint, with the words it holds. */
+const MARGIN_PAINT = `JSON.stringify([...document.querySelectorAll('.mark:not(.sent)')].map((li) => {
+  const paint = (button) => button && { disabled: button.disabled, cursor: getComputedStyle(button).cursor };
+  return {
+    edit: paint(li.querySelector('.mark-edit')),
+    remove: paint(li.querySelector('.mark-remove')),
+    save: paint(li.querySelector('.mark-editor [type=submit]')),
+    words: li.querySelector('.mark-edit-text')?.value ?? li.querySelector('.mark-note').textContent,
+  };
+}))`;
+
+test(
+  "a tab that cannot reach its review offers no margin Edit, Remove or Save that would fail, and they work once it is back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    try {
+      const { file } = copyOfFixture();
+      const { page, artifact } = await openReview((await cli([file], own.env)).json().session.url);
+      await page.waitFor(FOLLOWING);
+      await noteOn(page, artifact, "#title", "Make the title shorter");
+      await noteOn(page, artifact, "#p1", "Say how long");
+      await clickOn(page, "document.querySelectorAll('.mark-edit')[1]");
+      await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+      await page.type(" each step takes");
+      const live = { disabled: false, cursor: "pointer" };
+      const off = { disabled: true, cursor: "not-allowed" };
+      assert.deepEqual(JSON.parse(await page.eval(MARGIN_PAINT)), [
+        { edit: live, remove: live, save: null, words: "Make the title shorter" },
+        { edit: null, remove: null, save: live, words: "Say how long each step takes" },
+      ]);
+
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      await page.waitFor("document.getElementById('notice').checkVisibility()");
+      assert.deepEqual(
+        JSON.parse(await page.eval(MARGIN_PAINT)),
+        [
+          { edit: off, remove: off, save: null, words: "Make the title shorter" },
+          { edit: null, remove: null, save: off, words: "Say how long each step takes" },
+        ],
+        "nothing in the margin offers a call the page cannot make",
+      );
+      // A call refused for want of a connection fails in the turn of the key or press that made
+      // it, so an empty status read after each proves neither tried.
+      const status = "document.getElementById('status').textContent";
+      await page.enter();
+      assert.equal(await page.eval(status), "", "Enter in the edit waits, as Save does");
+      await clickOn(page, "document.querySelectorAll('.mark-remove')[0]");
+      assert.equal(await page.eval(status), "");
+      assert.equal(JSON.parse(await page.eval(MARGIN_PAINT)).length, 2, "both notes are kept");
+
+      assert.equal(
+        (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().status,
+        "waiting",
+      );
+      await page.waitFor(`${FOLLOWING} && !document.getElementById('notice').checkVisibility()`, {
+        timeoutMs: 20_000,
+      });
+      assert.deepEqual(JSON.parse(await page.eval(MARGIN_PAINT)), [
+        { edit: live, remove: live, save: null, words: "Make the title shorter" },
+        { edit: null, remove: null, save: live, words: "Say how long each step takes" },
+      ]);
+      await clickOn(page, "document.querySelector('.mark-editor [type=submit]')");
+      await page.waitFor(
+        "[...document.querySelectorAll('.mark-note')].map((e) => e.textContent).join('|') === 'Make the title shorter|Say how long each step takes'",
+      );
+      await clickOn(page, "document.querySelectorAll('.mark-remove')[0]");
+      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+      assert.deepEqual(
+        (await cli(["poll", file, "--timeout-ms", "0"], own.env))
+          .json()
+          .prompts.map((p) => p.prompt),
+        ["Say how long each step takes"],
       );
       await page.close();
     } finally {
