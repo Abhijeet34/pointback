@@ -1013,6 +1013,23 @@ test("a daemon whose state directory is removed before it publishes exits instea
   }
 });
 
+// A daemon whose state directory was removed under it after it published served on until its idle-out,
+// beside the daemon the next open started there, while `stop` found no record and said not-running.
+test("a running daemon whose state directory is removed exits instead of serving where no stop can find it", async () => {
+  const lost = isolatedEnv({ POINTBACK_IDLE_MS: "600000" });
+  let pid;
+  try {
+    const opened = await cli([fixture], lost.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    pid = lost.serverInfo().pid;
+    rmSync(lost.dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    await until(() => !pidAlive(pid), { what: "the daemon that lost its directory to exit" });
+  } finally {
+    if (pid && pidAlive(pid)) process.kill(pid);
+    await lost.stop();
+  }
+});
+
 // windows-2025, 3 of about 2160 traced rounds: a stop right after concurrent opens was followed by a
 // daemon one of those opens had spawned and that was still booting, which claimed the directory the
 // stop freed and ran on after it. Here such a start is held before any of its own code runs until the
@@ -1314,6 +1331,31 @@ test("a stopped daemon comes back on the address and token an open tab already h
     assert.notEqual(after.pid, before.pid, "a new daemon answered the poll");
     assert.deepEqual([after.port, after.token], [before.port, before.token]);
     assert.equal((await cli([fixture], own.env)).json().session.url, url, "the same link works");
+  } finally {
+    await own.stop();
+  }
+});
+
+// windows-2025 hunt job 115033372086: the shared daemon was stopped, and two minutes later every open
+// on its directory printed nothing and exited 1, its restart refused the recorded port with EACCES,
+// where only EADDRINUSE fell back to a new port.
+test("a stopped daemon whose port the system now refuses with EACCES comes back on another", async () => {
+  const own = isolatedEnv();
+  try {
+    assert.equal((await cli([fixture], own.env)).code, 0);
+    const before = own.serverInfo();
+    assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+    const opened = await cli(
+      [fixture],
+      loading(own.env, "refused-port.js", { TEST_REFUSED_PORT: String(before.port) }),
+    );
+    assert.equal(opened.code, 0, opened.stderr);
+    const after = own.serverInfo();
+    assert.notEqual(after.port, before.port);
+    assert.notEqual(after.token, before.token, "a token is never carried to a new port");
+    const { session } = opened.json();
+    assert.ok(session.url.startsWith(`http://127.0.0.1:${after.port}/`), session.url);
+    assert.equal((await fetch(session.url)).status, 200, "the review it answered with opens");
   } finally {
     await own.stop();
   }
