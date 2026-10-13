@@ -94,7 +94,11 @@ async function act(browser, fn, options = {}) {
         focus: document.hasFocus(),
         active: document.activeElement?.id || document.activeElement?.tagName,
         card: document.getElementById("card")?.hidden === false,
-        text: document.getElementById("cardText")?.value,
+        // A closed card keeps the last note's words until the next one opens it empty.
+        text:
+          document.getElementById("card")?.hidden === false
+            ? document.getElementById("cardText").value
+            : null,
         marks: document.querySelectorAll(".mark:not(.sent)").length,
         sent: document.querySelectorAll(".mark.sent").length,
         notice: document.getElementById("noticeText")?.textContent,

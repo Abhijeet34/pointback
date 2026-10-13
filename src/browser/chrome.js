@@ -383,6 +383,7 @@ function apply(event) {
     current = false;
     letCardGo();
   } else if (event.type === "reload") {
+    tellOutside(event.outside);
     // A reload means the file is there to read, including one that came back after it was gone.
     fileGone = false;
     followAnnotate();
@@ -485,6 +486,11 @@ function render() {
   annotateSwitch.disabled = ended !== null || fileGone || connection === "gone";
   // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
   cardAdd.disabled = offline;
+  // So do the margin's changes to a note: each is a call to the review, as Send is.
+  const changes = /** @type {NodeListOf<HTMLButtonElement>} */ (
+    marks.querySelectorAll(".mark-edit, .mark-remove, .mark-editor [type=submit]")
+  );
+  for (const button of changes) button.disabled = offline;
   renderReason();
   // Ending is a call to the review, so it waits for the connection as Send does.
   endButton.disabled = ended !== null || fileGone || offline;
@@ -877,6 +883,8 @@ function editor(n) {
   form.append(box, row);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    // Enter submits past a Save that is waiting for the connection; the words stay in the box.
+    if (save.disabled) return;
     await saveEdit();
   });
   return form;
