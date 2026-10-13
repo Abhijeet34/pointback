@@ -76,6 +76,9 @@ export function acceptWebSocket(req, socket, protocol) {
       if (opcode === 0x8) return close(payload.length >= 2 ? payload.readUInt16BE(0) : 1000);
     }
   });
+  // The http server allows half-open sockets, so a client that left with a FIN and no close frame
+  // (a crashed tab) would otherwise hold its stream, and a slot under limits.eventStreams, for good.
+  socket.on("end", () => socket.destroy());
   return {
     send: (text) => write(0x1, Buffer.from(text)),
     close,
