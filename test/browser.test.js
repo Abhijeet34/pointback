@@ -2366,12 +2366,20 @@ test(
       { outlined: 1, card: { words: "This title is long; I would cut it to", reason: null } },
       "the card still open on the title has the title outlined again",
     );
+    // The page drops the outline when the card close reaches it, through the wrapper and after the
+    // chrome hides the card; held there, as a loaded runner's wrapper can, the outline stays till then.
+    const held = await holdCloseRelay(page);
     await page.type(" four words");
     await clickOn(page, "document.getElementById('cardAdd')");
     await page.waitFor(
       "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
     );
-    assert.equal(await highlights(artifact), 0, "the note added, its outline goes with the card");
+    await held.reached();
+    assert.equal(await highlights(artifact), 1, "the card close not yet heard, the outline stays");
+    await held.release();
+    await until(async () => (await highlights(artifact)) === 0, {
+      what: "the note added, its outline to go with the card once the page hears it close",
+    });
     await page.close();
   },
 );
