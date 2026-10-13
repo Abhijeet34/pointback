@@ -6823,6 +6823,56 @@ test(
   },
 );
 
+test(
+  "a click the page scrolls under while the pointer comes in still lands on what it was aimed at",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // On windows-2025 the frame twice stood 130 px above where the click's scroll had left it when
+    // the press landed, and the note went on the code block over the Install paragraph
+    // (docs/ENGINEERING-NOTES.md). Here the page moves itself at the pointer's first move into it.
+    const readme = copyOfReadme();
+    const { page, artifact } = await openReview(
+      (await cli([readme.file], lab.env)).json().session.url,
+    );
+    await artifact.eval("addEventListener('mousemove', () => scrollBy(0, -122), { once: true })");
+    const install = await noteOnInstall(page, artifact, "Say why two");
+    assert.equal(await page.eval("document.querySelector('.mark-tag').textContent"), "Paragraph");
+    await pinsBesideTargets(artifact, ["Note 1, not sent yet"], [install], "after the page moved");
+    await page.close();
+    rmSync(dirname(readme.file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "a click whose press lands off its target names what it hit, where the page was scrolled, and who scrolled it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    writeFileSync(
+      file,
+      html
+        .replace(
+          "</main>",
+          '<div style="position: relative"><p id="under">Words a cover lies over.</p>' +
+            '<div id="cover" style="position: absolute; inset: 0"></div></div></main>',
+        )
+        .replace(
+          "</body>",
+          "<script>function moveAway() { scrollBy(0, -40); }" +
+            "addEventListener('mousemove', moveAway, { once: true });</script></body>",
+        ),
+    );
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await assert.rejects(clickIn(page, artifact, "#under"), (error) => {
+      assert.match(error.message, /landed on div#cover, not #under/);
+      assert.match(error.message, /scrollY \d+ when measured and \d+ at the press/);
+      assert.match(error.message, /scrollBy\(\[0,-40\]\)[^\n]*moveAway/);
+      return true;
+    });
+    await page.close();
+  },
+);
+
 /**
  * The words each pin paints over: every text box on the page, from its text nodes, that a pin's
  * box intersects, named by the element holding it. Measured as the pins are, in the frame's viewport.
