@@ -3507,6 +3507,15 @@ test(
 );
 
 /**
+ * A look that lands as a reload replaces the document is that reload under way (macos-15, run
+ * 37387213092): it answers null, so a wait looks again and an assertion reports the reload.
+ */
+function unlessReloaded(error) {
+  if (error.message === "Inspected target navigated or closed") return null;
+  throw error;
+}
+
+/**
  * Holds the chrome's code face, as a slow connect would, until `refuse` fails it, and counts the
  * reloads the chrome asks for. A chrome file the network refuses on the tab's first load (Windows,
  * docs/ENGINEERING-NOTES.md), or the `first` one refused here, reloads the chrome before the reviewer
@@ -3572,12 +3581,7 @@ function holdFace(page, port, first) {
         const loader = shown;
         const found = paused.find(({ networkId }) => loaderOf.get(networkId) === loader);
         if (!found || asked > 0) return false;
-        // A look that lands as a reload replaces the document is that reload under way (macos-15,
-        // run 37387213092), so it looks again.
-        const ready = await page.eval("document.body?.dataset.ready === '1'").catch((error) => {
-          if (error.message === "Inspected target navigated or closed") return false;
-          throw error;
-        });
+        const ready = await page.eval("document.body?.dataset.ready === '1'").catch(unlessReloaded);
         if (!ready || shown !== loader || asked > 0) return false;
         face = { ...found, loader, reloads };
         return true;
@@ -3639,14 +3643,18 @@ for (const [after, first] of REFUSED_FIRST) {
         await face.refuse("ConnectionRefused");
         // The face's load has failed once the document's faces have settled; two frames after that let
         // recover.js's rejected `loaded` be heard before the note is read.
-        await page.eval(SETTLED);
+        await page.eval(SETTLED).catch(unlessReloaded);
         assert.deepEqual(
           {
             ...JSON.parse(
-              await page.eval(`JSON.stringify({
-                text: document.getElementById('cardText').value,
-                open: !document.getElementById('card').hidden,
-              })`),
+              await page
+                .eval(
+                  `JSON.stringify({
+                    text: document.getElementById('cardText').value,
+                    open: !document.getElementById('card').hidden,
+                  })`,
+                )
+                .catch(unlessReloaded),
             ),
             reloads: face.reloads,
           },
@@ -3700,10 +3708,12 @@ for (const [after, first] of REFUSED_FIRST) {
         await page.waitFor("document.activeElement?.classList.contains('mark-edit-text')");
         await press(page, "again");
         await face.refuse("ConnectionRefused");
-        await page.eval(SETTLED);
+        await page.eval(SETTLED).catch(unlessReloaded);
         assert.deepEqual(
           {
-            text: await page.eval("document.querySelector('.mark-edit-text')?.value ?? null"),
+            text: await page
+              .eval("document.querySelector('.mark-edit-text')?.value ?? null")
+              .catch(unlessReloaded),
             reloads: face.reloads,
           },
           { text: "Shorter titleagain", reloads: 0 },
