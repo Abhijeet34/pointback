@@ -14,7 +14,7 @@ import { until } from "./helpers/wait.js";
 const killed = fileURLToPath(new URL("./fixtures/interrupted.js", import.meta.url));
 const windows = process.platform === "win32";
 
-test("a test run killed outright ends its file, which stops the daemon its test started and removes its state where the platform lets it run", async () => {
+test("a test run killed outright ends its file, which on POSIX first stops the daemon its test started and removes its state", async () => {
   const report = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-interrupt-")), "report");
   // Killed outright, the runner closes the pipe its file reports on, which POSIX tells the file on its
   // next write. Windows ends the file with the runner, so it runs nothing (helpers/interrupt.js).
