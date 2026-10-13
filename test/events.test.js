@@ -119,6 +119,20 @@ test("a save made while no tab follows the review reaches the next tab that open
   assert.equal(tab(streams, key).lines[0].revision, 2, "an unchanged file is not numbered again");
 });
 
+test("a save made while no daemon ran reaches the next daemon's first tab, numbered", () => {
+  const { dir, artifact, key, streams } = lab();
+  tab(streams, key);
+  // The daemon stopped, the agent saved, and its next command started a daemon on the same state.
+  streams.closeAll();
+  writeFileSync(artifact, "<p>two, saved while no daemon ran</p>");
+  const restarted = new SessionStore(dir);
+  const first = tab(new EventStreams(restarted), key);
+  assert.equal(first.lines[0].revision, 1, "the save made while no daemon ran is numbered");
+  first.detach();
+  const again = tab(new EventStreams(new SessionStore(dir)), key);
+  assert.equal(again.lines[0].revision, 1, "a daemon started over an unchanged file numbers nothing");
+});
+
 test("an open under another root moves an open tab to the page's new address, and only then", async () => {
   const { dir, artifact, key, streams, store } = lab();
   const one = tab(streams, key);
