@@ -130,7 +130,11 @@ test("a save made while no daemon ran reaches the next daemon's first tab, numbe
   assert.equal(first.lines[0].revision, 1, "the save made while no daemon ran is numbered");
   first.detach();
   const again = tab(new EventStreams(new SessionStore(dir)), key);
-  assert.equal(again.lines[0].revision, 1, "a daemon started over an unchanged file numbers nothing");
+  assert.equal(
+    again.lines[0].revision,
+    1,
+    "a daemon started over an unchanged file numbers nothing",
+  );
 });
 
 test("an open under another root moves an open tab to the page's new address, and only then", async () => {
