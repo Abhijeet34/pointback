@@ -16,6 +16,7 @@ import {
 } from "./client.js";
 import { env, envPrefix, name, stateDirName, version } from "./identity.js";
 import { limits } from "./limits.js";
+import { unreviewable } from "./markdown.js";
 import { serve } from "./server.js";
 import { REPLY_STATUSES } from "./session-store.js";
 import { readPollCursor, stateDir, writePollCursor } from "./state-dir.js";
@@ -46,23 +47,30 @@ Environment:
   ${envPrefix}IDLE_MS          how long an idle server waits before it exits (default: ${limits.idleShutdownMs})
   ${envPrefix}POLL_REQUEST_MS  how long one request of a poll is held before the CLI asks again (default and maximum: ${limits.pollRequestMs})`;
 
+/** @satisfies {import("node:util").ParseArgsOptionsConfig} */
+const options = /** @type {const} */ ({
+  version: { type: "boolean" },
+  help: { type: "boolean" },
+  "no-open": { type: "boolean" },
+  reopen: { type: "boolean" },
+  root: { type: "string" },
+  "timeout-ms": { type: "string" },
+  done: { type: "boolean" },
+  declined: { type: "boolean" },
+  question: { type: "boolean" },
+  message: { type: "string" },
+});
+
 export async function run(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      version: { type: "boolean" },
-      help: { type: "boolean" },
-      "no-open": { type: "boolean" },
-      reopen: { type: "boolean" },
-      root: { type: "string" },
-      "timeout-ms": { type: "string" },
-      done: { type: "boolean" },
-      declined: { type: "boolean" },
-      question: { type: "boolean" },
-      message: { type: "string" },
-    },
-  });
+  // parseArgs takes a value such as -5 for an option of its own and refuses it with advice about
+  // dashes; joined to its flag, it reaches the check that says what the flag takes.
+  const args = [];
+  for (const arg of argv) {
+    const flag = args.at(-1)?.match(/^--([\w-]+)$/)?.[1];
+    if (/^-\d/.test(arg) && options[flag]?.type === "string") args[args.length - 1] += `=${arg}`;
+    else args.push(arg);
+  }
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options });
   if (values.version) return print(stdout, version);
   if (values.help || positionals.length === 0) return print(stdout, usage);
 
@@ -70,7 +78,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   const command = ["open", "poll", "reply", "end", "stop", "server"].includes(first)
     ? first
     : "open";
-  const args = command === first ? rest : positionals;
+  const operands = command === first ? rest : positionals;
   const dir = stateDir();
   if (values.root !== undefined && command !== "open")
     throw new Error("--root applies only when opening a review");
@@ -115,10 +123,13 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
     return print(stdout, JSON.stringify({ status: held ? "stopped" : "not-running" }));
   }
 
-  const file = args[0];
+  const file = operands[0];
   if (!file) throw new Error(`${command} needs a file argument`);
-  // A malformed reply is refused before a daemon is started for it.
-  const reply = command === "reply" ? replyArgs(args[1], values) : undefined;
+  // A malformed reply or wait, or a file no review shows, is refused before a daemon is started for it.
+  const reply = command === "reply" ? replyArgs(operands[1], values) : undefined;
+  const typed = command === "poll" ? pollTimeout(values["timeout-ms"]) : undefined;
+  const refusal = command !== "open" && existsSync(file) && unreviewable(resolve(file));
+  if (refusal) throw new Error(refusal);
   const server = await ensureServer(dir);
 
   if (command === "open") {
@@ -161,7 +172,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   if (reply) {
     const key = sessionKey(canonical);
     const result = await api(server, "POST", `/api/${key}/replies`, reply).catch(
-      refused(canonical),
+      refused(canonical, file),
     );
     if (result.status === "gone") return printGone(stdout, file, result);
     return print(stdout, JSON.stringify(result));
@@ -170,7 +181,7 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   if (command === "end") {
     const key = sessionKey(canonical);
     const result = await api(server, "POST", `/api/${key}/end`, { by: "agent" }).catch(
-      refused(canonical),
+      refused(canonical, file),
     );
     if (result.status === "gone") return printGone(stdout, file, result);
     return print(stdout, JSON.stringify(result));
@@ -189,21 +200,17 @@ export async function run(argv, { stdout = process.stdout, stderr = process.stde
   // A path with no file answers at once, with its last notes, gone, or no such file.
   if (existsSync(canonical)) print(stderr, `waiting for feedback on ${file}...`);
   // One long wait is a run of shorter requests: Node's fetch fails any request whose answer takes
-  // over 300 s, so a single 400 s poll ended in "fetch failed". A value the server refuses (not a
-  // non-negative integer) goes once, as typed, so the server refuses it exactly as before.
-  const typed =
-    values["timeout-ms"] === undefined ? limits.pollTimeoutDefaultMs : Number(values["timeout-ms"]);
-  const split = Number.isInteger(typed) && typed >= 0;
-  let remaining = split ? Math.min(typed, limits.pollTimeoutMaxMs) : typed;
+  // over 300 s, so a single 400 s poll ended in "fetch failed".
+  let remaining = Math.min(typed, limits.pollTimeoutMaxMs);
   const deadline = Date.now() + remaining;
   let result;
   for (;;) {
-    const timeoutMs = split ? Math.min(remaining, requestMs) : remaining;
-    result = await api(server, "GET", `/api/poll?${query}&timeoutMs=${timeoutMs}`).catch(
-      refused(canonical),
-    );
+    const timeoutMs = Math.min(remaining, requestMs);
+    result = await api(server, "GET", `/api/poll?${query}&timeoutMs=${timeoutMs}`, undefined, {
+      holdMs: timeoutMs,
+    }).catch(refused(canonical, file));
     remaining = deadline - Date.now();
-    if (!split || result.status !== "waiting" || remaining <= 0) break;
+    if (result.status !== "waiting" || remaining <= 0) break;
   }
   if (result.status === "gone") return printGone(stdout, file, result);
   const { receipt, epoch } = result;
@@ -263,15 +270,26 @@ function replyArgs(uid, values) {
   return { uid: Number(uid), status: statuses[0], message: values.message };
 }
 
+/** `--timeout-ms` as a number of milliseconds, the default when it is not given. */
+function pollTimeout(typed) {
+  if (typed === undefined) return limits.pollTimeoutDefaultMs;
+  if (!/^\d+$/.test(typed))
+    throw new Error("--timeout-ms must be a whole number of milliseconds, 0 or more");
+  return Number(typed);
+}
+
 /**
  * A file moved or deleted under its review is an answer to print; any other refusal is an error.
- * A path with neither a file nor a review is reported the way open reports it.
+ * A path with neither a file nor a review is reported the way open reports it, and a file with no
+ * review open is told the command that opens one.
  */
-function refused(canonical) {
+function refused(canonical, file) {
   return (error) => {
     if (error.answer?.status === "gone") return error.answer;
     if (error.status === 404 && !existsSync(canonical))
       throw new Error(`no such file: ${canonical}`);
+    if (error.status === 404 && error.message === "no such session")
+      throw new Error(`no review of ${file} is open: run \`${name} ${file}\` to open one`);
     throw error;
   };
 }

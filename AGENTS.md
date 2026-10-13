@@ -31,7 +31,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   An order a test forces between the chrome and the page holds one side until the other is seen, never a fixed delay (`holdTasks` in `test/browser.test.js`, `docs/ENGINEERING-NOTES.md`).
 - Never assert on the next line of an event stream: a failed watch arrives as `reload-off` on the same stream (`src/events.js`).
 - A test needing a review in a known state takes its own (`copyOfFixture`); a browser test's agent poll runs after the notes are sent, with `--timeout-ms 0`.
-- A test adds or sends on a tab it opened only once the chrome publishes its event stream open (`FOLLOWING` in `test/browser.test.js`): Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused stream is retried after a pause (`docs/ENGINEERING-NOTES.md`).
+- A test adds or sends on a tab it opened only once the chrome publishes its event stream open (`FOLLOWING` in `test/browser.test.js`): Windows refuses a few of Chrome's new loopback connects, at the rate `docs/ENGINEERING-NOTES.md` measures, and a refused stream is retried after a pause.
 - A note made by mouse leaves nothing in the page focused once its card closes (only a keyboard-made one refocuses its element; `closeTarget` in `src/browser/sdk.js`), so a test that points with `pointAt` and then drives the page by key moves the focus with Tab or H first.
 - A test driving a tab it sent to the background calls `page.front()` first, and an animation assertion emulates `prefers-reduced-motion: no-preference` first.
 - A key the chrome acts on is `preventDefault`ed, or headless Chromium on macOS freezes; it also sends a key the page leaves unhandled back to the page, so a test types into the page only once the element meant to take the keys holds the focus (`docs/ENGINEERING-NOTES.md`).
@@ -40,6 +40,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - `README.md` is a browser-suite fixture: its Install paragraph opens with `` `parse5` ``.
 - The vendored house files under `src/browser/house/` are never edited; move the pin with `node scripts/sync-house.js`.
   The chrome uses `--hw-*` roles and rem sizes only (`src/browser/chrome.css`).
+  The chrome, the rendered Markdown and the pins follow `prefers-color-scheme`; the chrome, `wrapper.html` and the Markdown page each declare `color-scheme: light dark`, and the pins' house values per scheme live in `ROLES` in `src/browser/sdk.js` (`docs/ENGINEERING-NOTES.md`).
 - Windows: `fileURLToPath`, never `new URL(...).pathname`; `realpathSync.native` wherever a path is watched or keyed; a read of a file another process is writing treats failure as "not yet"; in a test, no `shasum`, and spawning `npm` needs `shell: true`.
 
 ## Security boundaries
