@@ -250,11 +250,13 @@ Only the page under review announces itself to the chrome, so a page that loads 
 A first load that comes back unannounced is asked for once more before that, and so is a first load of the frame the page sits in, because a load the network refused looks exactly like a page that went elsewhere.
 While a note being written holds a reload back, a refused first load of the page gets the cover at once, without the second ask.
 A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled; it also waits while the browser is offline or the tab is not connected, since the browser would refuse that reload too, and runs once both are back. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
+While a note is being written, a shield lies over the page: a press on it hands the page the focus, and the wheel over it scrolls the page by the same distance while the focus stays in the note.
 A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
 The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
 A note opened before the page has heard the last card close unloads the page at once, with a line saying why, and the page comes back when that note is done; that unload is not counted against the page.
 
 The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on sessions, prompts and open polls.
+A tab past it says too many review tabs are open, and follows its review once another closes.
 
 ## How it holds together
 
@@ -285,7 +287,7 @@ Windows has no such bits, so the state directory's ACL is reset to a single full
 A review is a bounded thing that ends, not state that piles up.
 The daemon idles out after `POINTBACK_IDLE_MS` of no activity, and a review tab keeps it alive only while the reviewer is on it: the tab heartbeats while its page is visible and stops when it is hidden, so a review left open and walked away from releases the process rather than pinning it open for good.
 Sessions are capped at `sessions` in `src/limits.js`; opening past the cap disposes the least-recently-active session, an ended review before a running one, so `sessions/` holds at most that many files no matter how many files have been reviewed.
-A session with a tab open on it, a poll attached or within its grace, or notes not yet sent or received is never the one disposed; when every session held is one of those, the new open is refused and names those three causes, and `skills/pointback/SKILL.md` gives the way out for each.
+A session with a tab open on it, a poll attached or within its grace, or notes not yet sent or received is never the one disposed; when every session held is one of those, the new open is refused with a line for each cause, saying how to clear it and which files it holds, and opening a file whose review is already held still works.
 After a hundred reviews on a long-lived machine, then, there is one small loopback daemon that exits on its own when idle, and a `sessions/` directory bounded to the most recent sessions, each holding that session's path and the notes sent in it.
 
 The process opens no outbound connection, ever; `test/egress.test.js` proves it across the whole slice.
