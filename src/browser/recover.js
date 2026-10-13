@@ -58,7 +58,11 @@
     },
     true,
   );
-  document.fonts.addEventListener("loadingerror", (event) => {
-    for (const face of event.fontfaces) refused(`${face.family} ${face.weight}`);
+  // A refused face rejects its `loaded` in every engine, where WebKit fires no `loadingerror` at all
+  // (docs/ENGINEERING-NOTES.md). Every face the chrome sets is declared by DOMContentLoaded, which
+  // waits for the head's sheets to run chrome.js; `load` would wait on the page under review too.
+  addEventListener("DOMContentLoaded", () => {
+    for (const face of document.fonts)
+      face.loaded.catch(() => refused(`${face.family} ${face.weight}`));
   });
 }

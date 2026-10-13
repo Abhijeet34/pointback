@@ -2322,6 +2322,9 @@ test(
         end: look('end'),
       };
     })())`;
+    // Under reduced motion the controls' colours still ease over the house's 100 ms, and End review
+    // eases in as it is enabled once the review is shown; a read before that settles is mid-way.
+    await page.eval(SETTLED);
     const live = JSON.parse(await page.eval(painted));
     assert.equal(live.notice, null);
     const away = `${file}.away`;
@@ -2331,6 +2334,7 @@ test(
     assert.equal(polled.code, 1);
     assert.equal(polled.json().status, "gone");
     await page.waitFor("document.getElementById('notice').checkVisibility()");
+    await page.eval(SETTLED);
     const gone = JSON.parse(await page.eval(painted));
     assert.equal(gone.notice, "The file was moved or deleted, so this review cannot go on.");
     // Said once, in the notice, and Send keeps its short label; no third line repeats it.
@@ -2343,6 +2347,8 @@ test(
 
     renameSync(away, file);
     await page.waitFor("!document.getElementById('notice').checkVisibility()");
+    // Under reduced motion the controls' colours still ease back over the house's 100 ms.
+    await page.eval(SETTLED);
     assert.deepEqual(JSON.parse(await page.eval(painted)), live, "the review is back as it was");
     await page.close();
   },
@@ -2629,6 +2635,66 @@ test(
       JSON.parse(await page.eval(CARD_SEEN)).words,
       "",
       "the next card starts empty: Cancel dropped the words",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a note card near the foot of the page stays inside the frame when its reason line shows, and the page keeps its width",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    // The width the defect was seen at, where the notes are a rail beside the page and nothing
+    // under the frame can take the card's overflow.
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+      width: 1440,
+      height: 900,
+    });
+    const FITS = `JSON.stringify((() => {
+      const root = document.scrollingElement;
+      const card = document.getElementById('card').getBoundingClientRect();
+      const mount = document.querySelector('.mount').getBoundingClientRect();
+      return {
+        page: document.getElementById('artifact').clientWidth,
+        chromeScrolls: root.scrollHeight > root.clientHeight || root.scrollWidth > root.clientWidth,
+        cardInFrame: card.top >= mount.top && card.bottom <= mount.bottom,
+      };
+    })())`;
+    const { page: width } = JSON.parse(await page.eval(FITS));
+    // #tail fills the foot of the frame, so the card is clamped to the frame's bottom edge.
+    await pointAt(page, artifact, "#tail");
+    await page.type("Say who owns the rollback");
+    assert.deepEqual(JSON.parse(await page.eval(FITS)), {
+      page: width,
+      chromeScrolls: false,
+      cardInFrame: true,
+    });
+    renameSync(file, `${file}.away`);
+    assert.equal((await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status, "gone");
+    await page.waitFor(noticeSays("The file was moved or deleted, so this review cannot go on."));
+    // The reason line is drawn in the notice's turn; two frames later the card has been laid out
+    // with it and anything that answers its new size has run.
+    await page.eval(
+      "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))",
+    );
+    const reach = JSON.parse(
+      await page.eval(reachability(["#cardText", "#cardCancel", "#cardAdd"])),
+    );
+    assert.deepEqual(
+      {
+        ...JSON.parse(await page.eval(FITS)),
+        reason: JSON.parse(await page.eval(CARD_SEEN)).reason,
+        offScreen: reach.controls.filter((c) => !c.reachable).map((c) => c.selector),
+      },
+      {
+        page: width,
+        chromeScrolls: false,
+        cardInFrame: true,
+        reason:
+          "The file was moved or deleted. Add note keeps this with your other notes, and Send opens again if the file comes back.",
+        offScreen: [],
+      },
     );
     await page.close();
   },
@@ -3493,7 +3559,7 @@ test(
         errorReason: "ConnectionRefused",
       });
       // The face's load has failed once the document's faces have settled; two frames after that let
-      // the chrome's loadingerror handler run before the note is read.
+      // recover.js's rejected `loaded` be heard before the note is read.
       await page.eval(SETTLED);
       assert.deepEqual(
         JSON.parse(
@@ -3643,7 +3709,7 @@ test(
         errorReason: "InternetDisconnected",
       });
       // The face's load has failed once the document's faces have settled; two frames after that let
-      // recover.js's loadingerror handler run before the chrome is read.
+      // recover.js's rejected `loaded` be heard before the chrome is read.
       await page.explained(page.eval(SETTLED));
       await page.waitFor("/offline/.test(document.getElementById('noticeText').textContent)");
       assert.deepEqual(
@@ -4002,9 +4068,22 @@ test(
         track: getComputedStyle(track).backgroundColor, thumb: getComputedStyle(track, '::after').backgroundColor,
         quietDisabled: getComputedStyle(document.getElementById('end')).color };
     })())`;
+    // The eases of the controls read above, waited out where they run. Not SETTLED, which waits on
+    // every animation in the chrome: Send's colour ease, started while this tab sat behind the second,
+    // stayed pending at currentTime 0 on ubuntu-24.04 while the document's clock ran on for 6 s, and its
+    // `finished` never came (run 38365341668).
+    const SWITCH_EASED = `(() => {
+      const track = document.getElementById('annotate');
+      const read = [track, track.parentElement, document.getElementById('end')];
+      return Promise.all(document.getAnimations()
+        .filter((a) => read.includes(a.effect?.target))
+        .map((a) => a.finished.catch(() => {}))).then(() => true);
+    })()`;
     // Ending turns annotate off, so the live switch is read off too, or the comparison is vacuous.
     await page.eval("document.getElementById('annotate').click()");
     await page.waitFor("String(document.getElementById('annotate').checked) === 'false'");
+    // Under reduced motion the switch's and End review's colours still ease over the house's 100 ms.
+    await page.eval(SWITCH_EASED);
     const live = JSON.parse(await page.eval(SWITCH_PAINT));
 
     // Ending with a note still queued offers to send it, and the agent gets it as the last batch.
@@ -4027,6 +4106,7 @@ test(
     assert.equal(await page.eval("document.getElementById('annotate').disabled"), true);
     // Disabled must also look it: the label dims like the other disabled controls, the cursor
     // stops promising a press, and the track and thumb no longer paint as a live switch.
+    await page.eval(SWITCH_EASED);
     const ended = JSON.parse(await page.eval(SWITCH_PAINT));
     assert.equal(ended.color, ended.quietDisabled, "the ended switch's label dims like End review");
     assert.notEqual(ended.color, live.color);
@@ -4707,14 +4787,22 @@ async function holdSdk(artifact) {
   };
 }
 
-/** A real click in the middle of a chrome element, scrolled into view first as a reviewer would. */
+/**
+ * A real click in the middle of a chrome element, scrolled into view first as a reviewer would, and
+ * aimed two frames on, where a reviewer sees it: the card is placed again in the frame after it grows,
+ * and a box read before that frame aimed 49 px below Cancel (macos-15, run 38294988373).
+ */
 async function clickOn(page, expression) {
   const box = JSON.parse(
-    await page.eval(`(() => {
-      const element = ${expression};
-      element.scrollIntoView({ block: "nearest" });
-      return JSON.stringify(element.getBoundingClientRect());
-    })()`),
+    await page.eval(`new Promise((done, fail) => requestAnimationFrame(() => requestAnimationFrame(() => {
+      try {
+        const element = ${expression};
+        element.scrollIntoView({ block: "nearest" });
+        done(JSON.stringify(element.getBoundingClientRect()));
+      } catch (error) {
+        fail(error);
+      }
+    })))`),
   );
   await page.click(box.left + box.width / 2, box.top + box.height / 2);
 }
@@ -6468,6 +6556,79 @@ test(
   },
 );
 
+/** The bar's parts whose boxes overlap, and how wide the file's name paints. */
+const BAR_PARTS = `JSON.stringify((() => {
+  const parts = [".brand", "#fileName", "#presence", "#textSizeButton", ".annotate", "#end"];
+  const boxes = parts.map((s) => document.querySelector(s).getBoundingClientRect());
+  const overlaps = [];
+  for (const [i, a] of boxes.entries())
+    for (const [j, b] of boxes.entries())
+      if (i < j && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom)
+        overlaps.push(parts[i] + " over " + parts[j]);
+  return { overlaps, file: document.getElementById("fileName").clientWidth };
+})())`;
+
+test(
+  "at every text size the bar and its text size steps fit a phone and a narrow window: nothing scrolls sideways, overlaps or leaves the screen",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const sizes = ["s", "m", "l", "xl", "xxl"];
+    const stepOf = (size) => `#textSize [data-size="${size}"]`;
+    const panel = "document.getElementById('textSizePanel')";
+    const seen = {};
+    // 320 and 390 are phones held upright, under the bar's two-line layout; 600 is the first width
+    // the bar is one line, where the name and the tools last shared it at the largest size.
+    for (const width of [320, 390, 600]) {
+      const page = await browser.page(session.url, { width, height: 800 });
+      try {
+        await page.waitFor("document.body.dataset.ready === '1'");
+        for (const size of sizes) {
+          await clickOn(page, "document.getElementById('textSizeButton')");
+          await page.waitFor(`${panel}.matches(':popover-open')`);
+          const step = `document.querySelector('${stepOf(size)}')`;
+          const [target] = JSON.parse(await page.eval(reachability([stepOf(size)]))).controls;
+          // A step off the screen is recorded below, at the size that put it there; the size is
+          // still taken, so every width and size is measured.
+          if (target.reachable) await clickOn(page, step);
+          else await page.eval(`${step}.click()`);
+          await page.waitFor(`document.documentElement.dataset.textSize === "${size}"`);
+          const steps = JSON.parse(await page.eval(reachability(sizes.map(stepOf))));
+          // Aa again closes the steps: Escape is the browser's to act on, and a key the chrome leaves
+          // to the browser can freeze headless Chromium on macOS (docs/ENGINEERING-NOTES.md).
+          await clickOn(page, "document.getElementById('textSizeButton')");
+          await page.waitFor(`!${panel}.matches(':popover-open')`);
+          const bar = JSON.parse(
+            await page.eval(reachability(["#presence", "#textSizeButton", "#annotate", "#end"])),
+          );
+          const { overlaps, file: name } = JSON.parse(await page.eval(BAR_PARTS));
+          seen[`${size} at ${width}`] = {
+            sideways: bar.sideways,
+            offScreen: [...steps.controls, ...bar.controls]
+              .filter((c) => !c.reachable)
+              .map((c) => c.selector),
+            overlaps,
+            // Four characters of the file's name, the least that still says which file this is.
+            fileShown: name >= 4 * 7,
+          };
+        }
+      } finally {
+        // Every later review in this browser opens at the size picked last.
+        await page.eval("localStorage.setItem('textSize', 'm')");
+        await page.close();
+      }
+    }
+    const fits = { sideways: [], offScreen: [], overlaps: [], fileShown: true };
+    assert.deepEqual(
+      seen,
+      Object.fromEntries(Object.keys(seen).map((at) => [at, fits])),
+      "the bar at each text size and width",
+    );
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
 const CELL = (row) => `main > table > tbody > tr:nth-of-type(${row}) > td:nth-of-type(2)`;
 
 /** Waits for the frame to paint `count` pins, and says where each stands against its target. */
@@ -8027,6 +8188,56 @@ test(
     await clickOn(page, step("m"));
     await page.waitFor(`${checked} === "Medium"`);
     await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "under reduced motion a switch still changes colour as it flips, and its thumb jumps rather than travels",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.waitFor("document.body.dataset.annotate === '1'");
+    // The page's clock stands still, so every transition a flip starts is still there to be read,
+    // however late the read comes.
+    await page.send("Animation.enable");
+    await page.send("Animation.setPlaybackRate", { playbackRate: 0 });
+    const MOVES = `JSON.stringify(document.getAnimations()
+      .filter((a) => a.effect.target === document.getElementById('annotate'))
+      .map((a) => [a.effect.pseudoElement ?? '', a.transitionProperty, a.effect.getTiming().duration])
+      .sort())`;
+    const flip = async (motion, to) => {
+      await page.send("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-reduced-motion", value: motion }],
+      });
+      await clickOn(page, "document.getElementById('annotate')");
+      await page.waitFor(`document.body.dataset.annotate === '${to}'`);
+      const moves = JSON.parse(await page.eval(MOVES));
+      await page.eval("document.getAnimations().forEach((a) => a.finish())");
+      return moves;
+    };
+    try {
+      // With motion allowed the thumb travels, which shows a movement here is seen at all.
+      assert.deepEqual(await flip("no-preference", "0"), [
+        ["", "background-color", 120],
+        ["::after", "translate", 120],
+      ]);
+      // Reduced, the house's rule: the colours still change over its 100 ms and nothing travels.
+      assert.deepEqual(await flip("reduce", "1"), [
+        ["", "background-color", 100],
+        ["", "border-bottom-color", 100],
+        ["", "border-left-color", 100],
+        ["", "border-right-color", 100],
+        ["", "border-top-color", 100],
+        ["::after", "background-color", 100],
+      ]);
+    } finally {
+      await page.send("Animation.setPlaybackRate", { playbackRate: 1 });
+      await page.send("Animation.disable");
+      await page.send("Emulation.setEmulatedMedia", { features: [] });
+      await page.close();
+    }
     rmSync(dirname(file), { recursive: true, force: true });
   },
 );
