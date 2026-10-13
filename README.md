@@ -249,7 +249,7 @@ The frame can leave the page under review too: a link followed with Annotate off
 Only the page under review announces itself to the chrome, so a page that loads without doing so is covered, where the reviewer is looking, by a notice saying the frame went to a page that is missing or is not the file, with a button back to it.
 A first load that comes back unannounced is asked for once more before that, and so is a first load of the frame the page sits in, because a load the network refused looks exactly like a page that went elsewhere.
 While a note being written holds a reload back, a refused first load of the page gets the cover at once, without the second ask.
-A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled; it also waits while the browser is offline or the tab is not connected, since the browser would refuse that reload too, and runs once both are back. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
+A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled; it also waits while the browser is offline or the tab is not following its review, since the browser would refuse that reload too, and runs once both are back. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
 While a note is being written, a shield lies over the page: a press on it hands the page the focus, and the wheel over it scrolls the page by the same distance while the focus stays in the note.
 A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
 The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
@@ -306,12 +306,14 @@ Coverage thresholds are enforced in `package.json`, not reported and forgotten.
 One case runs at 390x844, a phone held upright, where the bar takes two lines: it fails if anything in the chrome scrolls sideways or if Annotate, End review, the note card, the note or Send is off screen or covered where a press would land.
 The artifact runs in a sandboxed, opaque-origin iframe, which Chromium puts in a process of its own and leaves out of the page's frame tree, so the test reads its DOM through an auto-attached session and drives it with page-level input.
 A dispatched press, path and release does make a real DOM selection: the test asserts that with annotate off, before any passage assertion leans on it.
-It finds Brave, Chrome or Chromium in the usual places, or takes `POINTBACK_BROWSER=/path/to/binary`; `POINTBACK_BROWSER=none` skips it loudly.
+It finds Chrome, Chromium or Brave in the usual places, in that order since CI drives Chrome, or takes `POINTBACK_BROWSER=/path/to/binary`; `POINTBACK_BROWSER=none` skips it loudly.
+It prints the build the browser reports, which Brave 1.97.56 gives as `Chrome/155.0.8059.40`, so a local transcript says whether it ran what CI runs.
 
 The CLI opens the reviewer's default browser, which is Safari on an unconfigured Mac, so Chromium alone is not the whole audience.
 `npm run smoke -- webkit firefox` runs the core act in both engines: open the fixture through the CLI, point at the title, write a note, send it, and poll it back.
 It then has a hostile page try to spend the note card's Enter, which exercises the gate those engines rely on (`docs/THREAT-MODEL.md`).
 It also presses over the page while a note has the focus and checks that the page is not hidden for it, since that press is the reviewer's own move.
+It presses Shift+Tab out of an open note and checks that the page stays loaded and shown and the note open, since that Tab is the reviewer's own move too.
 It then has a page call `focus()` out of a note in five fresh reviews and checks that the page is unloaded and that a word typed once the note has the focus back lands in the note with no key reaching the page (`unloadRound` in `test/engine-smoke.js`).
 A key typed at the moment of the page's move can still reach the page; the smoke prints that count and does not assert it, and `docs/THREAT-MODEL.md` gives the measured rates.
 Last, it writes a note, idles 6.5 s past Node's default keep-alive close, and adds it on a connection the tab opened before the idle (`addAfterAnIdle`).
