@@ -72,9 +72,9 @@ jobs:
         timeout-minutes: 40
         run: |
           set -euo pipefail
-          # PROBE (evidence branch only): the whole check, twice, as the failures ran.
+          # PROBE (evidence branch only): the inline-code pin test, looped for 20 minutes.
           status=0
-          for i in 1 2; do npm test 2>&1 | tee -a "$RUNNER_TEMP/check.log" || status=1; done
+          PROBE_LOOP_MS=1200000 node --test --test-force-exit --test-timeout=1500000 --test-name-pattern="PROBE loop" test/browser.test.js 2>&1 | tee -a "$RUNNER_TEMP/check.log" || status=1
           exit $status
 
       # The same steps as the engines job in cross-platform.yml.

@@ -175,7 +175,11 @@ after(async () => {
 // dropping one still holding notes, unsent or not yet acknowledged. Most tests leave one so, and the
 // 64th refused every open after it. So what each test leaves is released after it, as a reviewer and
 // an agent would: its drafts discarded, and its review polled until a poll brings nothing new.
-afterEach(async () => {
+// PROBE (evidence branch only): lines a looped run prints only when its iteration fails.
+const probeLines = [];
+const probeSay = (...parts) => probeLines.push(parts.join(" "));
+
+async function releaseAll() {
   if (!executable) return;
   const { port, token } = lab.serverInfo();
   const dir = join(lab.dir, "sessions");
@@ -199,7 +203,8 @@ afterEach(async () => {
       if (polled.json().status !== "feedback") break;
     }
   }
-});
+}
+afterEach(releaseAll);
 
 // A throwaway profile that reaches the login keychain makes macOS ask the developer for their
 // password mid-suite, so the switches are read back from the running browser's own command line.
@@ -8223,7 +8228,7 @@ async function noteOnInstall(page, artifact, text) {
   })()`);
   const logs = async () =>
     `page ${await artifact.eval("JSON.stringify(globalThis.probeLog)")} chrome ${await page.eval("JSON.stringify(globalThis.probeLog)")}`;
-  console.log("PROBE before", await chromeBoxes(), await pageState());
+  probeSay("PROBE before", await chromeBoxes(), await pageState());
   const frameBox = JSON.parse(await page.eval(FRAME_BOX));
   const box = JSON.parse(
     await artifact.eval(`(() => {
@@ -8233,7 +8238,7 @@ async function noteOnInstall(page, artifact, text) {
     })()`),
   );
   const point = { x: frameBox.left + box.left + 30, y: frameBox.top + box.top + height - 8 };
-  console.log(
+  probeSay(
     "PROBE scrolled",
     JSON.stringify(frameBox),
     JSON.stringify(box),
@@ -8241,7 +8246,7 @@ async function noteOnInstall(page, artifact, text) {
   );
   await page.pointerInto(artifact, point);
   const nowFrame = JSON.parse(await page.eval(FRAME_BOX));
-  console.log(
+  probeSay(
     "PROBE pressing",
     JSON.stringify(nowFrame),
     await chromeBoxes(),
@@ -8252,7 +8257,7 @@ async function noteOnInstall(page, artifact, text) {
   await page.waitFor(
     "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
   );
-  console.log(
+  probeSay(
     "PROBE card",
     await page.eval("document.getElementById('cardTarget').textContent"),
     await pageState(),
@@ -8261,7 +8266,7 @@ async function noteOnInstall(page, artifact, text) {
   await page.enter();
   await page.waitFor(`document.getElementById('card').hidden && ${unsent} === ${before + 1}`);
   await page.waitFor("document.body.dataset.handoff === 'settled'"); // as in `noteOn`
-  console.log(
+  probeSay(
     "PROBE settled",
     await page.eval(
       "[...document.querySelectorAll('.mark-tag')].map((e) => e.textContent).join('|')",
@@ -8549,5 +8554,76 @@ test(
     );
     await page.close();
     rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "PROBE loop: the inline-code pin test, repeated for PROBE_LOOP_MS",
+  { skip: !(executable && process.env.PROBE_LOOP_MS) && "not a probe run" },
+  async () => {
+    const until = Date.now() + Number(process.env.PROBE_LOOP_MS);
+    let runs = 0;
+    let fails = 0;
+    while (Date.now() < until) {
+      runs += 1;
+      probeLines.length = 0;
+      try {
+        await (async () => {
+          const { file, html } = copyOfFixture();
+          // A padded code chip opening a paragraph, as rendered Markdown and many pages draw one.
+          writeFileSync(
+            file,
+            html.replace(
+              "<p>Duplicate delivery is the one that costs money.</p>",
+              '<style>code { background: #eee; padding: 2px 6px; border-radius: 4px }</style><p id="lead">' +
+                "<code>visibility_timeout</code> is what a retry hinges on, and duplicate delivery is the one that costs money.</p>",
+            ),
+          );
+          const { page, artifact } = await openReview(
+            (await cli([file], lab.env)).json().session.url,
+          );
+          // Pointed at past the chip, on the paragraph's own words.
+          await clickIn(page, artifact, "#lead", { x: 220, y: 10 });
+          await page.waitFor(
+            "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+          );
+          await page.type("Link the setting");
+          await page.enter();
+          await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+          assert.equal(
+            await page.eval("document.querySelector('.mark-tag').textContent"),
+            "Paragraph",
+          );
+          const [pin] = await pinsBesideTargets(
+            artifact,
+            ["Note 1, not sent yet"],
+            ["#lead"],
+            "on the HTML page",
+          );
+          await pinOnFirstLine(artifact, pin, "#lead");
+          await page.close();
+
+          // The same on a rendered Markdown page: the README's Install paragraph opens with `parse5`.
+          const readme = copyOfReadme();
+          const review = await openReview((await cli([readme.file], lab.env)).json().session.url);
+          const install = await noteOnInstall(review.page, review.artifact, "Say why two");
+          const [onInstall] = await pinsBesideTargets(
+            review.artifact,
+            ["Note 1, not sent yet"],
+            [install],
+            "on the Markdown page",
+          );
+          await pinOnFirstLine(review.artifact, onInstall, install);
+          await review.page.close();
+          rmSync(dirname(readme.file), { recursive: true, force: true });
+        })();
+      } catch (error) {
+        fails += 1;
+        console.log(`PROBE FAIL run ${runs}: ${error.message}`);
+        for (const line of probeLines) console.log(line);
+      }
+      await releaseAll();
+    }
+    console.log(`PROBE LOOP runs ${runs} fails ${fails}`);
   },
 );
