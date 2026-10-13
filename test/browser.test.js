@@ -16,11 +16,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { createServer } from "node:http";
+import { randomBytes } from "node:crypto";
+import { createServer, request as httpRequest } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, afterEach, before, test } from "node:test";
+import { pidAlive } from "../src/daemon-lock.js";
 import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import {
@@ -3980,6 +3982,60 @@ test(
 );
 
 test(
+  "a save keeps the place and Annotate on a Word page, and a note on a smart tag names it in valid CSS",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    // Word and Outlook exports carry smart tags such as <st1:place>. The reading place handed back
+    // on a reload named one unescaped, which is no selector, so the page threw before its place,
+    // Annotate and pins came back; and a note on one sent the agent the same broken selector.
+    const { file } = copyOfFixture();
+    const word = (title) =>
+      `<html xmlns:st1="urn:schemas-microsoft-com:office:smarttags"><head><title>${title}</title></head><body>` +
+      Array.from(
+        { length: 120 },
+        (_, i) => `<p><st1:place w:st="on">Seattle</st1:place> office, row ${i + 1}.</p>`,
+      ).join("") +
+      "</body></html>";
+    writeFileSync(file, word("Offices"));
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    try {
+      // The reading place is the deepest element crossing the top edge: row 45's smart tag.
+      const row45 = "document.querySelectorAll('p')[44].firstElementChild";
+      const top = `Math.round(${row45}.getBoundingClientRect().top)`;
+      const y = await artifact.eval(
+        `(() => { window.scrollTo(0, ${top} + window.scrollY - 2); return window.scrollY; })()`,
+      );
+      await page.waitFor(`document.body.dataset.scroll === '${y}'`);
+      assert.match(await page.eval("document.body.dataset.place"), /> st1\\?:place$/);
+      const wasAt = Number(await artifact.eval(top));
+      writeFileSync(file, word("Offices, saved"));
+      await page.waitFor("document.body.dataset.revision === '1'");
+      assert.equal(
+        Number(await artifact.eval(top)),
+        wasAt,
+        "row 45 stayed where the reviewer had it",
+      );
+
+      await noteOn(page, artifact, "p:nth-of-type(60) > st1\\:place", "Which Seattle office?");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+      const [note] = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts;
+      assert.equal(note.selector, "p:nth-of-type(60) > st1\\:place");
+      // What the agent does with it: the selector finds the element the note was left on.
+      assert.equal(
+        await artifact.eval(
+          `document.querySelector(${JSON.stringify(note.selector)}).parentElement.textContent`,
+        ),
+        "Seattle office, row 60.",
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
   "a save keeps the reviewer's place on a page with a sticky header, a fixed header or a fixed footer",
   { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
   async () => {
@@ -4101,6 +4157,118 @@ test(
     );
     assert.equal(await page.eval("window.refusedStreams"), 3, "three stream connects failed");
     await page.close();
+  },
+);
+
+/** Opens `count` event streams on a review from Node; at `limits.eventStreams` the next tab is refused. */
+async function holdStreams(own, url, count = limits.eventStreams) {
+  const { port, token } = own.serverInfo();
+  const key = new URL(url).pathname.split("/").at(-1);
+  const held = [];
+  for (let i = 0; i < count; i += 1)
+    held.push(
+      await new Promise((resolve, reject) => {
+        const req = httpRequest({
+          host: "127.0.0.1",
+          port,
+          path: `/api/${key}/events`,
+          headers: {
+            connection: "Upgrade",
+            upgrade: "websocket",
+            "sec-websocket-version": "13",
+            "sec-websocket-key": randomBytes(16).toString("base64"),
+            "sec-websocket-protocol": `events, bearer.${token}`,
+          },
+        });
+        req.on("upgrade", (_res, socket) => resolve(socket.on("data", () => {})));
+        req.on("error", reject);
+        req.end();
+      }),
+    );
+  return held;
+}
+
+test(
+  "a tab refused for too many event streams follows its review once the reviewer closes another",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const held = await holdStreams(own, url, limits.eventStreams - 1);
+    const other = await browser.page(url);
+    await other.waitFor(FOLLOWING);
+    const page = await browser.page(url);
+    try {
+      await page.waitFor(
+        "document.getElementById('noticeText').textContent.startsWith('Too many review tabs are open')",
+      );
+      await other.close();
+      await page.waitFor(FOLLOWING);
+      await page.waitFor("document.getElementById('notice').hidden");
+    } finally {
+      for (const socket of held) socket.destroy();
+      // Already closed when the test got that far; this is for one that did not.
+      await other.close().catch(() => {});
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a tab refused for too many event streams says so, backs off, and lets the daemon idle out once hidden",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // The server takes the handshake and then closes 4429, and the chrome counted that open as
+    // following its review: it retried twice a second for good, said the server had stopped
+    // answering, and every try touched the daemon, so a hidden tab kept it from idling out.
+    const own = isolatedEnv({ POINTBACK_IDLE_MS: "3000" });
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { pid } = own.serverInfo();
+    const held = await holdStreams(own, url);
+    const page = await browser.page("about:blank");
+    // The browser's own clock for each health check the chrome makes before a stream.
+    const checks = [];
+    const counted = ({ method, params, sessionId }) => {
+      if (sessionId !== page.sessionId || method !== "Network.requestWillBeSent") return;
+      if (params.request.url.includes("/health?challenge=")) checks.push(params.timestamp * 1000);
+    };
+    page.browser.listeners.push(counted);
+    try {
+      await page.navigate(url);
+      await page.waitFor(
+        "document.getElementById('noticeText').textContent.startsWith('Too many review tabs are open')",
+      );
+      // One check at boot, then one before each try: six is the fourth retry.
+      await page.explained(
+        until(() => checks.length >= 6, { what: "the fourth retry", timeoutMs: 20_000 }),
+      );
+      const gaps = checks.slice(1, 6).map((at, i) => Math.round(at - checks[i]));
+      console.log(`browser suite: gaps between health checks after a 4429, ms: ${gaps}`);
+      // A lower bound only, which a slow runner cannot break: a timer never fires early, and the
+      // fourth pause is 2000 ms where every pause was 500 ms before.
+      assert.ok(gaps[4] >= 1500, `the fourth retry came ${gaps[4]} ms after the third`);
+
+      // Hidden, the tab stops trying, so nothing touches the daemon and it idles out. Its pid is
+      // read rather than probed, since a probe is itself activity.
+      await page.eval(
+        `Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+         document.dispatchEvent(new Event("visibilitychange"));`,
+      );
+      await page.explained(
+        until(() => !pidAlive(pid), {
+          what: "the daemon to idle out behind a hidden tab",
+          timeoutMs: 20_000,
+        }),
+      );
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(counted), 1);
+      for (const socket of held) socket.destroy();
+      await page.close();
+      await own.stop();
+    }
   },
 );
 
@@ -5020,6 +5188,9 @@ test(
       await page.waitFor(noticeSays("You ended this review."));
       const key = new URL(url).pathname.split("/").pop();
       assert.ok(watched.carried.includes(`POST /api/${key}/end`), watched.carried.join(", "));
+      // The stream offers the token legitimately here, so this proves the handshake capture the
+      // negative tests rely on still sees the subprotocol header in this browser.
+      assert.ok(watched.carried.includes("WebSocket events"), watched.carried.join(", "));
       const polled = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json();
       assert.equal(polled.status, "ended");
     } finally {
@@ -6161,6 +6332,81 @@ test(
     await usable("with a question to answer", [".mark-answer", "#send"]);
     await page.close();
     rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "a passage pin in a long <pre> is found again from one read of its text, beside its own line",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    // Finding a passage again squashed its element's whole text before and after every match, on
+    // every pins update: a passage on a common word in a 113 KB <pre> held the page 4 to 8 s each
+    // time. Reads are counted rather than milliseconds, since a latency is never asserted.
+    const { file } = copyOfFixture();
+    const lines = Array.from({ length: 1000 }, (_, k) => `INFO worker ${k}: the batch was flushed`);
+    const whole = lines.join("\n");
+    writeFileSync(file, `<!doctype html><title>Log</title><main><pre>${whole}</pre></main>`);
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    try {
+      // Counted on the prototype the sdk reads through, from a listener added after the sdk's,
+      // which therefore runs once the sdk has handled the same message.
+      await artifact.eval(`(() => {
+        const own = Object.getOwnPropertyDescriptor(Node.prototype, "textContent");
+        window.reads = 0;
+        Object.defineProperty(Node.prototype, "textContent", {
+          get() { window.reads += 1; return own.get.call(this); }, set: own.set, configurable: true,
+        });
+        addEventListener("message", (event) => {
+          if (event.data?.type === "pins") window.readsForPins = window.reads;
+        });
+      })()`);
+      // One of 2,000 matches of "the", told apart only by the text around it: the offset the note
+      // carries is 3,000 characters off, as after an agent's edit above it.
+      const start = whole.indexOf("the batch", 20_000);
+      await api(session, "POST", "drafts", {
+        draft: {
+          selector: "main > pre",
+          tag: "text",
+          text: "the",
+          prompt: "Name the batch",
+          target: {
+            type: "text-range",
+            start: start - 3000,
+            end: start - 2997,
+            before: whole.slice(start - 32, start).replace(/\s+/g, " "),
+            after: whole.slice(start + 3, start + 35).replace(/\s+/g, " "),
+          },
+        },
+      });
+      const reads = Number(await artifact.waitFor("window.readsForPins"));
+      console.log(`browser suite: one passage pin's pins update read text ${reads} times`);
+      assert.ok(reads < 100, `one passage pin read text ${reads} times`);
+
+      const line = JSON.parse(
+        await artifact.eval(`(() => {
+          const range = document.createRange();
+          const text = document.querySelector("main > pre").firstChild;
+          range.setStart(text, ${start});
+          range.setEnd(text, ${start + 3});
+          window.scrollTo(0, range.getBoundingClientRect().top + window.scrollY - 200);
+          return JSON.stringify(range.getBoundingClientRect());
+        })()`),
+      );
+      const [pin] = await until(
+        async () => {
+          const shown = await pinsOn(artifact);
+          return shown.length === 1 ? shown : null;
+        },
+        { what: "the passage pin" },
+      );
+      assert.ok(
+        pin.bottom >= line.top - 4 && pin.top <= line.bottom,
+        `${pin.name} paints at ${JSON.stringify(pin)}, beside its line at ${JSON.stringify(line)}`,
+      );
+    } finally {
+      await page.close();
+    }
   },
 );
 
