@@ -26,6 +26,10 @@ Each section below is the text `AGENTS.md` carried under the same heading before
   A moved or deleted file is found through `canonicalPath` and answers `gone` (HTTP 410) to poll, reply and end.
   A tab must hear every change to what it shows: a `gone` from poll or end resets the watcher's baseline (`missing` in `src/watch.js`), or a file renamed back inside the 100 ms debounce reads as no change and the tab stays on its notice; an open under another `--root` sends `rerooted`, or a live tab reloads into a 404.
   `test/events.test.js` pins both.
+  A save made while no event stream follows the review is numbered when the next stream opens (`catchUp` in `src/session-store.js`, called by `#watch` in `src/events.js` once its watch is on).
+  The watch runs only while a stream is open, and a new one takes the file as it finds it for its baseline, so a save between a reload's stream closing and the next opening, or between a review's open and its first stream, never reached a page already showing the file before it.
+  Windows widened that gap: `windows-flake-hunt` jobs 114919289123 (a reload) and 115213131684 (a first open) each had the chrome's first stream connect fail with `net::ERR_NO_BUFFER_SPACE`, then followed the review at revision 0 and never asked for `?r=1`.
+  `test/events.test.js` and `test/browser.test.js` ("a save made while ...") force the close, save, open order.
   The note card is composed in the chrome, never in the artifact (`src/browser/chrome.js`); the artifact proposes a target, heard only while Annotate is on and no card is open, and the chrome copies its fields by name and reads the instruction from its own textarea, so a hostile page can neither forge nor rewrite a note.
   `test/browser.test.js` asserts that as a property, against pages proposing every field a note has; `test/server.test.js`/`test/session-store.test.js` prove redelivery.
 - A poll is a run of requests (`poll` in `src/cli.js`), each held at most `limits.pollRequestMs` (240000) before the CLI asks again, until `--timeout-ms` passes or an answer comes; the server's own ceiling is `limits.pollTimeoutMaxMs` (600000).
