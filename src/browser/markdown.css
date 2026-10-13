@@ -1,6 +1,6 @@
 /* A Markdown file rendered for review, in the house reading styles: Literata for running prose,
    Archivo for headings, IBM Plex Mono for code, at the prose measure. Colours are --hw-* roles
-   and sizes rem, as in the chrome; dark is pinned by data-theme on <html> to match the chrome. */
+   and sizes rem, as in the chrome, light or dark as the reviewer's browser prefers. */
 
 @font-face {
   font-family: "Literata";
@@ -25,8 +25,8 @@
   src: url("/house/fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
 }
 
-[data-theme="dark"] {
-  color-scheme: dark;
+:root {
+  color-scheme: light dark;
 }
 
 body {

@@ -5,6 +5,7 @@
 // Keys pressed after a note made by mouse edit nothing in the page.
 // And an add after the tab sat idle past Node's default keep-alive close is kept.
 // And a chrome face refused while the browser is offline leaves the review on screen.
+// The chrome, a rendered Markdown page and its pin follow a light and a dark preference.
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
@@ -16,6 +17,7 @@ import { join } from "node:path";
 import { firefox, webkit } from "playwright-core";
 import { serve } from "../src/server.js";
 import { cli, fixture, isolatedEnv } from "./helpers/env.js";
+import { contrast, decodePng } from "./helpers/png.js";
 import { until } from "./helpers/wait.js";
 
 const HOSTILE = new URL("./fixtures/hostile-after-gesture.html", import.meta.url);
@@ -57,7 +59,13 @@ async function smoke(engine) {
     await act(browser, (page) => focusLeavesNoteAlone(page, lab, engine));
     await act(browser, addAfterAnIdle);
     await act(browser, (page) => faceRefusedOffline(page, lab, engine));
-    return `${named} passed; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds; probe keys reaching the page per round ${probes.join(", ")}; move to unloaded ms per round ${ms.join(", ")}; the key channel reported ${control} keys of the page's own`;
+    const schemes = [];
+    for (const colorScheme of ["light", "dark"]) {
+      schemes.push(
+        await act(browser, (page) => followsScheme(page, lab, colorScheme), { colorScheme }),
+      );
+    }
+    return `${named} passed; ${schemes.join("; ")}; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds; probe keys reaching the page per round ${probes.join(", ")}; move to unloaded ms per round ${ms.join(", ")}; the key channel reported ${control} keys of the page's own`;
   } catch (error) {
     throw Object.assign(error, { named });
   } finally {
@@ -71,8 +79,8 @@ async function smoke(engine) {
  * failed act says what the chrome showed, as `describe` in test/helpers/cdp.js does for Chromium:
  * a timeout alone cannot tell a key that missed the card from a page that never loaded.
  */
-async function act(browser, fn) {
-  const page = await browser.newPage();
+async function act(browser, fn, options = {}) {
+  const page = await browser.newPage(options);
   page.setDefaultTimeout(STEP_MS);
   try {
     return await fn(page);
@@ -564,6 +572,57 @@ async function focusLeavesNoteAlone(page, lab, engine) {
     { card: true, cover: true, frame: "block" },
     `${engine}: a move of the focus from the note to a chrome control unloaded the page`,
   );
+}
+
+/**
+ * A Markdown review in a tab that prefers `scheme`, read from what paints: the chrome's bar and the
+ * page's own ground within a shade of that scheme's paper, and the pin the note draws in the page
+ * resolving the same scheme's halo. The page under review hears the preference only through the
+ * color-scheme the chrome and its wrapper frame declare.
+ */
+async function followsScheme(page, lab, scheme) {
+  const dir = join(lab.dir, `scheme-${scheme}`);
+  mkdirSync(dir);
+  const file = join(dir, "plan.md");
+  writeFileSync(file, "# Rollout plan\n\nShip the importer behind a flag.\n");
+  const { session } = (await cli([file], lab.env)).json();
+  await open(page, session.url);
+  // Playwright's Firefox drops a context's colorScheme on a load answered with COOP same-origin, as
+  // the chrome's is (measured: a plain page keeps it, the same page with the header does not); a
+  // reviewer's own preference holds in every tab, so it is set again on the page.
+  await page.emulateMedia({ colorScheme: scheme });
+  await page.waitForFunction(() => document.body.dataset.annotate === "1");
+  const frame = page.frameLocator("#artifact").frameLocator("#page");
+  await frame.locator("h1").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.keyboard.type(NOTE);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
+  // The SDK's two hosts sit last in <html>, each resolving its sheet's :host roles.
+  const halo = await frame
+    .locator("html")
+    .evaluate((html) => getComputedStyle(html.lastElementChild).getPropertyValue("--halo").trim());
+  const spots = await page.evaluate(() => {
+    const id = document.querySelector(".bar-id").getBoundingClientRect();
+    const tools = document.querySelector(".bar-tools").getBoundingClientRect();
+    const frame = document.getElementById("artifact").getBoundingClientRect();
+    return {
+      bar: [Math.round((id.right + tools.left) / 2), Math.round((id.top + id.bottom) / 2)],
+      ground: [Math.round(frame.left + 24), Math.round(frame.top + 24)],
+    };
+  });
+  const shot = decodePng(await page.screenshot());
+  const paper = scheme === "light" ? [255, 255, 255] : [0, 0, 0];
+  const seen = {
+    bar: contrast(shot.pixel(...spots.bar), paper),
+    ground: contrast(shot.pixel(...spots.ground), paper),
+  };
+  assert.ok(seen.bar < 1.25, `${scheme}: the chrome's bar is ${shot.pixel(...spots.bar)}`);
+  assert.ok(seen.ground < 1.25, `${scheme}: the page's ground is ${shot.pixel(...spots.ground)}`);
+  // The house's ink in light, its ground in dark (ROLES in src/browser/sdk.js).
+  const want = scheme === "light" ? "oklch(0.21 0.012 260)" : "oklch(0.165 0.012 260)";
+  assert.equal(halo, want, `${scheme}: the pin's halo`);
+  return `${scheme} bar ${seen.bar.toFixed(2)}:1 and ground ${seen.ground.toFixed(2)}:1 from its paper`;
 }
 
 /**
