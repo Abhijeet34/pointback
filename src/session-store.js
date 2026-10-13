@@ -72,8 +72,6 @@ export class SessionStore {
   #seen = new Map();
   /** Each session's page as `page` last made it; weak, so an evicted session takes its page along. */
   #pages = new WeakMap();
-  /** Each session's file as its revision last numbered it, so a save no watcher saw is still one. */
-  #numbered = new WeakMap();
 
   /**
    * `stateDir` holds one file per session under `sessions/`, so a mutation rewrites only the session
@@ -117,8 +115,12 @@ export class SessionStore {
       session.root = dirname(session.file);
       upgraded = true;
     }
+    // A session stored before `numbered` existed can only take the file as it finds it.
+    if (session.numbered === undefined) {
+      session.numbered = signature(session.file);
+      upgraded = true;
+    }
     this.#sessions.set(key, session);
-    this.#numbered.set(session, signature(session.file));
     if (upgraded) this.#persist(session);
     return true;
   }
@@ -210,6 +212,9 @@ export class SessionStore {
         // repeats in a file's review history and an agent skipping uids it applied drops nothing.
         nextUid: (readPollCursor(this.#stateDir, canonical)?.uid ?? 0) + 1,
         revision: 0,
+        // The file as `revision` last numbered it, stored so that a daemon started after a save
+        // made while none ran still numbers it (`catchUp`).
+        numbered: signature(canonical),
         pending: [],
         drafts: [],
         chat: [],
@@ -217,7 +222,6 @@ export class SessionStore {
         lastActive: now,
       };
       this.#sessions.set(key, session);
-      this.#numbered.set(session, signature(canonical));
     } else {
       session.lastActive = now;
       session.root = assets;
@@ -498,7 +502,7 @@ export class SessionStore {
     // to renumber, so tolerate the gap rather than throwing inside the fs.watch callback.
     const session = this.#sessions.get(key);
     if (!session) return 0;
-    this.#numbered.set(session, signature(session.file));
+    session.numbered = signature(session.file);
     if (!existsSync(session.file)) {
       this.#gone(session);
       return session.revision;
@@ -519,11 +523,12 @@ export class SessionStore {
 
   /**
    * Numbers a change the file took while nothing watched it: a save between one tab's stream closing
-   * and the next opening, as across a reload, is otherwise the new watch's baseline and never shown.
+   * and the next opening, as across a reload or while no daemon ran, is otherwise the new watch's
+   * baseline and never shown.
    */
   catchUp(key) {
     const session = this.#sessions.get(key);
-    if (session && signature(session.file) !== this.#numbered.get(session)) this.fileChanged(key);
+    if (session && signature(session.file) !== session.numbered) this.fileChanged(key);
   }
 
   /**
