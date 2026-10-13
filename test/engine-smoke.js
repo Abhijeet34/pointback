@@ -3,6 +3,7 @@
 // only. Open a file, point at an element, write a note, send, and a poll returns it. Then the gate
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
 // Keys pressed after a note made by mouse edit nothing in the page.
+// A save of a Word export keeps the reviewer's place and Annotate.
 // And an add after the tab sat idle past Node's default keep-alive close is kept.
 // And a chrome face refused while the browser is offline leaves the review on screen.
 // The chrome, a rendered Markdown page and its pin follow a light and a dark preference.
@@ -46,6 +47,7 @@ async function smoke(engine) {
     await act(browser, (page) => clickInsideTheGate(page, lab));
     await act(browser, (page) => endKeepsTheCard(page, lab));
     await act(browser, (page) => readingPlace(page, lab, engine));
+    await act(browser, (page) => wordPage(page, lab, engine));
     await act(browser, (page) => pressOverThePage(page, lab));
     await act(browser, (page) => keysAfterAMouseNote(page, lab, engine));
     const control = await act(browser, (page) => keysReachThePage(page, lab, engine));
@@ -341,6 +343,60 @@ async function readingPlace(page, lab, engine) {
       Math.abs(after - before) <= 2,
       `${engine}: section 30 moved from ${before} px to ${after} px from the top of the window`,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Word and Outlook exports carry smart tags such as <st1:place>, which a selector names only
+ * escaped: unescaped, the reading place handed back on a save made the page throw before its place
+ * and Annotate came back, and a note on one sent the agent a selector no engine accepts.
+ */
+async function wordPage(page, lab, engine) {
+  const dir = mkdtempSync(join(tmpdir(), "pb-word-"));
+  try {
+    const file = join(dir, "offices.html");
+    const save = (title) => {
+      const rows = Array.from(
+        { length: 120 },
+        (_, i) => `<p><st1:place w:st="on">Seattle</st1:place> office, row ${i + 1}.</p>`,
+      ).join("");
+      writeFileSync(
+        `${file}.tmp`,
+        `<html xmlns:st1="urn:schemas-microsoft-com:office:smarttags"><head><title>${title}</title></head><body>${rows}</body></html>`,
+      );
+      renameSync(`${file}.tmp`, file);
+    };
+    save("Offices");
+    const { session } = (await cli([file], lab.env)).json();
+    await open(page, session.url);
+    await page.waitForFunction(() => document.body.dataset.revision === "0");
+    const inPage = page.frameLocator("#artifact").frameLocator("#page");
+    // The reading place is the deepest element crossing the top edge: row 45's smart tag.
+    const row45 = inPage.locator("p:nth-of-type(45) > st1\\:place");
+    const y = await row45.evaluate((tag) => {
+      const win = tag.ownerDocument.defaultView;
+      win.scrollTo(0, win.scrollY + tag.getBoundingClientRect().top - 2);
+      return win.scrollY;
+    });
+    await page.waitForFunction((expected) => document.body.dataset.scroll === expected, String(y));
+    const before = await row45.evaluate((tag) => tag.getBoundingClientRect().top);
+    save("Offices, saved");
+    await page.waitForFunction(() => document.body.dataset.revision === "1");
+    const after = await row45.evaluate((tag) => tag.getBoundingClientRect().top);
+    assert.ok(
+      Math.abs(after - before) <= 2,
+      `${engine}: row 45 moved from ${before} px to ${after} px from the top of the window`,
+    );
+    await inPage.locator("p:nth-of-type(60) > st1\\:place").click();
+    await page.waitForFunction(() => document.activeElement?.id === "cardText");
+    await page.keyboard.type(NOTE);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
+    await page.click("#send");
+    const polled = (await cli(["poll", file, "--timeout-ms", "10000"], lab.env)).json();
+    assert.equal(polled.prompts[0]?.selector, "p:nth-of-type(60) > st1\\:place");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

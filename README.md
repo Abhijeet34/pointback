@@ -256,6 +256,7 @@ The page is then unloaded until that note is added or cancelled, and comes back 
 A note opened before the page has heard the last card close unloads the page at once, with a line saying why, and the page comes back when that note is done; that unload is not counted against the page.
 
 The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on sessions, prompts and open polls.
+A tab past it says too many review tabs are open, and follows its review once another closes.
 
 ## How it holds together
 
