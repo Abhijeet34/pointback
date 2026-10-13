@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -96,10 +97,38 @@ test(
   },
 );
 
+/**
+ * Times this process's calls to child_process.spawn. A spawn blocks the process until the system has
+ * created the child, so no timer cuts one short: on a windows-2025 runner an open's spawn and the
+ * log's open before it took 3.3 s (docs/ENGINEERING-NOTES.md).
+ */
+function timeSpawns() {
+  const spawn = childProcess.spawn;
+  let ms = 0;
+  childProcess.spawn = function (...args) {
+    const began = performance.now();
+    try {
+      return spawn.apply(this, args);
+    } finally {
+      ms += performance.now() - began;
+    }
+  };
+  // client.js imports spawn by name, which sees the patch only once it is synced.
+  syncBuiltinESMExports();
+  return {
+    ms: () => ms,
+    restore() {
+      childProcess.spawn = spawn;
+      syncBuiltinESMExports();
+    },
+  };
+}
+
 // Every look an open takes at a start in progress can be held by starvation up to a probe's 20 s wall
 // ceiling, so an open had no bound on the whole. Here the record names a port that accepts and never
 // answers, the daemon the open starts is held before its own code runs for good, and this process gets
-// about 50 ms of every 150: the open still answers at its wall bound, 2 s here.
+// about 50 ms of every 150: the open still answers at its wall bound, 2 s here, past whatever the spawn
+// of its daemon took, which the bound does not cover.
 test("an open answers at its whole-start wall bound though every look is held and starvation spends no running time", async () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-client-"));
   const bootGate = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-gates-")), "boot");
@@ -114,6 +143,7 @@ test("an open answers at its whole-start wall bound though every look is held an
     NODE_OPTIONS: `--import=${new URL("./helpers/gated-start.js", import.meta.url).href}`,
     TEST_BOOT_GATE: bootGate,
   };
+  const spawns = timeSpawns();
   const started = performance.now();
   let answered;
   ensureServer(dir, environment, 2_000).then(
@@ -126,11 +156,18 @@ test("an open answers at its whole-start wall bound though every look is held an
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     const elapsed = performance.now() - started;
-    console.log(`the open answered after ${Math.round(elapsed)} ms`);
+    const spawning = spawns.ms();
+    console.log(
+      `the open answered after ${Math.round(elapsed)} ms, ${Math.round(spawning)} ms of it spawning its daemon`,
+    );
     assert.ok(answered instanceof Error, `the open answered with ${answered}`);
     assert.match(answered.message, /server did not start: the daemon it started is still/);
-    assert.ok(elapsed < 5_000, `answered ${Math.round(elapsed)} ms in, past its 2 s bound`);
+    assert.ok(
+      elapsed - spawning < 5_000,
+      `answered ${Math.round(elapsed - spawning)} ms in beside its spawn, past its 2 s bound`,
+    );
   } finally {
+    spawns.restore();
     silent.closeAllConnections();
     silent.close();
     await until(() => existsSync(`${bootGate}.reached`), { what: "the held daemon to boot" });
