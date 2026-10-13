@@ -29,11 +29,12 @@
   // cannot load the chrome's sheets. The reviewer's preference reaches it through the color-scheme the
   // chrome and the wrapper declare. `--halo` rings every pin in the scheme's darkest role (--hw-ink in
   // light, --hw-bg in dark), so a pin keeps a 3:1 edge on a white page and a dark one; `--ring` is the
-  // highlight, on --hw-focus in light, where the accent solid is under 2:1 on white.
+  // highlight, on the house focus ring in both schemes: the page under review may be white or dark
+  // whatever the reviewer prefers, and the dark accent solid is under 2:1 on white.
   const ROLES = `
     :host { --hw-accent: oklch(0.78 0.12 230); --hw-on-accent: oklch(0.21 0.012 260); --hw-accent-text: oklch(0.489 0.097 230); --hw-surface: #fff; --hw-focus: oklch(0.619 0.108 230); --hw-green-9: oklch(0.55 0.14 150); --hw-amber-9: oklch(0.573 0.124 70); --hw-gray-9: oklch(0.566 0.012 260); --hw-on-solid: #fff; --halo: oklch(0.21 0.012 260); --ring: var(--hw-focus); }
     @media (prefers-color-scheme: dark) {
-      :host { --hw-on-accent: oklch(0.165 0.012 260); --hw-accent-text: oklch(0.663 0.12 230); --hw-surface: oklch(0.195 0.012 260); --hw-focus: oklch(0.516 0.102 230); --halo: oklch(0.165 0.012 260); --ring: var(--hw-accent); }
+      :host { --hw-on-accent: oklch(0.165 0.012 260); --hw-accent-text: oklch(0.663 0.12 230); --hw-surface: oklch(0.195 0.012 260); --hw-focus: oklch(0.516 0.102 230); --halo: oklch(0.165 0.012 260); }
     }`;
 
   // Only the selection highlight lives in the artifact; the note card lives in the chrome, so the
@@ -78,7 +79,7 @@
   };
   const pinHost = document.createElement("div");
   pinHost.style.cssText =
-    "all:initial;position:absolute;inset:0 auto auto 0;width:0;height:0;z-index:2147483646";
+    "all:initial;position:absolute;inset:0 auto auto 0;width:0;height:0;z-index:2147483647";
   const pinRoot = pinHost.attachShadow({ mode: "closed" });
   pinRoot.innerHTML = `
     <style>
@@ -187,7 +188,7 @@
    * `:nth-of-type` down one, so the selector alone would silently name a different element.
    */
   function readingAnchor(to) {
-    const bySelector = document.querySelector(to.selector);
+    const bySelector = query(to.selector);
     if (!to.text || (bySelector && visibleText(bySelector) === to.text)) return bySelector;
     let seen = 0;
     for (const element of document.body.querySelectorAll("*")) {
@@ -346,7 +347,9 @@
         parts.unshift(`#${CSS.escape(node.id)}`);
         break;
       }
-      const tag = node.tagName.toLowerCase();
+      // Escaped, because Office exports carry tags such as `st1:place`, which unescaped reads as
+      // the tag `st1` with a pseudo-class and is no selector at all.
+      const tag = CSS.escape(node.tagName.toLowerCase());
       const siblings = [...node.parentElement.children].filter((s) => s.tagName === node.tagName);
       parts.unshift(
         siblings.length > 1 ? `${tag}:nth-of-type(${siblings.indexOf(node) + 1})` : tag,
@@ -551,7 +554,7 @@
         text: hit.text,
         ...(hit.target && { target: hit.target }),
       },
-      rects: [...hit.rects].map((r) => ({
+      rects: [...hit.rects, ...(hit.tag === "text" ? [] : fieldWords(hit.element))].map((r) => ({
         left: r.left,
         top: r.top,
         right: r.right,
@@ -561,6 +564,27 @@
       })),
       structure: pageOutline(),
     });
+  }
+
+  // A field's label, and the hint or error sentence the page ties to it, drawn against the field, are
+  // what a note on the field is often about, so the card is placed clear of them as well as of it.
+  function fieldWords(element) {
+    const box = element.getBoundingClientRect();
+    const described = (element.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .slice(0, 8)
+      .map((id) => (id ? document.getElementById(id) : null));
+    return [...(element.labels ?? []), ...described]
+      .map((words) => words?.getBoundingClientRect())
+      .filter(
+        (r) =>
+          r &&
+          r.width > 0 &&
+          r.height > 0 &&
+          r.left < box.right &&
+          r.right > box.left &&
+          Math.max(r.top - box.bottom, box.top - r.bottom) <= PIN,
+      );
   }
 
   // Whether the focused element is outlined; not after a note made by mouse, until a key is pressed.
@@ -732,31 +756,47 @@
     );
     const { start = 0, before = "", after = "" } = pin.target ?? {};
     const best = (element) => {
+      const whole = element.textContent;
+      // The squashed text either side of a match, read only as far as `before` and `after` need.
+      // Squashing the whole prefix and suffix for every match held a long <pre> for seconds.
+      const behind = (at) => {
+        for (let span = 2 * QUOTE_CHARS; ; span *= 2) {
+          const text = squash(whole.slice(Math.max(0, at - span), at));
+          if (text.length >= before.length || span >= at) return text;
+        }
+      };
+      const ahead = (at) => {
+        for (let span = 2 * QUOTE_CHARS; ; span *= 2) {
+          const text = squash(whole.slice(at, at + span));
+          if (text.length >= after.length || at + span >= whole.length) return text;
+        }
+      };
       let found = null;
-      for (const match of element.textContent.matchAll(pattern)) {
-        const whole = element.textContent;
+      for (const match of whole.matchAll(pattern)) {
         const end = match.index + match[0].length;
-        const context =
-          squash(whole.slice(0, match.index)).endsWith(before) &&
-          squash(whole.slice(end)).startsWith(after);
+        const context = behind(match.index).endsWith(before) && ahead(end).startsWith(after);
         const score = (context ? 0 : 1e9) + Math.abs(match.index - start);
         if (!found || score < found.score) found = { start: match.index, end, score };
       }
       return found;
     };
-    let element = bySelector && best(bySelector) ? bySelector : null;
+    let hit = bySelector && best(bySelector);
+    let element = hit ? bySelector : null;
     if (!element) {
       let seen = 0;
+      let least = Infinity;
       for (const node of document.body.querySelectorAll("*")) {
         if (++seen > MAX_FOCUSABLE) break;
         if (SKIP.has(tagName(node)) || host.contains(node)) continue;
+        const text = node.textContent;
         pattern.lastIndex = 0;
-        const size = node.textContent.length;
-        if ((!element || size < element.textContent.length) && pattern.test(node.textContent))
+        if (text.length < least && pattern.test(text)) {
           element = node;
+          least = text.length;
+        }
       }
+      hit = element && best(element);
     }
-    const hit = element && best(element);
     return (hit && rangeAt(element, hit.start, hit.end)) ?? bySelector;
   }
 
@@ -787,8 +827,10 @@
   // opens with a code chip is marked where its line ends rather than where the chip does, and a
   // control by its box, which is what the reviewer sees of it. Where that spot would cover words, a
   // control, a picture, a code block or another pin, as it does between paragraphs closer than a pin
-  // is tall, the pin moves beside the line's end, before its start, under its end, then to the right
-  // of the block; failing all of those, to whichever covers least.
+  // is tall, the pin moves beside the line's end, before its start, under its end, to the right of
+  // the block, then onto the top right corner of the target's own box; failing all of those, to
+  // whichever covers least. A spot nearer another control's box than its own target's would read
+  // as a note on that control, so it is taken only when every other spot covers something.
   // A table cell has no room above its words, so its pin stays inside the cell, off the rows around it.
   // Every note on one target is placed as one block, `size` across and down, so a second pin stands
   // beside the first and a row too long for the frame goes on under itself (`layRow`).
@@ -809,6 +851,29 @@
     }
     return area;
   };
+
+  const distance = (x, y, r) =>
+    Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+
+  // Whether a row at `spot` reads as on something else: its first pin stands nearer the box of a
+  // control, picture, code block or table other than its target than the target's own boxes.
+  const strays = (spot, { width }, avoid, element, own) => {
+    const x = spot.left + Math.min(width, PIN) / 2;
+    const y = spot.top + PIN / 2;
+    const near = Math.min(...own.map((r) => distance(x, y, r)));
+    return avoid.some(
+      ({ rect, owner }) =>
+        owner &&
+        !(owner === element || owner.contains(element) || element.contains(owner)) &&
+        distance(x, y, rect) < near,
+    );
+  };
+
+  // What straying adds to a spot's cost: less than covering any word does, an overlap counting from
+  // 0.25 px², so a pin never covers words to keep near its target, and more than a clean spot.
+  const STRAY = 0.1;
+  const costAt = (spot, size, avoid, element, own) =>
+    overlapArea(spot, size, avoid, element) + (strays(spot, size, avoid, element, own) ? STRAY : 0);
 
   function pinSpot(anchor, avoid, bounds, size) {
     const { width, height } = size;
@@ -837,6 +902,7 @@
       return {
         left: Math.max(box.left, Math.min(right + HALO, box.right - width)),
         top: Math.max(box.top, Math.min(lineTop - height, box.bottom - height)),
+        own: rects,
       };
     }
     // Level with the line's middle, or with the top of a box taller than a pin.
@@ -855,15 +921,16 @@
       { left: Math.min(...line.map((r) => r.left)) - width - GAP, top: beside },
       { left: right - width, top: lineBottom + GAP },
       { left: element.getBoundingClientRect().right + GAP, top: beside },
+      { left: right - width / 2, top: lineTop - height / 2 },
     ].map(({ left, top }) => ({
       left: Math.min(Math.max(left, bounds.left), bounds.right - width),
       top: Math.max(top, bounds.top),
     }));
     let best = null;
     for (const spot of candidates) {
-      const area = overlapArea(spot, size, avoid, element);
-      if (area === 0) return spot;
-      if (!best || area < best.area) best = { ...spot, area };
+      const cost = costAt(spot, size, avoid, element, rects);
+      if (cost === 0) return { ...spot, own: rects };
+      if (!best || cost < best.cost) best = { ...spot, cost, own: rects };
     }
     return best;
   }
@@ -979,7 +1046,13 @@
           (p) => p.x - width < cx && cx < p.x + p.width && p.y - height < cy && cy < p.y + p.height,
         )
           ? Infinity
-          : overlapArea({ left: cx + origin.left, top: cy + origin.top }, size, avoid, element);
+          : costAt(
+              { left: cx + origin.left, top: cy + origin.top },
+              size,
+              avoid,
+              element,
+              spot.own,
+            );
       let bestX = x;
       let bestY = y;
       let bestArea = areaAt(x, y);
@@ -1179,6 +1252,7 @@
     { passive: true },
   );
 
-  document.documentElement.append(pinHost, host);
+  // The pins paint over the highlight, whose ring would otherwise cut through a pin on its target's corner.
+  document.documentElement.append(host, pinHost);
   send({ type: "ready" });
 })();

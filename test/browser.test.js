@@ -16,11 +16,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { createServer } from "node:http";
+import { randomBytes } from "node:crypto";
+import { createServer, request as httpRequest } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, afterEach, before, test } from "node:test";
+import { pidAlive } from "../src/daemon-lock.js";
 import { envPrefix } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import {
@@ -2394,12 +2396,20 @@ test(
       { outlined: 1, card: { words: "This title is long; I would cut it to", reason: null } },
       "the card still open on the title has the title outlined again",
     );
+    // The page drops the outline when the card close reaches it, through the wrapper and after the
+    // chrome hides the card; held there, as a loaded runner's wrapper can, the outline stays till then.
+    const held = await holdCloseRelay(page);
     await page.type(" four words");
     await clickOn(page, "document.getElementById('cardAdd')");
     await page.waitFor(
       "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
     );
-    assert.equal(await highlights(artifact), 0, "the note added, its outline goes with the card");
+    await held.reached();
+    assert.equal(await highlights(artifact), 1, "the card close not yet heard, the outline stays");
+    await held.release();
+    await until(async () => (await highlights(artifact)) === 0, {
+      what: "the note added, its outline to go with the card once the page hears it close",
+    });
     await page.close();
   },
 );
@@ -4028,6 +4038,60 @@ test(
 );
 
 test(
+  "a save keeps the place and Annotate on a Word page, and a note on a smart tag names it in valid CSS",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    // Word and Outlook exports carry smart tags such as <st1:place>. The reading place handed back
+    // on a reload named one unescaped, which is no selector, so the page threw before its place,
+    // Annotate and pins came back; and a note on one sent the agent the same broken selector.
+    const { file } = copyOfFixture();
+    const word = (title) =>
+      `<html xmlns:st1="urn:schemas-microsoft-com:office:smarttags"><head><title>${title}</title></head><body>` +
+      Array.from(
+        { length: 120 },
+        (_, i) => `<p><st1:place w:st="on">Seattle</st1:place> office, row ${i + 1}.</p>`,
+      ).join("") +
+      "</body></html>";
+    writeFileSync(file, word("Offices"));
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    try {
+      // The reading place is the deepest element crossing the top edge: row 45's smart tag.
+      const row45 = "document.querySelectorAll('p')[44].firstElementChild";
+      const top = `Math.round(${row45}.getBoundingClientRect().top)`;
+      const y = await artifact.eval(
+        `(() => { window.scrollTo(0, ${top} + window.scrollY - 2); return window.scrollY; })()`,
+      );
+      await page.waitFor(`document.body.dataset.scroll === '${y}'`);
+      assert.match(await page.eval("document.body.dataset.place"), /> st1\\?:place$/);
+      const wasAt = Number(await artifact.eval(top));
+      writeFileSync(file, word("Offices, saved"));
+      await page.waitFor("document.body.dataset.revision === '1'");
+      assert.equal(
+        Number(await artifact.eval(top)),
+        wasAt,
+        "row 45 stayed where the reviewer had it",
+      );
+
+      await noteOn(page, artifact, "p:nth-of-type(60) > st1\\:place", "Which Seattle office?");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+      const [note] = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts;
+      assert.equal(note.selector, "p:nth-of-type(60) > st1\\:place");
+      // What the agent does with it: the selector finds the element the note was left on.
+      assert.equal(
+        await artifact.eval(
+          `document.querySelector(${JSON.stringify(note.selector)}).parentElement.textContent`,
+        ),
+        "Seattle office, row 60.",
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
   "a save keeps the reviewer's place on a page with a sticky header, a fixed header or a fixed footer",
   { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
   async () => {
@@ -4149,6 +4213,118 @@ test(
     );
     assert.equal(await page.eval("window.refusedStreams"), 3, "three stream connects failed");
     await page.close();
+  },
+);
+
+/** Opens `count` event streams on a review from Node; at `limits.eventStreams` the next tab is refused. */
+async function holdStreams(own, url, count = limits.eventStreams) {
+  const { port, token } = own.serverInfo();
+  const key = new URL(url).pathname.split("/").at(-1);
+  const held = [];
+  for (let i = 0; i < count; i += 1)
+    held.push(
+      await new Promise((resolve, reject) => {
+        const req = httpRequest({
+          host: "127.0.0.1",
+          port,
+          path: `/api/${key}/events`,
+          headers: {
+            connection: "Upgrade",
+            upgrade: "websocket",
+            "sec-websocket-version": "13",
+            "sec-websocket-key": randomBytes(16).toString("base64"),
+            "sec-websocket-protocol": `events, bearer.${token}`,
+          },
+        });
+        req.on("upgrade", (_res, socket) => resolve(socket.on("data", () => {})));
+        req.on("error", reject);
+        req.end();
+      }),
+    );
+  return held;
+}
+
+test(
+  "a tab refused for too many event streams follows its review once the reviewer closes another",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const held = await holdStreams(own, url, limits.eventStreams - 1);
+    const other = await browser.page(url);
+    await other.waitFor(FOLLOWING);
+    const page = await browser.page(url);
+    try {
+      await page.waitFor(
+        "document.getElementById('noticeText').textContent.startsWith('Too many review tabs are open')",
+      );
+      await other.close();
+      await page.waitFor(FOLLOWING);
+      await page.waitFor("document.getElementById('notice').hidden");
+    } finally {
+      for (const socket of held) socket.destroy();
+      // Already closed when the test got that far; this is for one that did not.
+      await other.close().catch(() => {});
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a tab refused for too many event streams says so, backs off, and lets the daemon idle out once hidden",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // The server takes the handshake and then closes 4429, and the chrome counted that open as
+    // following its review: it retried twice a second for good, said the server had stopped
+    // answering, and every try touched the daemon, so a hidden tab kept it from idling out.
+    const own = isolatedEnv({ POINTBACK_IDLE_MS: "3000" });
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { pid } = own.serverInfo();
+    const held = await holdStreams(own, url);
+    const page = await browser.page("about:blank");
+    // The browser's own clock for each health check the chrome makes before a stream.
+    const checks = [];
+    const counted = ({ method, params, sessionId }) => {
+      if (sessionId !== page.sessionId || method !== "Network.requestWillBeSent") return;
+      if (params.request.url.includes("/health?challenge=")) checks.push(params.timestamp * 1000);
+    };
+    page.browser.listeners.push(counted);
+    try {
+      await page.navigate(url);
+      await page.waitFor(
+        "document.getElementById('noticeText').textContent.startsWith('Too many review tabs are open')",
+      );
+      // One check at boot, then one before each try: six is the fourth retry.
+      await page.explained(
+        until(() => checks.length >= 6, { what: "the fourth retry", timeoutMs: 20_000 }),
+      );
+      const gaps = checks.slice(1, 6).map((at, i) => Math.round(at - checks[i]));
+      console.log(`browser suite: gaps between health checks after a 4429, ms: ${gaps}`);
+      // A lower bound only, which a slow runner cannot break: a timer never fires early, and the
+      // fourth pause is 2000 ms where every pause was 500 ms before.
+      assert.ok(gaps[4] >= 1500, `the fourth retry came ${gaps[4]} ms after the third`);
+
+      // Hidden, the tab stops trying, so nothing touches the daemon and it idles out. Its pid is
+      // read rather than probed, since a probe is itself activity.
+      await page.eval(
+        `Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+         document.dispatchEvent(new Event("visibilitychange"));`,
+      );
+      await page.explained(
+        until(() => !pidAlive(pid), {
+          what: "the daemon to idle out behind a hidden tab",
+          timeoutMs: 20_000,
+        }),
+      );
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(counted), 1);
+      for (const socket of held) socket.destroy();
+      await page.close();
+      await own.stop();
+    }
   },
 );
 
@@ -5151,6 +5327,9 @@ test(
       await page.waitFor(noticeSays("You ended this review."));
       const key = new URL(url).pathname.split("/").pop();
       assert.ok(watched.carried.includes(`POST /api/${key}/end`), watched.carried.join(", "));
+      // The stream offers the token legitimately here, so this proves the handshake capture the
+      // negative tests rely on still sees the subprotocol header in this browser.
+      assert.ok(watched.carried.includes("WebSocket events"), watched.carried.join(", "));
       const polled = (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json();
       assert.equal(polled.status, "ended");
     } finally {
@@ -6295,6 +6474,81 @@ test(
   },
 );
 
+test(
+  "a passage pin in a long <pre> is found again from one read of its text, beside its own line",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    // Finding a passage again squashed its element's whole text before and after every match, on
+    // every pins update: a passage on a common word in a 113 KB <pre> held the page 4 to 8 s each
+    // time. Reads are counted rather than milliseconds, since a latency is never asserted.
+    const { file } = copyOfFixture();
+    const lines = Array.from({ length: 1000 }, (_, k) => `INFO worker ${k}: the batch was flushed`);
+    const whole = lines.join("\n");
+    writeFileSync(file, `<!doctype html><title>Log</title><main><pre>${whole}</pre></main>`);
+    const session = (await cli([file], lab.env)).json().session;
+    const { page, artifact } = await openReview(session.url);
+    try {
+      // Counted on the prototype the sdk reads through, from a listener added after the sdk's,
+      // which therefore runs once the sdk has handled the same message.
+      await artifact.eval(`(() => {
+        const own = Object.getOwnPropertyDescriptor(Node.prototype, "textContent");
+        window.reads = 0;
+        Object.defineProperty(Node.prototype, "textContent", {
+          get() { window.reads += 1; return own.get.call(this); }, set: own.set, configurable: true,
+        });
+        addEventListener("message", (event) => {
+          if (event.data?.type === "pins") window.readsForPins = window.reads;
+        });
+      })()`);
+      // One of 2,000 matches of "the", told apart only by the text around it: the offset the note
+      // carries is 3,000 characters off, as after an agent's edit above it.
+      const start = whole.indexOf("the batch", 20_000);
+      await api(session, "POST", "drafts", {
+        draft: {
+          selector: "main > pre",
+          tag: "text",
+          text: "the",
+          prompt: "Name the batch",
+          target: {
+            type: "text-range",
+            start: start - 3000,
+            end: start - 2997,
+            before: whole.slice(start - 32, start).replace(/\s+/g, " "),
+            after: whole.slice(start + 3, start + 35).replace(/\s+/g, " "),
+          },
+        },
+      });
+      const reads = Number(await artifact.waitFor("window.readsForPins"));
+      console.log(`browser suite: one passage pin's pins update read text ${reads} times`);
+      assert.ok(reads < 100, `one passage pin read text ${reads} times`);
+
+      const line = JSON.parse(
+        await artifact.eval(`(() => {
+          const range = document.createRange();
+          const text = document.querySelector("main > pre").firstChild;
+          range.setStart(text, ${start});
+          range.setEnd(text, ${start + 3});
+          window.scrollTo(0, range.getBoundingClientRect().top + window.scrollY - 200);
+          return JSON.stringify(range.getBoundingClientRect());
+        })()`),
+      );
+      const [pin] = await until(
+        async () => {
+          const shown = await pinsOn(artifact);
+          return shown.length === 1 ? shown : null;
+        },
+        { what: "the passage pin" },
+      );
+      assert.ok(
+        pin.bottom >= line.top - 4 && pin.top <= line.bottom,
+        `${pin.name} paints at ${JSON.stringify(pin)}, beside its line at ${JSON.stringify(line)}`,
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
+
 const CELL = (row) => `main > table > tbody > tr:nth-of-type(${row}) > td:nth-of-type(2)`;
 
 /** Waits for the frame to paint `count` pins, and says where each stands against its target. */
@@ -6731,6 +6985,163 @@ test(
       "html at 1440": [],
       "markdown at 1440": [],
     });
+  },
+);
+
+/** A private copy of the form fixture: four fields to a row, each with its label and hint or error. */
+function copyOfForm() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-form-"));
+  const file = join(dir, "form.html");
+  copyFileSync(join(dirname(fixture), "form.html"), file);
+  return file;
+}
+
+/** Every control's box in the page's viewport, by its id. */
+const CONTROL_BOXES = `JSON.stringify([...document.querySelectorAll("input, textarea, select, button")].map((c) => {
+  const r = c.getBoundingClientRect();
+  return { id: c.id, left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+}))`;
+
+const distanceTo = (x, y, r) =>
+  Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+
+test(
+  "a field's pin stands nearer its own field than any other control, on no word, at every width",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const strays = {};
+    const fields = ["#say", "#print", "#type", "#agent"];
+    for (const width of [390, 800, 1440, 2560]) {
+      const file = copyOfForm();
+      const url = (await cli([file], lab.env)).json().session.url;
+      const { page, artifact } = await openReview(url, { width, height: 900 });
+      const pins = await pinsOnEach(page, artifact, fields);
+      const controls = JSON.parse(await artifact.eval(CONTROL_BOXES));
+      strays[width] = [
+        ...pins.flatMap((pin, i) => {
+          const x = (pin.left + pin.right) / 2;
+          const y = (pin.top + pin.bottom) / 2;
+          const own = controls.find((c) => `#${c.id}` === fields[i]);
+          const mine = distanceTo(x, y, own);
+          return controls
+            .filter((c) => c !== own && distanceTo(x, y, c) < mine)
+            .map(
+              (c) =>
+                `${pin.name} centred at ${Math.round(x)}, ${Math.round(y)} is ${Math.round(distanceTo(x, y, c))} px from #${c.id}, ${Math.round(mine)} px from its own ${fields[i]}`,
+            );
+        }),
+        ...(await wordsUnderPins(artifact, pins)),
+        ...(await pinsOffFrame(artifact, pins)),
+      ];
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(strays, { 390: [], 800: [], 1440: [], 2560: [] });
+  },
+);
+
+/**
+ * Where the open card stands against what it must leave in view, in the tab's coordinates: the
+ * target, its label and the hint or error tied to it, and the frame it must stay inside.
+ */
+async function cardAgainst(page, artifact, ids) {
+  const frame = JSON.parse(
+    await page.eval(`(() => {
+      const f = document.getElementById("artifact");
+      const r = f.getBoundingClientRect();
+      const c = document.getElementById("card").getBoundingClientRect();
+      return JSON.stringify({
+        left: r.left + f.clientLeft, top: r.top + f.clientTop, width: f.clientWidth, height: f.clientHeight,
+        card: { left: c.left, top: c.top, right: c.right, bottom: c.bottom },
+      });
+    })()`),
+  );
+  const boxes = JSON.parse(
+    await artifact.eval(`JSON.stringify(${JSON.stringify(ids)}.map((id) => {
+      const r = document.getElementById(id).getBoundingClientRect();
+      return { id, left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    }))`),
+  );
+  const { card } = frame;
+  const round = (r) => [r.left, r.top, r.right, r.bottom].map(Math.round).join(",");
+  const covered = boxes
+    .map((b) => ({
+      ...b,
+      left: b.left + frame.left,
+      right: b.right + frame.left,
+      top: b.top + frame.top,
+      bottom: b.bottom + frame.top,
+    }))
+    // Only what shows in the frame can be covered; a box the page scrolled out of view is not.
+    .filter((b) => b.bottom > frame.top && b.top < frame.top + frame.height)
+    .filter(
+      (b) =>
+        card.left < b.right - 0.5 &&
+        b.left < card.right - 0.5 &&
+        card.top < b.bottom - 0.5 &&
+        b.top < card.bottom - 0.5,
+    )
+    .map((b) => `the card ${round(card)} covers #${b.id} ${round(b)}`);
+  const hidden = boxes
+    .map((b) => b.top + frame.top)
+    .filter((top) => top < frame.top || top > frame.top + frame.height)
+    .map(() => `the card's target is out of the frame's view`);
+  const outside =
+    card.left < frame.left - 0.5 ||
+    card.right > frame.left + frame.width + 0.5 ||
+    card.top < frame.top - 0.5 ||
+    card.bottom > frame.top + frame.height + 0.5
+      ? [
+          `the card ${round(card)} runs past the frame ${round({ left: frame.left, top: frame.top, right: frame.left + frame.width, bottom: frame.top + frame.height })}`,
+        ]
+      : [];
+  return [...covered, ...hidden.slice(0, 1), ...outside];
+}
+
+test(
+  "the note card leaves a field, its label and its hint or error in view, inside the frame, at every width",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const seen = {};
+    // Each field with what the card must leave in view; at 390 the textarea's block is centred in
+    // the frame first, where the card fits on neither side of it until the page scrolls.
+    const fields = [
+      ["say", ["say", "say-hint"]],
+      ["print", ["print", "print-error"]],
+      ["type", ["type"]],
+      ["agent", ["agent", "agent-hint"]],
+    ];
+    for (const width of [390, 800, 1440, 2560]) {
+      const file = copyOfForm();
+      const url = (await cli([file], lab.env)).json().session.url;
+      const { page, artifact } = await openReview(url, { width, height: 844 });
+      seen[width] = [];
+      for (const [id, kept] of fields) {
+        const ids = [...kept, `${id}-label`];
+        await artifact.eval(`(() => {
+          for (const label of document.querySelectorAll("label")) label.id ||= label.htmlFor + "-label";
+          window.scrollTo({ top: 0, behavior: "instant" });
+          ${id === "agent" ? `document.getElementById("agent").parentElement.scrollIntoView({ block: "center", behavior: "instant" });` : ""}
+        })()`);
+        await pointAt(page, artifact, `#${id}`);
+        // A card that has to scroll the page moves it a moment after it opens, so the property is
+        // waited for, and what the card covered on the last look is what a failure reports.
+        let last = [];
+        await until(
+          async () => {
+            last = await cardAgainst(page, artifact, ids);
+            return last.length === 0;
+          },
+          { what: `the card on #${id} at ${width}` },
+        ).catch(() => {});
+        seen[width].push(...last.map((problem) => `#${id}: ${problem}`));
+        await page.eval("document.getElementById('cardCancel').click()");
+        await page.waitFor("document.body.dataset.handoff === 'settled'");
+      }
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(seen, { 390: [], 800: [], 1440: [], 2560: [] });
   },
 );
 
@@ -7592,6 +8003,52 @@ test(
     await page.send("Emulation.setEmulatedMedia", { features: [] });
     await page.close();
     rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "the highlight keeps 3:1 on a white page and a dark one, whichever scheme the reviewer prefers, in screenshot pixels",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const seen = {};
+    // A page under review keeps its own ground whatever the reviewer prefers: plan.html is white,
+    // the dark fixture near black.
+    for (const [name, file] of [
+      ["white page", copyOfFixture().file],
+      ["dark page", copyOfDark()],
+    ]) {
+      const session = (await cli([file], lab.env)).json().session;
+      const { page, artifact } = await openReview(session.url, { width: 1440, height: 900 });
+      await pointAt(page, artifact, "h1");
+      const frame = JSON.parse(await page.eval(FRAME_BOX));
+      const heading = JSON.parse(
+        await artifact.eval("JSON.stringify(document.querySelector('h1').getBoundingClientRect())"),
+      );
+      for (const scheme of ["light", "dark"]) {
+        await page.send("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-color-scheme", value: scheme }],
+        });
+        await artifact.waitFor(`matchMedia("(prefers-color-scheme: ${scheme})").matches`);
+        await artifact.eval(SETTLED);
+        const shot = await screenshotOf(page);
+        const ground = shot.pixel(Math.round(frame.left + 4), Math.round(frame.top + 4));
+        // The highlight's top edge, read down from just above the heading's box, where its 2 px
+        // ring stands 2 px clear of the box.
+        const x = Math.round(frame.left + heading.left + 10);
+        const ring = Math.max(
+          ...[1, 2, 3, 4, 5, 6].map((dy) =>
+            contrast(shot.pixel(x, Math.round(frame.top + heading.top) - dy), ground),
+          ),
+        );
+        seen[`${scheme} scheme on a ${name}`] = Number(ring.toFixed(2));
+      }
+      await page.send("Emulation.setEmulatedMedia", { features: [] });
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    console.log(`highlight edges: ${JSON.stringify(seen)}`);
+    const under = Object.entries(seen).filter(([, ratio]) => ratio < 3);
+    assert.deepEqual(under, [], `the highlight under 3:1: ${JSON.stringify(seen)}`);
   },
 );
 

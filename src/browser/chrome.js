@@ -87,6 +87,8 @@ let liveReload = true;
 // Live only once a health answer proves the server holds this page's token (`health`), since `api`
 // sends the token only while live.
 let connection = "lost";
+// Lost because the server refused the stream for too many open (4429), not because nothing answered.
+let crowded = false;
 let editing = false;
 let deferredReload = false;
 // The ids of the notes a send has in flight: Send stays shut until the stream reports them sent,
@@ -164,6 +166,18 @@ async function health() {
 
 const pause = (failures) =>
   new Promise((resolve) => setTimeout(resolve, Math.min(500 * failures, 5000)));
+
+/** Resolves once the reviewer can see this tab. */
+const seen = () =>
+  new Promise((resolve) => {
+    const check = () => {
+      if (document.visibilityState !== "visible") return;
+      document.removeEventListener("visibilitychange", check);
+      resolve(undefined);
+    };
+    document.addEventListener("visibilitychange", check);
+    check();
+  });
 
 async function boot() {
   let app;
@@ -278,6 +292,7 @@ async function listen() {
         // Any stream that opens takes the review over, so a Take over pressed while none was open,
         // with nothing to close, is done here, not left to swallow the next ordinary close.
         retaking = false;
+        crowded = false;
         // Published for the same reason as ready: `connection` reads live from the health check on,
         // before the stream opens, and a stream connect Windows refuses is lost for a pause then
         // retried, so only this says the page is following its review (docs/ENGINEERING-NOTES.md).
@@ -302,8 +317,12 @@ async function listen() {
     }
     failures += 1;
     connection = "lost";
+    crowded = code === 4429;
     render();
     await pause(failures);
+    // Every try touches the daemon, so a tab crowded out tries only while the reviewer can see it:
+    // a hidden one kept the daemon from ever idling out.
+    if (crowded) await seen();
   }
   spent();
 }
@@ -327,6 +346,8 @@ function follow(opened) {
       "events",
       `bearer.${token}`,
     ]);
+    // Followed from its hello, not its open: the server takes the handshake before it refuses a
+    // stream for too many (4429), and counting that open reset the backoff to 500 ms every time.
     stream.addEventListener("message", (event) => {
       const data = JSON.parse(event.data);
       apply(data);
@@ -651,17 +672,22 @@ function renderNotice() {
                 "This browser is offline. Your notes are kept, and this page catches up once it is back online.",
                 false,
               ]
-            : connection === "lost"
+            : connection === "lost" && crowded
               ? [
-                  `The review server stopped answering. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
+                  "Too many review tabs are open, so this page is not following its review. Close one and this page reconnects.",
                   false,
                 ]
-              : !liveReload
+              : connection === "lost"
                 ? [
-                    "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                    `The review server stopped answering. Your notes are kept, and this page reconnects when your agent next runs ${appName}.`,
                     false,
                   ]
-                : [null, false];
+                : !liveReload
+                  ? [
+                      "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+                      false,
+                    ]
+                  : [null, false];
   notice.hidden = text === null;
   noticeText.textContent = text ?? "";
   takeOverButton.hidden = !action;
@@ -1078,7 +1104,7 @@ function openCompose(note, label, outline, rects, from) {
   cardAdd.textContent = answer ? "Add answer" : "Add note";
   cardText.value = "";
   card.hidden = false;
-  placeCard(rects);
+  placeCard(from ? rects : revealed(rects));
   // Rendered first, so a page held out of view is hidden before the note can take the focus.
   render();
   cardText.focus();
@@ -1152,19 +1178,67 @@ window.addEventListener("blur", () => {
   });
 });
 
-/** Places the card over the artifact at the spot the reviewer pointed at, clamped to the mount. */
+// How far the card stands from what it is placed by and from the frame's edges.
+const CARD_GAP = 8;
+
+/** What the card keeps in view, in the page's coordinates: every box it was given, and the last one's left. */
+function spanOf(rects) {
+  const boxes = Array.isArray(rects) && rects.length ? rects : [{ left: 0, bottom: 0 }];
+  return {
+    left: boxes[boxes.length - 1].left,
+    top: Math.min(...boxes.map((r) => r.top ?? r.bottom)),
+    bottom: Math.max(...boxes.map((r) => r.bottom)),
+  };
+}
+
+/**
+ * The boxes a card for a target on the page is placed by. Where the target, its label and its hint
+ * are not all in view with room for the card over or under them, as in a phone's short frame, the
+ * page scrolls the least that makes them so; a target too tall for that is left where it is.
+ * simplified: assumes the page can scroll that far; one at the end of a short page may stay short.
+ */
+function revealed(rects) {
+  const span = spanOf(rects);
+  const height = card.offsetHeight;
+  const view = frame.clientHeight;
+  const tall = span.bottom - span.top;
+  // Where the target's top may stand with the card over it, then with the card under it.
+  const tops = [
+    [2 * CARD_GAP + height, view - CARD_GAP - tall],
+    [CARD_GAP, view - 2 * CARD_GAP - height - tall],
+  ]
+    .filter(([low, high]) => low <= high)
+    .map(([low, high]) => Math.min(Math.max(span.top, low), high));
+  if (!tops.length) return rects;
+  const to = tops.reduce((a, b) => (Math.abs(a - span.top) <= Math.abs(b - span.top) ? a : b));
+  const by = span.top - to;
+  if (!(Math.abs(by) >= 1)) return rects;
+  post({ type: "scroll-by", x: 0, y: by });
+  return rects.map((r) => ({ ...r, top: r.top - by, bottom: r.bottom - by }));
+}
+
+/**
+ * Places the card inside the frame beside what the reviewer pointed at: under it, or over it when
+ * there is no room under it, so the target and the hint or error the page ties to it stay in view.
+ */
 function placeCard(rects) {
   const mount = frame.parentElement;
   const bounds = mount.getBoundingClientRect();
   // The page's own coordinates start inside the frame's border.
   const frameBox = frame.getBoundingClientRect();
-  const r = Array.isArray(rects) && rects.length ? rects[rects.length - 1] : { left: 0, bottom: 0 };
   const originX = frameBox.left + frame.clientLeft - bounds.left;
   const originY = frameBox.top + frame.clientTop - bounds.top;
-  const top = Math.min(originY + r.bottom + 8, bounds.height - card.offsetHeight - 8);
-  const left = Math.min(originX + r.left, bounds.width - card.offsetWidth - 8);
-  card.style.top = `${Math.max(8, top)}px`;
-  card.style.left = `${Math.max(8, left)}px`;
+  const span = spanOf(rects);
+  const { offsetWidth: width, offsetHeight: height } = card;
+  const room = frame.clientHeight - CARD_GAP - height;
+  const below = span.bottom + CARD_GAP;
+  const above = span.top - CARD_GAP - height;
+  const top = below <= room || above < CARD_GAP ? below : above;
+  card.style.top = `${originY + Math.max(CARD_GAP, Math.min(top, room))}px`;
+  // A frame barely wider than the card shares what is left between its two sides.
+  const margin = Math.max(0, Math.min(CARD_GAP, (frame.clientWidth - width) / 2));
+  const left = Math.min(span.left, frame.clientWidth - width - margin);
+  card.style.left = `${originX + Math.max(margin, left)}px`;
 }
 
 window.addEventListener("message", (event) => {
