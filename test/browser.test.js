@@ -41,8 +41,8 @@ const FRAME_BOX = `(() => {
   return JSON.stringify({ left: box.left + frame.clientLeft, top: box.top + frame.clientTop });
 })()`;
 
-// The chrome is following its review once its event stream is open, and refuses Add and Send until
-// then: Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused stream
+// The chrome is following its review once its event stream has opened and brought the review's state,
+// and refuses Add and Send until then: Windows refuses about 5 in 100000 of Chrome's new loopback connects, and a refused stream
 // connect is retried after a pause the chrome spends lost (docs/ENGINEERING-NOTES.md).
 const FOLLOWING = "document.body.dataset.stream === 'open'";
 
@@ -622,8 +622,13 @@ test(
   { skip: !executable && "no browser found" },
   async () => {
     const page = await browser.page(opened.session.url.replace(/#.*$/, "#wrongtoken"));
-    const text = await page.waitFor("document.getElementById('status').textContent");
-    assert.match(text, /no longer works/);
+    const text = await page.waitFor(
+      "document.getElementById('notice').checkVisibility() && document.getElementById('noticeText').textContent",
+    );
+    assert.match(
+      text,
+      /can no longer reach its review\. Run .+ on this file again for a fresh page/,
+    );
   },
 );
 
@@ -673,6 +678,8 @@ test(
     const outsideLine =
       "(() => { const line = document.getElementById('outside'); return line?.checkVisibility() ? line.textContent : null; })()";
     await page.waitFor("document.body.dataset.ready === '1'");
+    // The reroot below reaches the tab on its stream.
+    await page.waitFor(FOLLOWING);
     assert.equal(
       await page.eval(outsideLine),
       null,
@@ -707,6 +714,35 @@ test(
     await page.front();
     await artifact.waitFor(unstyledAtNewAddress);
     await page.close();
+  },
+);
+
+test(
+  "a tab whose stream was down when its review lost the root that styled it says why once it is back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    try {
+      const { repo, file } = componentSheet();
+      const { page } = await openReview(
+        (await cli([file, "--root", repo], own.env)).json().session.url,
+      );
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      await page.waitFor("document.getElementById('presenceText').textContent === 'Not connected'");
+      // The agent opens the file again without the root, which starts the daemon the tab is waiting on.
+      const again = (await cli([file], own.env)).json();
+      assert.deepEqual(again.refused_assets, ["../../exports/variables.css", "../components.css"]);
+      await page.waitFor(FOLLOWING, { timeoutMs: 20_000 });
+      assert.equal(
+        await page.waitFor(
+          "(() => { const line = document.getElementById('outside'); return line.checkVisibility() && line.textContent; })()",
+        ),
+        "../../exports/variables.css, ../components.css are outside the folder this review serves, so the page shows without them. Your agent can open it with --root to include them.",
+      );
+      await page.close();
+    } finally {
+      await own.stop();
+    }
   },
 );
 
@@ -1195,6 +1231,37 @@ test(
     const expected = { kept: true, text: "abc", address: "about:blank", keys: 0 };
     for (const [name, result] of Object.entries(results)) assert.deepEqual(result, expected, name);
     assert.deepEqual(Object.keys(results), ["answer", "card", "second note", "edit"]);
+  },
+);
+
+test(
+  "a note made by keyboard gives the focus back to its element after the page was unloaded for it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    // Into the page the way a keyboard reviewer starts: point at the title, Escape, then Tab on.
+    await pointAt(page, artifact, "#t");
+    await page.key("Escape", { keyCode: 27 });
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
+    await page.tab();
+    await artifact.waitFor("document.activeElement.id === 'p1'");
+    await page.enter();
+    await page.waitFor(
+      `!document.getElementById('card').hidden && document.activeElement === ${card}`,
+    );
+    await artifact.eval("globalThis.calling = true");
+    await page.eval("delete document.body.dataset.revision");
+    const result = await writeNote(page, card, "document.getElementById('card').hidden");
+    assert.deepEqual(result, { kept: true, text: "abc", address: "about:blank", keys: 0 });
+    // The page is loaded again for the reviewer, and the keyboard is back where they were.
+    await page.waitFor("document.body.dataset.revision === '0'");
+    const back = await page.frame();
+    await back.waitFor("document.hasFocus() && document.activeElement.id === 'p1'");
+    await page.tab();
+    await back.waitFor("document.activeElement.id === 'p2'");
+    await page.close();
   },
 );
 
@@ -2271,6 +2338,40 @@ test(
       [{ prompt: "This title is long; I would cut it to four words", selector: "#title" }],
       "the agent receives the note the end would have thrown away",
     );
+    await page.close();
+  },
+);
+
+test(
+  "a card the agent's end held open has its target outlined again once the review is reopened",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#title");
+    await page.type("This title is long; I would cut it to");
+    assert.equal(await highlights(artifact), 1, "the card's target is outlined while it is open");
+    assert.equal((await cli(["end", file], lab.env)).json().ended_by, "agent");
+    await page.waitFor(noticeSays("Your agent ended this review."));
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    assert.equal(await highlights(artifact), 0, "Annotate is off, so nothing is outlined");
+    // The agent opens the file again, which takes up the review it ended, and Annotate with it.
+    assert.equal((await cli([file], lab.env)).json().session.status, "opened");
+    await page.waitFor("document.body.dataset.annotate === '1'");
+    assert.deepEqual(
+      {
+        outlined: await highlights(artifact),
+        card: JSON.parse(await page.eval(CARD_SEEN)),
+      },
+      { outlined: 1, card: { words: "This title is long; I would cut it to", reason: null } },
+      "the card still open on the title has the title outlined again",
+    );
+    await page.type(" four words");
+    await clickOn(page, "document.getElementById('cardAdd')");
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 1",
+    );
+    assert.equal(await highlights(artifact), 0, "the note added, its outline goes with the card");
     await page.close();
   },
 );
@@ -4486,6 +4587,17 @@ const CARD_PAINT = `JSON.stringify({
 })`;
 const unsentNotes =
   "JSON.stringify([...document.querySelectorAll('.mark:not(.sent) .mark-note')].map((e) => e.textContent))";
+/** The Annotate switch as it paints: on or off, whether it can be pressed, and the cursor that says so. */
+const ANNOTATE_PAINT = `JSON.stringify({
+  on: document.getElementById('annotate').checked,
+  disabled: document.getElementById('annotate').disabled,
+  cursor: getComputedStyle(document.getElementById('annotate')).cursor,
+})`;
+/** End review as it paints: whether it can be pressed, and the cursor that says so. */
+const END_PAINT = `JSON.stringify({
+  disabled: document.getElementById('end').disabled,
+  cursor: getComputedStyle(document.getElementById('end')).cursor,
+})`;
 
 test(
   "two unsent notes survive the tab closing, and the review opened again sends them",
@@ -4559,6 +4671,11 @@ test(
         "the page says it is not connected once, and that the notes are kept once",
       );
       assert.deepEqual(JSON.parse(await page.eval(unsentNotes)), ["Name the queue in the title"]);
+      assert.deepEqual(
+        JSON.parse(await page.eval(END_PAINT)),
+        { disabled: true, cursor: "not-allowed" },
+        "nor an End review that cannot reach the review either",
+      );
 
       // Pointing still opens the card, but Add waits for the connection, saying so on the card.
       await pointAt(page, artifact, "#p1");
@@ -4599,6 +4716,10 @@ test(
         "back online, the card's reason is gone and Add works",
       );
       assert.match(status, /^1 note ready to send\./, "and no stale failure is left in the margin");
+      assert.deepEqual(JSON.parse(await page.eval(END_PAINT)), {
+        disabled: false,
+        cursor: "pointer",
+      });
       await page.eval("document.getElementById('cardAdd').click()");
       await page.waitFor(
         "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 2",
@@ -4669,6 +4790,55 @@ test(
 );
 
 test(
+  "a tab back from a stopped daemon shows the agent as its review now has it, never as it was before the stop",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    let poll;
+    try {
+      const { file } = copyOfFixture();
+      const { page, artifact } = await openReview((await cli([file], own.env)).json().session.url);
+      // Before the stop the agent is working on a note, a state only that daemon's memory holds.
+      await noteOn(page, artifact, "#title", "Name the queue in the title");
+      await page.eval("document.getElementById('send').click()");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+      assert.equal(
+        (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().status,
+        "feedback",
+      );
+      await page.waitFor("document.getElementById('presence').dataset.state === 'working'");
+      // Every state the bar paints from here on, in order, whatever the tab does between two reads.
+      await page.eval(`globalThis.presenceSeen = [];
+        new MutationObserver(() => {
+          const state = document.getElementById("presence").dataset.state;
+          if (presenceSeen.at(-1) !== state) presenceSeen.push(state);
+        }).observe(document.getElementById("presence"), { attributes: true, attributeFilter: ["data-state"] })`);
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      // The agent's next poll starts the daemon and stays attached, so the review the tab comes back
+      // to has the agent listening.
+      poll = cli(["poll", file, "--timeout-ms", "20000"], own.env);
+      await page.waitFor("document.getElementById('presence').dataset.state === 'listening'", {
+        timeoutMs: 20_000,
+      });
+      // The restarted daemon truthfully says waiting to a tab that reconnects before the poll that
+      // started it attaches, as on a loaded windows-2025 runner, so the bar may pass through it; it
+      // never paints the working agent the stopped daemon last described.
+      assert.match(
+        JSON.parse(await page.eval("JSON.stringify(presenceSeen)")).join(" "),
+        /^lost (waiting )?listening$/,
+        "the bar goes from not connected to the agent the review has now, never to the one before the stop",
+      );
+      assert.equal((await cli(["end", file], own.env)).json().ended_by, "agent");
+      assert.equal((await poll).json().status, "ended");
+      await page.close();
+    } finally {
+      await poll;
+      await own.stop();
+    }
+  },
+);
+
+test(
   "a tab whose port another server took says once that it cannot reconnect, and promises nothing",
   { skip: !executable && "no browser found" },
   async () => {
@@ -4679,6 +4849,8 @@ test(
       const session = (await cli([file], own.env)).json().session;
       const { page, artifact } = await openReview(session.url);
       await noteOn(page, artifact, "#title", "Name the queue in the title");
+      await pointAt(page, artifact, "#p1");
+      await page.type("Say how long each step takes");
       const { port } = own.serverInfo();
       assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
       // Something else answers on the port now, and cannot prove it holds the page's token.
@@ -4708,8 +4880,14 @@ test(
         { label: "Notes wait for a fresh page", off: true },
         "Send offers nothing this page can do, and says where the notes go",
       );
-      await pointAt(page, artifact, "#p1");
-      await page.type("Say how long each step takes");
+      // Nothing can be added from here on, so pointing at the page is over: the page itself says so.
+      await page.waitFor("document.body.dataset.annotate === '0'");
+      assert.deepEqual(
+        JSON.parse(await page.eval(ANNOTATE_PAINT)),
+        { on: false, disabled: true, cursor: "not-allowed" },
+        "Annotate is off, and paints as a switch that cannot be turned on",
+      );
+      // The words typed before the link was spent stay in their card, with the reason beside them.
       await page.enter();
       assert.deepEqual(JSON.parse(await page.eval(CARD_PAINT)), {
         open: true,
@@ -4780,7 +4958,7 @@ const BOOT_SEEN = `JSON.stringify({
 })`;
 
 test(
-  "a tab whose health check is answered without proof says it is disconnected, and End review sends nothing carrying its token",
+  "a tab whose health check is answered without proof says it is disconnected, offers no End review, and sends nothing carrying its token",
   { skip: !executable && "no browser found" },
   async () => {
     const own = isolatedEnv();
@@ -4792,26 +4970,26 @@ test(
       const { port, token } = own.serverInfo();
       watched = await tokenRequests(page, port, token, { app: "stand-in" });
       await page.navigate(url);
-      await page.waitFor(
-        "document.getElementById('status').textContent.includes('no longer works')",
-      );
-      await clickOn(page, "document.getElementById('end')");
-      await page.waitFor("document.getElementById('endDialog').open");
-      await clickOn(page, "document.getElementById('endGo')");
-      // The barrier: End review has been handled, whether its request was refused or never sent.
-      await page.waitFor(
-        "document.getElementById('status').textContent.startsWith('Could not end the review')",
-      );
+      await page.waitFor("document.getElementById('notice').checkVisibility()");
+      // A press on End review would only ever have been refused, and nothing pointed at could be
+      // added: both paint as off from the start.
       assert.deepEqual(
-        { carried: watched.carried, seen: JSON.parse(await page.eval(BOOT_SEEN)) },
+        {
+          carried: watched.carried,
+          seen: JSON.parse(await page.eval(BOOT_SEEN)),
+          end: JSON.parse(await page.eval(END_PAINT)),
+          annotate: JSON.parse(await page.eval(ANNOTATE_PAINT)),
+        },
         {
           carried: [],
           seen: {
             presence: "Disconnected",
-            status: "Could not end the review: not connected",
+            status: "",
             notice:
               "This page can no longer reach its review. Run the command on this file again for a fresh page; your notes are kept there.",
           },
+          end: { disabled: true, cursor: "not-allowed" },
+          annotate: { on: false, disabled: true, cursor: "not-allowed" },
         },
       );
     } finally {
@@ -4943,6 +5121,50 @@ test(
     } finally {
       await watched?.stop();
       await second.close();
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a tab whose Take over was pressed while it could not reach its review says so the next time it cannot",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file } = copyOfFixture();
+    const url = (await cli([file], own.env)).json().session.url;
+    const { port, token } = own.serverInfo();
+    const { page } = await openReview(url);
+    const second = await browser.page(url);
+    const lost = "document.getElementById('presenceText').textContent === 'Not connected'";
+    let watched;
+    try {
+      await second.waitFor("document.body.dataset.ready === '1'");
+      await page.waitFor(
+        noticeSays("Another tab took over this review, so this page has stopped updating."),
+      );
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      // Closed while the daemon is down, so the other tab cannot take the review back on its return.
+      await second.close();
+      await page.front();
+      await page.waitFor(lost);
+      // Pressed during the pause between two reconnects, with no stream open to close.
+      await clickOn(page, "document.getElementById('takeOver')");
+      assert.equal(
+        (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().status,
+        "waiting",
+      );
+      await page.waitFor(`${FOLLOWING} && document.getElementById('notice').hidden`, {
+        timeoutMs: 20_000,
+      });
+      // The next drop is an ordinary one: with the health check held, the tab can only say it lost
+      // the review, and must, rather than go on showing the agent as if it were still connected.
+      watched = await holdHealth(page, port, token);
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      await page.waitFor(lost);
+    } finally {
+      await watched?.stop();
       await page.close();
       await own.stop();
     }

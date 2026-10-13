@@ -119,6 +119,12 @@
       if (data.scroll) restoreScroll(data.scroll);
       setAnnotate(data.annotate);
       send({ type: "annotate-ok", on: annotate });
+      // This page replaced one unloaded for a note made by keyboard, so the element the note was on
+      // gets the focus back here, as `closeTarget` gives it, and the chrome is told it is done.
+      if (typeof data.refocus === "string") {
+        if (annotate) document.querySelector(data.refocus)?.focus({ preventScroll: true });
+        send({ type: "closed" });
+      }
       setTextSize(data.textSize);
       // The agent may have rewritten the page, so every note is found again by its anchor.
       setPins(data.pins);
@@ -269,8 +275,9 @@
     annotate = on;
     for (const element of focusable) element.removeAttribute("tabindex");
     focusable = [];
+    // The target stays open while its card does: the chrome keeps a card holding words open through
+    // an end or a gone file that turns Annotate off, and outlines it again when Annotate comes back.
     if (!on) {
-      closeTarget(false);
       outlineRects([]);
       return;
     }
@@ -289,6 +296,8 @@
         focusable.push(element);
       }
     }
+    if (open)
+      outlineRects(open.tag === "text" ? open.rects : [open.element.getBoundingClientRect()]);
   }
 
   function outlineRects(rects) {
@@ -533,6 +542,7 @@
     outlineRects(hit.rects);
     send({
       type: "target",
+      keyboard: !hit.pointed,
       note: {
         selector: selectorFor(hit.element),
         ...(hit.lines && { lines: hit.lines }),
