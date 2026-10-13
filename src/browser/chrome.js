@@ -293,9 +293,10 @@ async function listen() {
         // with nothing to close, is done here, not left to swallow the next ordinary close.
         retaking = false;
         crowded = false;
-        // Published for the same reason as ready: `connection` reads live from the health check on,
-        // before the stream opens, and a stream connect Windows refuses is lost for a pause then
-        // retried, so only this says the page is following its review (docs/ENGINEERING-NOTES.md).
+        // Published for the same reason as ready: `connection` reads live from the health check on, a
+        // stream connect Windows refuses is lost for a pause then retried, and the hello rebuilds the
+        // margin the page loaded with, so only this, called once the hello is applied, says the page
+        // follows its review with the review's own state in (docs/ENGINEERING-NOTES.md).
         document.body.dataset.stream = "open";
         // A failure the lost connection caused is over once it is back.
         problem = null;

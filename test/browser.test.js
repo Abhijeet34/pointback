@@ -4331,6 +4331,57 @@ async function refuseStream(page, count) {
   });
 }
 
+/**
+ * Holds every message the chrome's event stream delivers, in the order it arrives, until the page runs
+ * `releaseStream()`; `streamHeld` lists them meanwhile.
+ */
+async function holdStreamMessages(page) {
+  await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const Real = WebSocket;
+      window.streamHeld = [];
+      window.WebSocket = function (url, protocols) {
+        const socket = new Real(url, protocols);
+        const add = socket.addEventListener.bind(socket);
+        socket.addEventListener = (type, listener, options) =>
+          add(type, type !== "message" ? listener : (event) => {
+            if (window.streamHeld) window.streamHeld.push(() => listener(event));
+            else listener(event);
+          }, options);
+        return socket;
+      };
+      window.WebSocket.prototype = Real.prototype;
+      window.releaseStream = () => {
+        const held = window.streamHeld;
+        window.streamHeld = null;
+        for (const run of held) run();
+      };
+    })()`,
+  });
+}
+
+// The hello the stream opens with rebuilds the margin the page loaded with, so a test that points at
+// the margin once the tab says it follows its review must find the rebuilt one: a press on a mark
+// the hello replaced before its release left the chrome's focus on the body and opened no Answer card
+// in a full local suite.
+test(
+  "a tab says it follows its review only once the review's state from its stream is in",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const url = (await cli([file], lab.env)).json().session.url;
+    const page = await browser.page("about:blank");
+    await holdStreamMessages(page);
+    await page.navigate(url);
+    await page.waitFor("window.streamHeld?.length > 0");
+    const whileHeld = await page.eval("document.body.dataset.stream ?? null");
+    await page.eval("releaseStream()");
+    await page.waitFor(FOLLOWING);
+    await page.close();
+    assert.equal(whileHeld, null, "the tab said it followed its review before the hello was in");
+  },
+);
+
 test(
   "a tab whose first stream connects fail follows its review once one opens, and a note added then reaches the agent",
   { skip: !executable && "no browser found" },
