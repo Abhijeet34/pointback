@@ -34,6 +34,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - Never assert on the next line of an event stream: a failed watch arrives as `reload-off` on the same stream (`src/events.js`).
 - A test needing a review in a known state takes its own (`copyOfFixture`); a browser test's agent poll runs after the notes are sent, with `--timeout-ms 0`.
 - A test adds or sends on a tab it opened only once the chrome publishes its event stream open (`FOLLOWING` in `test/browser.test.js`): Windows refuses a few of Chrome's new loopback connects, at the rate `docs/ENGINEERING-NOTES.md` measures, and a refused stream is retried after a pause.
+- A test holding a load of the chrome's holds the one the ready load on screen asked for and counts the reloads the chrome asks from then, never its navigation type: a chrome file the network refused on the first load reloads it first (`holdFace` in `test/browser.test.js`, `docs/ENGINEERING-NOTES.md`).
 - A note made by mouse leaves nothing in the page focused once its card closes (only a keyboard-made one refocuses its element; `closeTarget` in `src/browser/sdk.js`), so a test that points with `pointAt` and then drives the page by key moves the focus with Tab or H first.
 - A test driving a tab it sent to the background calls `page.front()` first, and an animation assertion emulates `prefers-reduced-motion: no-preference` first.
   Reduced motion still eases colour over the house's 100 ms, so a test reading a control's colour after a change waits for `SETTLED` first (`test/browser.test.js`).
