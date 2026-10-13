@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { env } from "../../src/identity.js";
+import { ownChild, ownCleanup } from "./interrupt.js";
 import { until } from "./wait.js";
 
 /**
@@ -253,6 +254,9 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
+  ownChild(child);
+  // Removed if this file is interrupted, after the browser is killed (helpers/interrupt.js).
+  const interrupted = ownCleanup(() => removeProfile(profile));
   const discard = async () => {
     await terminate(child);
     // The child exiting is not every handle on this directory being released: Chromium's
@@ -268,6 +272,7 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
       everyMs: 250,
       minAttempts: 10,
     }).catch(() => false);
+    interrupted();
     if (!gone) {
       console.warn(
         `the browser profile ${profile} was still locked after ${PROFILE_REMOVE_MS} ms; ` +
@@ -276,6 +281,8 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
     }
   };
   let browser;
+  /** What the launch itself left open, which `release` keeps. */
+  let launched;
   try {
     browser = await connect(await devToolsUrl(child, executable, profile, deadline), deadline);
     // Every renderer that crashes, with the address it held, for `describe` to name.
@@ -288,6 +295,10 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
         browser.crashes.push(`${urls.get(params.targetId) ?? params.targetId} (${params.status})`);
     });
     await browser.send("Target.setDiscoverTargets", { discover: true });
+    launched = {
+      listeners: browser.listeners.length,
+      tabs: new Set((await browser.send("Target.getTargets")).targetInfos.map((t) => t.targetId)),
+    };
   } catch (error) {
     // The one line the incident turned on: a browser nobody kills keeps the suite alive
     // long after it has a verdict, and the verdict never gets printed.
@@ -313,6 +324,22 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
       });
       await page.navigate(url);
       return page;
+    },
+    /**
+     * Closes what a test opened and left open, as one that fails before its own close does: every tab
+     * but the launch's, the browser-wide request interception, and every listener added since the
+     * launch. Run after every test, so none of it runs on into the next one.
+     */
+    async release() {
+      for (const { targetId, type } of (await browser.send("Target.getTargets")).targetInfos) {
+        // A tab a test closed itself can still be listed, and is gone by the time it is closed here.
+        if (type === "page" && !launched.tabs.has(targetId))
+          await browser.send("Target.closeTarget", { targetId }).catch((error) => {
+            if (!/No target with given id/.test(error.message)) throw error;
+          });
+      }
+      await browser.send("Fetch.disable");
+      browser.listeners.length = launched.listeners;
     },
     async close() {
       // The reply to Browser.close races the browser's own exit, so the request is sent
@@ -424,7 +451,9 @@ class Page {
     return new Promise((resolve, reject) => {
       const settle = (fn, value) => {
         clearTimeout(timer);
-        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+        // Already gone when `release` took it after its test: splicing at -1 would take another's.
+        const at = this.browser.listeners.indexOf(listener);
+        if (at !== -1) this.browser.listeners.splice(at, 1);
         fn(value);
       };
       const listener = (message) => {

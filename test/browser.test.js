@@ -172,9 +172,11 @@ after(async () => {
 // The suite shares one daemon, which holds at most `limits.sessions` reviews and never makes room by
 // dropping one still holding notes, unsent or not yet acknowledged. Most tests leave one so, and the
 // 64th refused every open after it. So what each test leaves is released after it, as a reviewer and
-// an agent would: its drafts discarded, and its review polled until a poll brings nothing new.
+// an agent would: its drafts discarded, and its review polled until a poll brings nothing new. Its
+// tabs go first, passed or failed, so none of them runs on into the next test.
 afterEach(async () => {
   if (!executable) return;
+  await browser.release();
   const { port, token } = lab.serverInfo();
   const dir = join(lab.dir, "sessions");
   for (const name of readdirSync(dir).filter((entry) => entry.endsWith(".json"))) {
@@ -210,6 +212,45 @@ test(
     await page.close();
     assert.match(commandLine, /--use-mock-keychain\b/);
     assert.match(commandLine, /--password-store=basic\b/);
+  },
+);
+
+// A test that fails stops before its own close, so whatever it opened is still open when the next one
+// starts: on macos-15 (hunt job 114963804203) a failed test's tab ran on through the rest of the file.
+// The first of these two leaves what such a test would; the second is the test after it.
+let leftListening = 0;
+test(
+  "a test that stops early leaves a tab on a review, a tab of its own, a held request and a listener",
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
+  async () => {
+    const page = await browser.page(opened.session.url);
+    await page.waitFor("document.body?.dataset.ready === '1'");
+    await page.browser.send("Target.createTarget", { url: "about:blank" });
+    await page.browser.send("Fetch.enable", {
+      patterns: [{ urlPattern: `http://127.0.0.1:${lab.serverInfo().port}/chrome.css*` }],
+    });
+    page.browser.listeners.push(() => (leftListening += 1));
+  },
+);
+
+test(
+  "the test after one that stopped early starts with none of what it left, and its review loads",
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
+  async () => {
+    const heard = leftListening;
+    const page = await browser.page("about:blank");
+    const { targetInfos } = await page.browser.send("Target.getTargets");
+    const tabs = targetInfos
+      .filter(({ type, targetId }) => type === "page" && targetId !== page.targetId)
+      .map(({ url }) => new URL(url).pathname.replace(/[0-9a-f]{16}/, "<key>"));
+    const loaded = await page
+      .navigate(opened.session.url)
+      .then(() => page.waitFor("document.body?.dataset.ready === '1'"))
+      .catch((error) => error.message.split("\n")[0]);
+    assert.deepEqual(
+      { tabs, heard: leftListening - heard, loaded },
+      { tabs: ["blank"], heard: 0, loaded: true },
+    );
   },
 );
 
@@ -1082,19 +1123,18 @@ async function pageAddress(page) {
  */
 let keyReports = [];
 let focusReports = [];
-let hearing = false;
+const heard = (message) => {
+  if (message.method !== "Runtime.consoleAPICalled") return;
+  const [marker, type, key] = message.params.args.map((arg) => arg.value);
+  if (marker === "focus-calls key") keyReports.push(`${type} ${key}`);
+  else if (marker === "focus-calls focus")
+    focusReports.push({ id: type, at: message.params.timestamp });
+};
 function hearKeys(page) {
   keyReports = [];
   focusReports = [];
-  if (hearing) return;
-  hearing = true;
-  page.browser.listeners.push((message) => {
-    if (message.method !== "Runtime.consoleAPICalled") return;
-    const [marker, type, key] = message.params.args.map((arg) => arg.value);
-    if (marker === "focus-calls key") keyReports.push(`${type} ${key}`);
-    else if (marker === "focus-calls focus")
-      focusReports.push({ id: type, at: message.params.timestamp });
-  });
+  // Armed again in each test that hears, since the release after a test takes every listener it added.
+  if (!page.browser.listeners.includes(heard)) page.browser.listeners.push(heard);
 }
 
 /**
@@ -3365,34 +3405,93 @@ test(
   async () => {
     const own = isolatedEnv();
     const page = await browser.page("about:blank");
-    let refused;
+    // The order hunt job 114963804203 (macos-15) met, forced: the sheet fails only once the chrome's
+    // scripts have arrived, so they run first and hold the reload until its connection is live;
+    // the first health answer waits for the first load's load event, so the navigation below returns
+    // on the document the reload replaces; and the reload's document waits for that one to be ready,
+    // which a read made then finds. The review is read only on the document the reload commits.
+    let commits = 0;
+    const counts = { asked: 0, refused: 0 };
+    const urls = new Map();
+    const scripts = new Set(["/house/radiogroup.js", "/chrome.js"]);
+    const seen = { script: false, load: false, ready: false };
+    const held = { script: null, load: null, ready: null };
+    const saw = (what) => {
+      seen[what] = true;
+      held[what]?.();
+      held[what] = null;
+    };
+    const ordering = ({ method, params, sessionId }) => {
+      if (sessionId !== page.sessionId) return;
+      if (method === "Page.frameNavigated" && params.frame.id === page.targetId) commits += 1;
+      else if (method === "Network.requestWillBeSent")
+        urls.set(params.requestId, new URL(params.request.url).pathname);
+      else if (method === "Network.loadingFinished" && scripts.delete(urls.get(params.requestId))) {
+        if (scripts.size === 0) saw("script");
+      } else if (method === "Page.loadEventFired") saw("load");
+      else if (method === "Runtime.bindingCalled" && params.name === "chromeReady") saw("ready");
+      else if (method === "Fetch.requestPaused") {
+        const { requestId } = params;
+        const path = new URL(params.request.url).pathname;
+        let answer = () => page.send("Fetch.continueRequest", { requestId }).catch(() => {});
+        let after = "load";
+        if (path === "/chrome.css") {
+          counts.asked += 1;
+          after = counts.asked === 1 ? "script" : null;
+          answer = () => {
+            counts.refused += 1;
+            page
+              .send("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" })
+              .catch(() => {});
+          };
+        } else if (path.startsWith("/session/")) after = commits === 1 ? "ready" : null;
+        if (!after || seen[after]) answer();
+        else held[after] = answer;
+      }
+    };
+    page.browser.listeners.push(ordering);
     try {
       const { file } = copyOfFixture();
       const url = (await cli([file], own.env)).json().session.url;
       const { port } = own.serverInfo();
-      refused = await refuseLoads(page, `http://127.0.0.1:${port}/chrome.css*`, Infinity);
-      // A reload the chrome asks for fires `navigate` in the same turn as the refused sheet's error,
-      // which comes before the chrome's own script runs and so before the review is ready.
+      await page.send("Fetch.enable", {
+        patterns: ["chrome.css*", "health*", "session/*"].map((path) => ({
+          urlPattern: `http://127.0.0.1:${port}/${path}`,
+        })),
+      });
+      await page.send("Runtime.addBinding", { name: "chromeReady" });
+      await page.send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `new MutationObserver((_, observer) => {
+          if (document.body?.dataset.ready !== "1") return;
+          observer.disconnect();
+          chromeReady("");
+        }).observe(document, { subtree: true, attributeFilter: ["data-ready"] });`,
+      });
+      // A second reload would fire `navigate` on the reloaded document, counted here from its start.
       await page.send("Page.addScriptToEvaluateOnNewDocument", {
         source: `window.leaving = 0;
         navigation.addEventListener("navigate", () => { window.leaving += 1; });`,
       });
       await page.navigate(url);
+      await page.explained(until(() => commits === 2, { what: "the chrome's reload to commit" }));
+      const navigation = "performance.getEntriesByType('navigation')[0].type";
+      assert.equal(
+        await page.eval(navigation),
+        "reload",
+        "the first read after the navigation is on the reloaded chrome",
+      );
       // The chrome's script still runs, so the review opens; without its sheet it is the residual a
       // file refused on both loads leaves (docs/ENGINEERING-NOTES.md).
       await page.waitFor("document.body?.dataset.ready === '1'");
       assert.deepEqual(
         JSON.parse(
-          await page.eval(`JSON.stringify({
-            navigation: performance.getEntriesByType('navigation')[0].type,
-            leaving: window.leaving,
-          })`),
+          await page.eval(`JSON.stringify({ navigation: ${navigation}, leaving: window.leaving })`),
         ),
         { navigation: "reload", leaving: 0 },
       );
-      assert.deepEqual(refused.counts, { asked: 2, refused: 2 });
+      assert.deepEqual(counts, { asked: 2, refused: 2 });
     } finally {
-      await refused?.stop();
+      page.browser.listeners.splice(page.browser.listeners.indexOf(ordering), 1);
       await page.close();
       await own.stop();
     }
