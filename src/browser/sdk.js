@@ -129,8 +129,9 @@
       // The agent may have rewritten the page, so every note is found again by its anchor.
       setPins(data.pins);
       // The chrome counts the page shown only once it has finished loading, been put back where
-      // the reviewer was, and become annotatable; anything earlier is a page still moving.
-      whenLoaded(() => send({ type: "shown" }));
+      // the reviewer was, and become annotatable; anything earlier is a page still moving. The
+      // outline goes with it for a note the chrome composes without a target, an answer.
+      whenLoaded(() => send({ type: "shown", structure: pageOutline() }));
     } else if (data?.nonce === nonce && data.type === "annotate") {
       setAnnotate(data.on);
       // The chrome cannot otherwise know when this arrived: it posts into a
