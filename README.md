@@ -72,7 +72,7 @@ Opening a file prints where the review is and what to do next:
 
 The page loads its own stylesheets, scripts and images from the review's root, which is the file's own folder unless `--root <dir>` names a wider one that holds it.
 A page that links `../components.css` and `../../exports/variables.css`, as a design system's component sheet does, renders unstyled under the default because both files sit above its folder; `--root` at the repository's top makes them reachable.
-When the page loads anything from outside the root, named in its markup or in a CSS `url()` or `@import` in the page or in a stylesheet under the root, the open output lists it under `refused_assets` and its `next_step` says to open again with `--root`, and the tab says the same to the reviewer once, above the status line.
+When the page loads anything from outside the root, named in its markup or in a CSS `url()` or `@import` in the page or in a stylesheet under the root, the open output lists it under `refused_assets` and its `next_step` says to open again with `--root`, and the tab says the same to the reviewer once, above the status line, and again when a save changes which files those are.
 The root is resolved to its real path when the review opens, so a symlinked spelling cannot stretch it, and nothing outside it is served: not by `../`, not by an encoding, not by a symlink inside it that points out.
 Every open sets the root again, so opening the file without `--root` goes back to its folder.
 The root is also everything the page under review can load, so name the narrowest folder that holds its assets.
@@ -236,7 +236,7 @@ It carries seven things.
 - **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back turns Annotate on again, if the reviewer had wanted it on, and reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
 
-When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send and End review turn off until it is back, and a note being written stays in its card with Add note held until then.
+When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send and End review turn off until it is back, as do a queued note's Edit, × and an open edit's Save, and a note being written stays in its card with Add note held until then.
 It keeps trying, because a daemon that idled out or was stopped comes back at the agent's next command on the same port with the same token, and the tab picks the review up from there.
 A tab opened while nothing answers waits the same way, including when the request for the review itself goes unanswered; only an answer makes it say it can no longer reach its review, an HTTP error or a health check that does not prove the token.
 If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection, and turns Annotate off, since nothing pointed at can be added from it; asking the agent to open the file again opens a fresh tab with the notes in it.
