@@ -619,6 +619,11 @@ test(
   },
 );
 
+// A reviewer runs no commands, so a tab that has lost its review sends them to their agent, as the
+// page for an ended review's link does.
+const GONE_NOTICE =
+  "This page can no longer reach its review. Ask your agent to open this file again for a fresh page; your notes are kept there.";
+
 test(
   "a stale link tells the reviewer what to do instead of a blank page",
   { skip: !executable && "no browser found" },
@@ -627,10 +632,7 @@ test(
     const text = await page.waitFor(
       "document.getElementById('notice').checkVisibility() && document.getElementById('noticeText').textContent",
     );
-    assert.match(
-      text,
-      /can no longer reach its review\. Run .+ on this file again for a fresh page/,
-    );
+    assert.equal(text, GONE_NOTICE);
   },
 );
 
@@ -1263,6 +1265,55 @@ test(
     await back.waitFor("document.hasFocus() && document.activeElement.id === 'p1'");
     await page.tab();
     await back.waitFor("document.activeElement.id === 'p2'");
+    await page.close();
+  },
+);
+
+// Word exports wrap content in namespaced tags such as `w:sdt`, so the selector of a paragraph
+// inside one is no CSS a browser parses; the page loaded after the note must still come up whole.
+test(
+  "a note made by keyboard inside a Word tag, added while a save waits, leaves the saved page with its pin",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const card = "document.getElementById('cardText')";
+    const file = join(mkdtempSync(join(lab.dir, "word-")), "minutes.html");
+    const html =
+      '<!doctype html><html lang="en"><head><meta charset="utf-8" /><title>Minutes</title></head>' +
+      '<body><main><h1 id="t">Minutes</h1><w:sdt><p>The cache was cold for an hour.</p></w:sdt>' +
+      "<p>Alerts fired late.</p></main></body></html>";
+    writeFileSync(file, html);
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await pointAt(page, artifact, "#t");
+    await page.key("Escape", { keyCode: 27 });
+    await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
+    await page.tab();
+    await artifact.waitFor(
+      "document.activeElement.textContent === 'The cache was cold for an hour.'",
+    );
+    await page.enter();
+    await page.waitFor(
+      `!document.getElementById('card').hidden && document.activeElement === ${card}`,
+    );
+    await page.type("Say which cache");
+    writeFileSync(file, html.replace("Alerts fired late.", "Alerts fired late, at 02:10."));
+    await page.waitFor(
+      `document.getElementById('status').textContent === ${JSON.stringify("The file changed. This page updates as soon as you finish this note.")}`,
+    );
+    await page.enter();
+    await page.waitFor("document.body.dataset.revision === '1'");
+    const saved = await page.frame();
+    const pins = await until(
+      async () => {
+        const shown = await pinsOn(saved);
+        return shown.length === 1 && shown;
+      },
+      { what: "the note's pin in the saved page" },
+    );
+    assert.match(pins[0].name, /^Note 1, /);
+    assert.equal(
+      await saved.eval("document.querySelector('main').textContent.includes('at 02:10')"),
+      true,
+    );
     await page.close();
   },
 );
@@ -4208,15 +4259,17 @@ async function reviewIn(page) {
  * 5 in 100000 of Chrome's new loopback connects: each goes to a path the daemon refuses, which the
  * chrome hears exactly as a refused connect, a stream closed without opening. Three keep it lost for
  * 3 s (`pause` waits 500, 1000 and 1500 ms), longer than a review takes to open, so what a test does
- * next never races the reconnect.
+ * next never races the reconnect. `Infinity` refuses every connect until the test sets
+ * `window.refuseStreams` to 0.
  */
 async function refuseStream(page, count) {
   await page.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `(() => {
       const Real = WebSocket;
       window.refusedStreams = 0;
+      window.refuseStreams = ${count};
       window.WebSocket = function (url, protocols) {
-        if (window.refusedStreams >= ${count}) return new Real(url, protocols);
+        if (window.refusedStreams >= window.refuseStreams) return new Real(url, protocols);
         window.refusedStreams += 1;
         return new Real(String(url).replace("/events", "/refused"), protocols);
       };
@@ -4245,6 +4298,46 @@ test(
     );
     assert.equal(await page.eval("window.refusedStreams"), 3, "three stream connects failed");
     await page.close();
+  },
+);
+
+test(
+  "a save made while the page reloads reaches the page, numbered, once its stream opens",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const { page } = await openReview(session.url);
+    try {
+      // The reloaded chrome shows the page as it was, and its stream stays refused until the save
+      // is on disk: the order a refused connect on Windows left to chance.
+      await refuseStream(page, Infinity);
+      await page.reload();
+      await page.waitFor("document.body.dataset.revision === '0' && window.refusedStreams > 0");
+      const { port, token } = lab.serverInfo();
+      await until(
+        async () => {
+          const opened = await fetch(`http://127.0.0.1:${port}/api/sessions`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, origin: `http://127.0.0.1:${port}` },
+            body: JSON.stringify({ file }),
+          });
+          return (await opened.json()).live === false;
+        },
+        { what: "the daemon to hear the old stream close, so no tab follows the review" },
+      );
+      writeFileSync(file, html.replace("<main>", '<main><p id="saved">Saved mid-reload</p>'));
+      await page.eval("window.refuseStreams = 0");
+      await page.waitFor("document.body.dataset.revision === '1'");
+      const artifact = await page.frame();
+      assert.equal(
+        await artifact.eval("document.getElementById('saved')?.textContent"),
+        "Saved mid-reload",
+        "the reviewer sees the save",
+      );
+    } finally {
+      await page.close();
+    }
   },
 );
 
@@ -5205,9 +5298,9 @@ test(
       await page.waitFor("document.getElementById('presence').dataset.state === 'gone'", {
         timeoutMs: 20_000,
       });
-      assert.match(
+      assert.equal(
         await page.eval("document.getElementById('noticeText').textContent"),
-        /can no longer reach its review\. Run .+ on this file again for a fresh page/,
+        GONE_NOTICE,
       );
       assert.deepEqual(
         JSON.parse(await page.eval(SAID_GONE)),
@@ -5328,8 +5421,7 @@ test(
           seen: {
             presence: "Disconnected",
             status: "",
-            notice:
-              "This page can no longer reach its review. Run the command on this file again for a fresh page; your notes are kept there.",
+            notice: GONE_NOTICE,
           },
           end: { disabled: true, cursor: "not-allowed" },
           annotate: { on: false, disabled: true, cursor: "not-allowed" },
@@ -5571,9 +5663,9 @@ test(
       await away.page.waitFor("document.getElementById('presence').dataset.state === 'gone'", {
         timeoutMs: 20_000,
       });
-      assert.match(
+      assert.equal(
         await away.page.eval("document.getElementById('noticeText').textContent"),
-        /can no longer reach its review\. Run .+ on this file again for a fresh page/,
+        GONE_NOTICE,
       );
 
       const reopened = await cli([file], own.env);

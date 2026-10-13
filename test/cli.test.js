@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import {
   copyFileSync,
@@ -23,6 +23,7 @@ import { name, version } from "../src/identity.js";
 import { limits } from "../src/limits.js";
 import { bin, cli, fixture, isolatedEnv, presenceOf, sendNote } from "./helpers/env.js";
 import { assertPrivate } from "./helpers/private.js";
+import { DEAD_PID } from "./helpers/stall.js";
 import { until } from "./helpers/wait.js";
 
 const lab = isolatedEnv();
@@ -888,10 +889,9 @@ test("an open whose first look misses a sibling's daemon starting uses that daem
     assert.equal((await cli([fixture], racing.env)).code, 0);
     sibling = racing.serverInfo();
     await new Promise((r) => stopped.listen(0, "127.0.0.1", r));
-    const exited = spawnSync(process.execPath, ["-e", ""]).pid;
     writeFileSync(
       join(racing.dir, "server.json"),
-      JSON.stringify({ ...sibling, pid: exited, port: stopped.address().port }),
+      JSON.stringify({ ...sibling, pid: DEAD_PID, port: stopped.address().port }),
     );
 
     const opened = await cli([copies(1)[0]], racing.env);
@@ -921,10 +921,9 @@ test("a stop whose first look misses a just-started daemon stops it, never names
     assert.equal((await cli([fixture], racing.env)).code, 0);
     sibling = racing.serverInfo();
     await new Promise((r) => stopped.listen(0, "127.0.0.1", r));
-    const exited = spawnSync(process.execPath, ["-e", ""]).pid;
     writeFileSync(
       join(racing.dir, "server.json"),
-      JSON.stringify({ ...sibling, pid: exited, port: stopped.address().port }),
+      JSON.stringify({ ...sibling, pid: DEAD_PID, port: stopped.address().port }),
     );
 
     assert.deepEqual((await cli(["stop"], racing.env)).json(), { status: "stopped" });
@@ -1095,10 +1094,10 @@ test("a held start's reached file, whenever it is there, names the daemon", asyn
 /** A token in the shape the daemon mints, recorded for a test to watch where it travels. */
 const RECORDED_TOKEN = "ab".repeat(24);
 
-async function recordServer(dir, port) {
+async function recordServer(dir, port, pid = process.pid) {
   const { writeJsonAtomic } = await import("../src/state-dir.js");
   writeJsonAtomic(join(dir, "server.json"), {
-    pid: process.pid,
+    pid,
     port,
     token: RECORDED_TOKEN,
     version: "0.0.0-other",
@@ -1175,7 +1174,7 @@ test("an older daemon that refuses to stop blocks every open, sees the token onc
       assert.equal(opened.code, 1, `attempt ${attempt}: ${opened.stdout}`);
       assert.ok(
         opened.stderr.includes(
-          `error: an older ${name} daemon (pid ${process.pid}) on port ${port} did not stop; end that process and retry`,
+          `error: the server on port ${port} answers as ${name} but did not stop, and a second daemon beside it would split this state directory; end the process listening on port ${port} and retry (the record names pid ${process.pid}, which may since belong to another process)`,
         ),
         opened.stderr,
       );
@@ -1220,7 +1219,7 @@ test("a recorded server that accepts the connection but never answers blocks the
     assert.equal(opened.code, 1, opened.stdout);
     assert.ok(
       opened.stderr.includes(
-        `error: an older ${name} daemon (pid ${process.pid}) on port ${port} did not stop; end that process and retry`,
+        `error: the server on port ${port} accepts connections but never answers, so it may be a stalled ${name} daemon, and a second daemon beside it would split this state directory; end the process listening on port ${port} and retry (the record names pid ${process.pid}, which may since belong to another process)`,
       ),
       opened.stderr,
     );
@@ -1263,17 +1262,45 @@ test("an open whose daemon proves its token and then never answers says so withi
   }
 });
 
+// A crashed daemon's pid can be taken by any process, and a listener that never answers on its port
+// still reads as a stalled daemon, so the open refuses. It tells the reviewer to free the port, never to
+// end the recorded pid, which here names an unrelated process.
+test("a refusal names the port to free and never tells the reviewer to end the recorded pid", async () => {
+  const other = isolatedEnv();
+  const unrelated = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], {
+    stdio: "ignore",
+  });
+  const stalled = createServer(() => {});
+  await new Promise((r) => stalled.listen(0, "127.0.0.1", r));
+  const port = stalled.address().port;
+  await recordServer(other.dir, port, unrelated.pid);
+  try {
+    const opened = await cli([fixture], other.env);
+    assert.equal(opened.code, 1, opened.stdout);
+    assert.match(opened.stderr, new RegExp(`end the process listening on port ${port} and retry`));
+    assert.doesNotMatch(opened.stderr, /end that process/, "no instruction aimed at the pid");
+    assert.ok(
+      opened.stderr.includes(`pid ${unrelated.pid}, which may since belong to another process`),
+      opened.stderr,
+    );
+  } finally {
+    unrelated.kill();
+    stalled.closeAllConnections();
+    stalled.close();
+    await other.stop();
+  }
+});
+
 test("a record whose process has exited blocks nothing, and a live daemon on its port is neither named nor sent its token", async () => {
   const stale = isolatedEnv();
   const live = isolatedEnv();
-  const exited = spawnSync(process.execPath, ["-e", ""]).pid;
   try {
     assert.equal((await cli([fixture], live.env)).code, 0);
     const livePort = live.serverInfo().port;
     writeFileSync(
       join(stale.dir, "server.json"),
       JSON.stringify({
-        pid: exited,
+        pid: DEAD_PID,
         port: livePort,
         token: RECORDED_TOKEN,
         version: "0.0.0-other",

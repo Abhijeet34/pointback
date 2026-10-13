@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as httpServer } from "node:http";
 import { createServer } from "node:net";
@@ -8,15 +7,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { claimDaemon, probeTimeout } from "../src/daemon-lock.js";
 import { name } from "../src/identity.js";
-import { closedPort, stallNextTick } from "./helpers/stall.js";
+import { DEAD_PID, closedPort, stallNextTick } from "./helpers/stall.js";
 
 const stateDir = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-lock-"));
 const locks = (dir) => readdirSync(dir).filter((name) => name.endsWith(".lock"));
 const record = (dir, generation, holder) =>
   writeFileSync(join(dir, `daemon.${generation}.lock`), JSON.stringify(holder));
-
-/** A pid that belonged to a process and no longer does, as a crashed daemon's does. */
-const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid;
 
 async function listening() {
   const server = createServer().listen(0, "127.0.0.1");
@@ -47,7 +43,7 @@ test("a live daemon keeps the state directory, and a second start is told so", a
 
 test("a crashed daemon's lock is taken over, and its generation cleared", async () => {
   const dir = stateDir();
-  record(dir, 4, { pid: deadPid(), port: await closedPort() });
+  record(dir, 4, { pid: DEAD_PID, port: await closedPort() });
   assert.ok(await claimDaemon(dir));
   assert.deepEqual(locks(dir), ["daemon.5.lock"]);
 });
@@ -144,7 +140,7 @@ test("a start that died before it wrote its lock is waited on only for a bounded
 // the other's fresh lock; claiming the next generation exclusively lets exactly one through.
 test("starts racing to replace one dead holder: exactly one wins", async () => {
   const dir = stateDir();
-  record(dir, 7, { pid: deadPid(), port: await closedPort() });
+  record(dir, 7, { pid: DEAD_PID, port: await closedPort() });
   const claims = await Promise.all(Array.from({ length: 8 }, () => claimDaemon(dir)));
   assert.equal(claims.filter(Boolean).length, 1);
   assert.deepEqual(locks(dir), ["daemon.8.lock"]);

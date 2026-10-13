@@ -11,6 +11,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - `skills/pointback/SKILL.md` is the agent-facing CLI contract and ships outside the npm package; change it with any command, flag or field it names.
 - Delivery is at-least-once, by an `ack` cursor and a session `epoch` (`#answer` in `src/session-store.js`, `poll-cursor.json`).
   A tab learns of sent notes only from the event stream, so Send and End never refetch the session (`changeDrafts` and `sending` in `src/browser/chrome.js`).
+- A file is watched only while a stream follows its review; a save made with none open is numbered when the next opens (`catchUp` in `src/session-store.js`, `docs/ENGINEERING-NOTES.md`).
 - One daemon per state directory: a start claims `daemon.<n>.lock` before it loads a session or binds (`claimDaemon` in `src/daemon-lock.js`), and `#persist` refuses a write only when the session file holds a readable session written more times than this process's copy.
   A running daemon closes within `LOCK_CHECK_MS` of its lock going, as with its state directory removed (`src/server.js`).
   A stopped daemon stamps `stoppedAt` in its lock and a start whose process began before that stamp steps aside, and an open waits for a start in progress with `START_WALL_MS` as its only clock (`ensureServer` in `src/client.js`).
@@ -25,6 +26,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   The harness's launch keeps the browser out of the system keychain (`--use-mock-keychain`, `--password-store=basic` in `launchBrowser`); without them macOS asks the developer for their login password mid-suite.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
   The browser suite shares one daemon, which never evicts a review holding notes and refuses an open past `limits.sessions`; its `afterEach` releases what each test leaves.
+- A record or lock standing for a daemon that exited names `DEAD_PID` (`test/helpers/stall.js`), never the pid of a process the test watched exit, which Windows can hand to the next process it starts (`docs/ENGINEERING-NOTES.md`).
 - A test that mocks `setTimeout` makes its HTTP requests with `node:http`, never `fetch`, which stalls on a reused connection under the mock on Node 24.20.0 (`docs/ENGINEERING-NOTES.md`).
 - `clickIn` measures its point after the pointer wait and fails unless the press landed inside its element, with what it hit and every scroll the page made meanwhile (`RECORD_PRESS` in `test/browser.test.js`, `docs/ENGINEERING-NOTES.md`); never retry a click or loosen a geometry check around it.
 - Every wait goes through `until` in `test/helpers/wait.js` and carries its own deadline; a failed wait on a tab or the page in it reports what the chrome showed, failed loads included (`describe` in `test/helpers/cdp.js`).

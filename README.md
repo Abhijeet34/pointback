@@ -239,7 +239,7 @@ It carries seven things.
 When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send and End review turn off until it is back, and a note being written stays in its card with Add note held until then.
 It keeps trying, because a daemon that idled out or was stopped comes back at the agent's next command on the same port with the same token, and the tab picks the review up from there.
 A tab opened while nothing answers waits the same way, including when the request for the review itself goes unanswered; only an answer makes it say it can no longer reach its review, an HTTP error or a health check that does not prove the token.
-If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection, and turns Annotate off, since nothing pointed at can be added from it; running the command on the file again opens a fresh tab with the notes in it.
+If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection, and turns Annotate off, since nothing pointed at can be added from it; asking the agent to open the file again opens a fresh tab with the notes in it.
 
 The agent's end, a gone file or another tab taking over never closes a card with words in it.
 The card stays open with the reason on it, and Add note still keeps the note with the others.
@@ -265,7 +265,7 @@ A restarted server takes the same port and token again while that port is free a
 One daemon serves a state directory: a start claims it before loading any session, and a start that finds a live daemon there exits while its CLI goes on to that daemon, so commands an agent runs at once share one (`src/daemon-lock.js`).
 Because the token outlives the process, whatever holds a dead daemon's port must never receive it: the CLI and the tab present it only to a server that first answers a fresh challenge keyed with it (`tokenProof` in `src/http-guard.js`).
 There is one exception, for a daemon from 0.1.4 or earlier, which cannot answer the challenge: the CLI shows it the token once on `POST /shutdown` and retires the token whether or not it stopped (`stopServer` in `src/client.js`, scope in `docs/THREAT-MODEL.md`).
-A retired token is never shown again, so while its recorded process is alive and its port still answers as this app, every open refuses with `an older pointback daemon (pid P) on port N did not stop; end that process and retry`, and `pointback stop` answers `{"status":"refused","pid":P,"port":N}` without signalling P.
+A retired token is never shown again, so while its recorded process is alive and its port still answers as this app, every open refuses with `the server on port N answers as pointback but did not stop, and a second daemon beside it would split this state directory; end the process listening on port N and retry (the record names pid P, which may since belong to another process)`, and `pointback stop` answers `{"status":"refused","pid":P,"port":N}` without signalling P.
 Once that port stops answering, the next daemon mints a fresh token.
 A process squatting the port with that answer receives a token that no running daemon accepts.
 Every API call, from the CLI or from the chrome page, carries that token; the browser receives it in the URL fragment, which never reaches a server log.
