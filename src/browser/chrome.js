@@ -932,7 +932,7 @@ function replyLine(entry) {
       openCompose(
         { selector, lines, tag, text, target, answers: entry.uid },
         `Answer: ${entry.reply.message}`,
-        undefined,
+        shownStructure,
         [{ left: Infinity, bottom: box.top - frameBox.top }],
         answer,
       );
@@ -1074,6 +1074,8 @@ let held = false;
 // The element a note made by keyboard was on, when closing it reloads the page: the page loaded in its
 // place has no target to give the focus back to, so it is named in that page's `init`.
 let refocusOnShow = null;
+// The outline of the page as last shown, which an answer carries: it points at no target of its own.
+let shownStructure;
 
 function openCompose(note, label, outline, rects, from) {
   composing = { note, structure: typeof outline === "string" ? outline : undefined, from };
@@ -1241,6 +1243,7 @@ window.addEventListener("message", (event) => {
   } else if (data.type === "closed") {
     endWait();
   } else if (data.type === "shown") {
+    shownStructure = data.structure;
     document.body.dataset.revision = String(shownRevision);
   } else if (data.type === "target" && data.note && typeof data.note === "object") {
     // The artifact proposes a target; the reviewer's instruction is composed in the chrome, never

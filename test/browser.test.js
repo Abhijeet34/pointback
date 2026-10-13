@@ -5823,6 +5823,59 @@ const CARD_WORDS = `JSON.stringify({
   add: document.getElementById('cardAdd').textContent,
 })`;
 
+// An answer is composed from the margin, not from a point at the page, and carried no outline, so
+// the agent was told nothing of a heading it had renamed since the note the answer is about.
+test(
+  "an answer sent after the agent rewrote the page carries the page's new outline",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#risks h2", "Order the risks by cost");
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    const first = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.match(first.structure, /"Risks"/);
+
+    // The agent renames the heading, and asks about it once the page the reviewer sees has it.
+    writeFileSync(file, html.replace("<h2>Risks</h2>", "<h2>Known failure modes</h2>"));
+    await page.waitFor("document.body.dataset.revision === '1'");
+    const asked = await cli(
+      ["reply", file, "1", "--question", "--message", "By cost to fix, or to customers?"],
+      lab.env,
+    );
+    assert.equal(asked.code, 0, asked.stderr);
+    await page.waitFor("document.querySelector('.mark-answer') !== null");
+    const button = JSON.parse(
+      await page.eval(
+        "JSON.stringify(document.querySelector('.mark-answer').getBoundingClientRect())",
+      ),
+    );
+    await page.click(button.left + button.width / 2, button.top + button.height / 2);
+    await page.waitFor(
+      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+    );
+    await page.type("To customers");
+    await page.enter();
+    await page.waitFor("document.getElementById('card').hidden");
+    await page.eval("document.getElementById('send').click()");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 2");
+
+    const answered = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
+    assert.deepEqual(
+      answered.prompts.map(({ prompt, answers }) => ({ prompt, answers })),
+      [{ prompt: "To customers", answers: 1 }],
+    );
+    assert.match(
+      answered.structure ?? "(no outline in the batch)",
+      /"Known failure modes"/,
+      "the batch's outline is the page the reviewer answered on",
+    );
+    assert.doesNotMatch(answered.structure, /"Risks"/);
+    await page.close();
+  },
+);
+
 /**
  * Counts the API answers this page has not finished handling. One drops a task after the page has
  * read its body, when every continuation the page chained on it has run, so zero means whatever a
