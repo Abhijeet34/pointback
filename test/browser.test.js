@@ -2271,6 +2271,9 @@ test(
         end: look('end'),
       };
     })())`;
+    // Under reduced motion the controls' colours still ease over the house's 100 ms, and End review
+    // eases in as it is enabled once the review is shown; a read before that settles is mid-way.
+    await page.eval(SETTLED);
     const live = JSON.parse(await page.eval(painted));
     assert.equal(live.notice, null);
     const away = `${file}.away`;
@@ -2280,6 +2283,7 @@ test(
     assert.equal(polled.code, 1);
     assert.equal(polled.json().status, "gone");
     await page.waitFor("document.getElementById('notice').checkVisibility()");
+    await page.eval(SETTLED);
     const gone = JSON.parse(await page.eval(painted));
     assert.equal(gone.notice, "The file was moved or deleted, so this review cannot go on.");
     // Said once, in the notice, and Send keeps its short label; no third line repeats it.
