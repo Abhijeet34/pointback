@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Dictation settings</title>
+    <style>
+      body {
+        margin: 0;
+        background: #fff;
+        color: rgb(26, 29, 33);
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      /* Four fields to a row on a wide screen, one on a phone, 16 px apart, as a form sheet sets them. */
+      .fields {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 16px;
+        margin: 24px 0;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      label {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      input,
+      textarea {
+        font: inherit;
+        padding: 6px 10px;
+        border: 1px solid rgb(107, 114, 128);
+        border-radius: 6px;
+      }
+      .hint,
+      .error {
+        font-size: 12px;
+      }
+      .error {
+        color: rgb(180, 35, 24);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Dictation settings</h1>
+      <p>
+        Each phrase you say is matched against the words below before it is typed. A phrase that
+        matches none is typed as you said it, so keep the spoken form short and in lower case.
+      </p>
+      <p>
+        The fingerprint names the model the phrases were checked against; a model swapped without it
+        starts again from the defaults.
+      </p>
+      <div class="fields">
+        <div class="field">
+          <label for="say">When I say</label>
+          <input id="say" value="priya anka" aria-describedby="say-hint" />
+          <span id="say-hint" class="hint">Spoken form, lower case</span>
+        </div>
+        <div class="field">
+          <label for="print">Fingerprint</label>
+          <input id="print" value="9f2c1a" aria-invalid="true" aria-describedby="print-error" />
+          <span id="print-error" class="error">Expected 64 hex characters. That value is 6.</span>
+        </div>
+        <div class="field">
+          <label for="type">Type</label>
+          <input id="type" placeholder="Priyanka" />
+        </div>
+        <div class="field">
+          <label for="model">Model</label>
+          <input id="model" value="Base (English), 148 MB" disabled />
+        </div>
+      </div>
+      <div class="field">
+        <label for="agent">Note to the agent</label>
+        <textarea id="agent" rows="4" aria-describedby="agent-hint">
+The primary button sits 4px lower than the secondary; align their baselines.</textarea>
+        <span id="agent-hint" class="hint">Sent with every correction you make.</span>
+      </div>
+      <p>
+        Corrections are kept for this device only. Clearing them restores the defaults the model
+        shipped with, and the fingerprint above is checked again on the next phrase.
+      </p>
+      <p>
+        A phrase you correct twice in one session is offered as a new entry the next time you open
+        these settings, with the spoken form already filled in.
+      </p>
+      <p>
+        Nothing typed through dictation leaves this device unless a note to the agent is attached to
+        it.
+      </p>
+    </main>
+  </body>
+</html>

@@ -570,7 +570,7 @@
     const described = (element.getAttribute("aria-describedby") ?? "")
       .split(/\s+/)
       .slice(0, 8)
-      .map((id) => id && document.getElementById(id));
+      .map((id) => (id ? document.getElementById(id) : null));
     return [...(element.labels ?? []), ...described]
       .map((words) => words?.getBoundingClientRect())
       .filter(

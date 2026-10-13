@@ -1156,18 +1156,27 @@ function spanOf(rects) {
 }
 
 /**
- * The boxes a card for a target on the page is placed by. Where the frame has no room for the card
- * on either side of the target, as a phone's short frame often has not, the page scrolls the target
- * up until the card fits under it. simplified: assumes the page scrolls that far; a target near the
- * foot of a page too short to scroll leaves the card over its lower part.
+ * The boxes a card for a target on the page is placed by. Where the target, its label and its hint
+ * are not all in view with room for the card over or under them, as in a phone's short frame, the
+ * page scrolls the least that makes them so; a target too tall for that is left where it is.
+ * simplified: assumes the page can scroll that far; one at the end of a short page may stay short.
  */
 function revealed(rects) {
   const span = spanOf(rects);
   const height = card.offsetHeight;
-  const room = frame.clientHeight - CARD_GAP - height;
-  if (span.bottom + CARD_GAP <= room || span.top - CARD_GAP - height >= CARD_GAP) return rects;
-  const by = Math.min(span.bottom + CARD_GAP - room, span.top - CARD_GAP);
-  if (!(by > 0)) return rects;
+  const view = frame.clientHeight;
+  const tall = span.bottom - span.top;
+  // Where the target's top may stand with the card over it, then with the card under it.
+  const tops = [
+    [2 * CARD_GAP + height, view - CARD_GAP - tall],
+    [CARD_GAP, view - 2 * CARD_GAP - height - tall],
+  ]
+    .filter(([low, high]) => low <= high)
+    .map(([low, high]) => Math.min(Math.max(span.top, low), high));
+  if (!tops.length) return rects;
+  const to = tops.reduce((a, b) => (Math.abs(a - span.top) <= Math.abs(b - span.top) ? a : b));
+  const by = span.top - to;
+  if (!(Math.abs(by) >= 1)) return rects;
   post({ type: "scroll-by", x: 0, y: by });
   return rects.map((r) => ({ ...r, top: r.top - by, bottom: r.bottom - by }));
 }
