@@ -11,6 +11,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - `skills/pointback/SKILL.md` is the agent-facing CLI contract and ships outside the npm package; change it with any command, flag or field it names.
 - Delivery is at-least-once, by an `ack` cursor and a session `epoch` (`#answer` in `src/session-store.js`, `poll-cursor.json`).
   A tab learns of sent notes only from the event stream, so Send and End never refetch the session (`changeDrafts` and `sending` in `src/browser/chrome.js`).
+- A file is watched only while a stream follows its review; a save made with none open is numbered when the next opens (`catchUp` in `src/session-store.js`, `docs/ENGINEERING-NOTES.md`).
 - One daemon per state directory: a start claims `daemon.<n>.lock` before it loads a session or binds (`claimDaemon` in `src/daemon-lock.js`), and `#persist` refuses a write only when the session file holds a readable session written more times than this process's copy.
   A running daemon closes within `LOCK_CHECK_MS` of its lock going, as with its state directory removed (`src/server.js`).
   A stopped daemon stamps `stoppedAt` in its lock and a start whose process began before that stamp steps aside, and an open waits for a start in progress with `START_WALL_MS` as its only clock (`ensureServer` in `src/client.js`).
@@ -36,6 +37,8 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - A test looks for the page under review alongside a wait on its tab through `frameWhile` (`test/browser.test.js`), never a bare `page.frame()` begun first, and adds a listener for one tab through `page.listen`, which `close` removes (`test/helpers/cdp.js`).
 - A note made by mouse leaves nothing in the page focused once its card closes (only a keyboard-made one refocuses its element; `closeTarget` in `src/browser/sdk.js`), so a test that points with `pointAt` and then drives the page by key moves the focus with Tab or H first.
 - A test driving a tab it sent to the background calls `page.front()` first, and an animation assertion emulates `prefers-reduced-motion: no-preference` first.
+  Reduced motion still eases colour over the house's 100 ms, so a test reading a control's colour after a change waits for `SETTLED` first (`test/browser.test.js`).
+  After a tab was in the background it waits only on the eases of what it reads (`SWITCH_EASED`): one started there can stay pending with no start time in Chromium, and `SETTLED` then never resolves.
 - A key the chrome acts on is `preventDefault`ed, or headless Chromium on macOS freezes; it also sends a key the page leaves unhandled back to the page, so a test types into the page only once the element meant to take the keys holds the focus (`docs/ENGINEERING-NOTES.md`).
 - The browser suite prints `browser suite: running against <path>` or `browser suite: SKIPPED`; a skip needs an explicit `<PREFIX>BROWSER=none`.
 - The browser suite launches Chrome once, before it opens its shared review, against one `LAUNCH_MS` deadline that its `before` hook outlasts (`LAUNCH_BOUND_MS` in `test/helpers/cdp.js`); a slow first launch on `windows-2025` or `ubuntu-24.04` is a cold disk, read first and never a reason for a second attempt or a bound of its own (`docs/ENGINEERING-NOTES.md`).
