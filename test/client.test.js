@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import childProcess, { spawnSync } from "node:child_process";
+import childProcess from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { ensureServer, health, refusingServer, stopServer } from "../src/client.js";
 import { tokenProof } from "../src/http-guard.js";
 import { name } from "../src/identity.js";
-import { closedPort, stallNextTick, stallOnConnect } from "./helpers/stall.js";
+import { DEAD_PID, closedPort, stallNextTick, stallOnConnect } from "./helpers/stall.js";
 import { until } from "./helpers/wait.js";
 
 // A daemon that crashed leaves its record; once its pid belongs to another process, only the port
@@ -134,8 +134,7 @@ test("an open answers at its whole-start wall bound though every look is held an
   const bootGate = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-gates-")), "boot");
   const silent = createServer(() => {});
   await new Promise((resolve) => silent.listen(0, "127.0.0.1", resolve));
-  const exited = spawnSync(process.execPath, ["-e", ""]).pid;
-  const record = { port: silent.address().port, pid: exited, token: "d".repeat(48) };
+  const record = { port: silent.address().port, pid: DEAD_PID, token: "d".repeat(48) };
   writeFileSync(join(dir, "server.json"), JSON.stringify(record));
   const environment = {
     ...process.env,
@@ -170,7 +169,11 @@ test("an open answers at its whole-start wall bound though every look is held an
     spawns.restore();
     silent.closeAllConnections();
     silent.close();
-    await until(() => existsSync(`${bootGate}.reached`), { what: "the held daemon to boot" });
-    process.kill(Number(readFileSync(`${bootGate}.reached`, "utf8")));
+    // An open that answered otherwise left no daemon held, and a wait for one would replace the
+    // assertion's own message with a boot timeout (hunt job 114831631729).
+    if (!(answered instanceof Error) || /is still starting/.test(answered.message)) {
+      await until(() => existsSync(`${bootGate}.reached`), { what: "the held daemon to boot" });
+      process.kill(Number(readFileSync(`${bootGate}.reached`, "utf8")));
+    }
   }
 });
