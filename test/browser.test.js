@@ -8173,14 +8173,65 @@ async function noteOnInstall(page, artifact, text) {
   );
   const unsent = "document.querySelectorAll('.mark:not(.sent)').length";
   const before = Number(await page.eval(unsent));
-  await clickIn(page, artifact, selector, { x: 30, y: height - 8 });
+  // PROBE (evidence branch only): where the frame, the page's scroll and the click point stand.
+  const chromeBoxes = () =>
+    page.eval(`JSON.stringify(Object.fromEntries(['.bar', '#artifact', '.margin'].map((s) => {
+      const r = document.querySelector(s).getBoundingClientRect();
+      return [s, [r.top, r.bottom, r.height]];
+    })))`);
+  const pageState = (at) =>
+    artifact.eval(`JSON.stringify((() => {
+      const p = document.querySelector('${selector}');
+      const r = p.getBoundingClientRect();
+      const pre = p.previousElementSibling.getBoundingClientRect();
+      const hit = ${at ? `document.elementFromPoint(${at.x}, ${at.y})` : "null"};
+      return { sy: scrollY, ih: innerHeight, ch: document.documentElement.clientHeight, p: [r.top, r.bottom], pre: [pre.top, pre.bottom],
+        hit: hit && hit.tagName + ':' + hit.textContent.slice(0, 30), sel: getSelection().isCollapsed, fonts: document.fonts.status };
+    })())`);
+  console.log("PROBE before", await chromeBoxes(), await pageState());
+  const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+  const box = JSON.parse(
+    await artifact.eval(`(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      element.scrollIntoView({ block: "nearest", behavior: "instant" });
+      return JSON.stringify(element.getBoundingClientRect());
+    })()`),
+  );
+  const point = { x: frameBox.left + box.left + 30, y: frameBox.top + box.top + height - 8 };
+  console.log(
+    "PROBE scrolled",
+    JSON.stringify(frameBox),
+    JSON.stringify(box),
+    await pageState({ x: box.left + 30, y: box.top + height - 8 }),
+  );
+  await page.pointerInto(artifact, point);
+  const nowFrame = JSON.parse(await page.eval(FRAME_BOX));
+  console.log(
+    "PROBE pressing",
+    JSON.stringify(nowFrame),
+    await chromeBoxes(),
+    await pageState({ x: point.x - nowFrame.left, y: point.y - nowFrame.top }),
+  );
+  await page.click(point.x, point.y);
   await page.waitFor(
     "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+  );
+  console.log(
+    "PROBE card",
+    await page.eval("document.getElementById('cardTarget').textContent"),
+    await pageState(),
   );
   await page.type(text);
   await page.enter();
   await page.waitFor(`document.getElementById('card').hidden && ${unsent} === ${before + 1}`);
   await page.waitFor("document.body.dataset.handoff === 'settled'"); // as in `noteOn`
+  console.log(
+    "PROBE settled",
+    await page.eval(
+      "[...document.querySelectorAll('.mark-tag')].map((e) => e.textContent).join('|')",
+    ),
+    await pageState(),
+  );
   return selector;
 }
 

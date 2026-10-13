@@ -72,7 +72,10 @@ jobs:
         timeout-minutes: 12
         run: |
           set -euo pipefail
-          npm run check 2>&1 | tee "$RUNNER_TEMP/check.log"
+          # PROBE (evidence branch only): the browser suite alone, twice.
+          status=0
+          for i in 1 2; do node --test --test-force-exit --test-timeout=60000 test/browser.test.js 2>&1 | tee -a "$RUNNER_TEMP/check.log" || status=1; done
+          exit $status
 
       # The same steps as the engines job in cross-platform.yml.
       - name: Install ${{ inputs.engine }}
