@@ -2271,6 +2271,9 @@ test(
         end: look('end'),
       };
     })())`;
+    // Under reduced motion the controls' colours still ease over the house's 100 ms, and End review
+    // eases in as it is enabled once the review is shown; a read before that settles is mid-way.
+    await page.eval(SETTLED);
     const live = JSON.parse(await page.eval(painted));
     assert.equal(live.notice, null);
     const away = `${file}.away`;
@@ -2280,6 +2283,7 @@ test(
     assert.equal(polled.code, 1);
     assert.equal(polled.json().status, "gone");
     await page.waitFor("document.getElementById('notice').checkVisibility()");
+    await page.eval(SETTLED);
     const gone = JSON.parse(await page.eval(painted));
     assert.equal(gone.notice, "The file was moved or deleted, so this review cannot go on.");
     // Said once, in the notice, and Send keeps its short label; no third line repeats it.
@@ -2292,6 +2296,8 @@ test(
 
     renameSync(away, file);
     await page.waitFor("!document.getElementById('notice').checkVisibility()");
+    // Under reduced motion the controls' colours still ease back over the house's 100 ms.
+    await page.eval(SETTLED);
     assert.deepEqual(JSON.parse(await page.eval(painted)), live, "the review is back as it was");
     await page.close();
   },
@@ -2578,6 +2584,66 @@ test(
       JSON.parse(await page.eval(CARD_SEEN)).words,
       "",
       "the next card starts empty: Cancel dropped the words",
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a note card near the foot of the page stays inside the frame when its reason line shows, and the page keeps its width",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    // The width the defect was seen at, where the notes are a rail beside the page and nothing
+    // under the frame can take the card's overflow.
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+      width: 1440,
+      height: 900,
+    });
+    const FITS = `JSON.stringify((() => {
+      const root = document.scrollingElement;
+      const card = document.getElementById('card').getBoundingClientRect();
+      const mount = document.querySelector('.mount').getBoundingClientRect();
+      return {
+        page: document.getElementById('artifact').clientWidth,
+        chromeScrolls: root.scrollHeight > root.clientHeight || root.scrollWidth > root.clientWidth,
+        cardInFrame: card.top >= mount.top && card.bottom <= mount.bottom,
+      };
+    })())`;
+    const { page: width } = JSON.parse(await page.eval(FITS));
+    // #tail fills the foot of the frame, so the card is clamped to the frame's bottom edge.
+    await pointAt(page, artifact, "#tail");
+    await page.type("Say who owns the rollback");
+    assert.deepEqual(JSON.parse(await page.eval(FITS)), {
+      page: width,
+      chromeScrolls: false,
+      cardInFrame: true,
+    });
+    renameSync(file, `${file}.away`);
+    assert.equal((await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().status, "gone");
+    await page.waitFor(noticeSays("The file was moved or deleted, so this review cannot go on."));
+    // The reason line is drawn in the notice's turn; two frames later the card has been laid out
+    // with it and anything that answers its new size has run.
+    await page.eval(
+      "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))",
+    );
+    const reach = JSON.parse(
+      await page.eval(reachability(["#cardText", "#cardCancel", "#cardAdd"])),
+    );
+    assert.deepEqual(
+      {
+        ...JSON.parse(await page.eval(FITS)),
+        reason: JSON.parse(await page.eval(CARD_SEEN)).reason,
+        offScreen: reach.controls.filter((c) => !c.reachable).map((c) => c.selector),
+      },
+      {
+        page: width,
+        chromeScrolls: false,
+        cardInFrame: true,
+        reason:
+          "The file was moved or deleted. Add note keeps this with your other notes, and Send opens again if the file comes back.",
+        offScreen: [],
+      },
     );
     await page.close();
   },
@@ -3442,7 +3508,7 @@ test(
         errorReason: "ConnectionRefused",
       });
       // The face's load has failed once the document's faces have settled; two frames after that let
-      // the chrome's loadingerror handler run before the note is read.
+      // recover.js's rejected `loaded` be heard before the note is read.
       await page.eval(SETTLED);
       assert.deepEqual(
         JSON.parse(
@@ -3592,7 +3658,7 @@ test(
         errorReason: "InternetDisconnected",
       });
       // The face's load has failed once the document's faces have settled; two frames after that let
-      // recover.js's loadingerror handler run before the chrome is read.
+      // recover.js's rejected `loaded` be heard before the chrome is read.
       await page.explained(page.eval(SETTLED));
       await page.waitFor("/offline/.test(document.getElementById('noticeText').textContent)");
       assert.deepEqual(
@@ -3951,9 +4017,22 @@ test(
         track: getComputedStyle(track).backgroundColor, thumb: getComputedStyle(track, '::after').backgroundColor,
         quietDisabled: getComputedStyle(document.getElementById('end')).color };
     })())`;
+    // The eases of the controls read above, waited out where they run. Not SETTLED, which waits on
+    // every animation in the chrome: Send's colour ease, started while this tab sat behind the second,
+    // stayed pending at currentTime 0 on ubuntu-24.04 while the document's clock ran on for 6 s, and its
+    // `finished` never came (run 38365341668).
+    const SWITCH_EASED = `(() => {
+      const track = document.getElementById('annotate');
+      const read = [track, track.parentElement, document.getElementById('end')];
+      return Promise.all(document.getAnimations()
+        .filter((a) => read.includes(a.effect?.target))
+        .map((a) => a.finished.catch(() => {}))).then(() => true);
+    })()`;
     // Ending turns annotate off, so the live switch is read off too, or the comparison is vacuous.
     await page.eval("document.getElementById('annotate').click()");
     await page.waitFor("String(document.getElementById('annotate').checked) === 'false'");
+    // Under reduced motion the switch's and End review's colours still ease over the house's 100 ms.
+    await page.eval(SWITCH_EASED);
     const live = JSON.parse(await page.eval(SWITCH_PAINT));
 
     // Ending with a note still queued offers to send it, and the agent gets it as the last batch.
@@ -3976,6 +4055,7 @@ test(
     assert.equal(await page.eval("document.getElementById('annotate').disabled"), true);
     // Disabled must also look it: the label dims like the other disabled controls, the cursor
     // stops promising a press, and the track and thumb no longer paint as a live switch.
+    await page.eval(SWITCH_EASED);
     const ended = JSON.parse(await page.eval(SWITCH_PAINT));
     assert.equal(ended.color, ended.quietDisabled, "the ended switch's label dims like End review");
     assert.notEqual(ended.color, live.color);
@@ -4656,14 +4736,22 @@ async function holdSdk(artifact) {
   };
 }
 
-/** A real click in the middle of a chrome element, scrolled into view first as a reviewer would. */
+/**
+ * A real click in the middle of a chrome element, scrolled into view first as a reviewer would, and
+ * aimed two frames on, where a reviewer sees it: the card is placed again in the frame after it grows,
+ * and a box read before that frame aimed 49 px below Cancel (macos-15, run 38294988373).
+ */
 async function clickOn(page, expression) {
   const box = JSON.parse(
-    await page.eval(`(() => {
-      const element = ${expression};
-      element.scrollIntoView({ block: "nearest" });
-      return JSON.stringify(element.getBoundingClientRect());
-    })()`),
+    await page.eval(`new Promise((done, fail) => requestAnimationFrame(() => requestAnimationFrame(() => {
+      try {
+        const element = ${expression};
+        element.scrollIntoView({ block: "nearest" });
+        done(JSON.stringify(element.getBoundingClientRect()));
+      } catch (error) {
+        fail(error);
+      }
+    })))`),
   );
   await page.click(box.left + box.width / 2, box.top + box.height / 2);
 }
@@ -6418,6 +6506,79 @@ test(
   },
 );
 
+/** The bar's parts whose boxes overlap, and how wide the file's name paints. */
+const BAR_PARTS = `JSON.stringify((() => {
+  const parts = [".brand", "#fileName", "#presence", "#textSizeButton", ".annotate", "#end"];
+  const boxes = parts.map((s) => document.querySelector(s).getBoundingClientRect());
+  const overlaps = [];
+  for (const [i, a] of boxes.entries())
+    for (const [j, b] of boxes.entries())
+      if (i < j && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom)
+        overlaps.push(parts[i] + " over " + parts[j]);
+  return { overlaps, file: document.getElementById("fileName").clientWidth };
+})())`;
+
+test(
+  "at every text size the bar and its text size steps fit a phone and a narrow window: nothing scrolls sideways, overlaps or leaves the screen",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const session = (await cli([file], lab.env)).json().session;
+    const sizes = ["s", "m", "l", "xl", "xxl"];
+    const stepOf = (size) => `#textSize [data-size="${size}"]`;
+    const panel = "document.getElementById('textSizePanel')";
+    const seen = {};
+    // 320 and 390 are phones held upright, under the bar's two-line layout; 600 is the first width
+    // the bar is one line, where the name and the tools last shared it at the largest size.
+    for (const width of [320, 390, 600]) {
+      const page = await browser.page(session.url, { width, height: 800 });
+      try {
+        await page.waitFor("document.body.dataset.ready === '1'");
+        for (const size of sizes) {
+          await clickOn(page, "document.getElementById('textSizeButton')");
+          await page.waitFor(`${panel}.matches(':popover-open')`);
+          const step = `document.querySelector('${stepOf(size)}')`;
+          const [target] = JSON.parse(await page.eval(reachability([stepOf(size)]))).controls;
+          // A step off the screen is recorded below, at the size that put it there; the size is
+          // still taken, so every width and size is measured.
+          if (target.reachable) await clickOn(page, step);
+          else await page.eval(`${step}.click()`);
+          await page.waitFor(`document.documentElement.dataset.textSize === "${size}"`);
+          const steps = JSON.parse(await page.eval(reachability(sizes.map(stepOf))));
+          // Aa again closes the steps: Escape is the browser's to act on, and a key the chrome leaves
+          // to the browser can freeze headless Chromium on macOS (docs/ENGINEERING-NOTES.md).
+          await clickOn(page, "document.getElementById('textSizeButton')");
+          await page.waitFor(`!${panel}.matches(':popover-open')`);
+          const bar = JSON.parse(
+            await page.eval(reachability(["#presence", "#textSizeButton", "#annotate", "#end"])),
+          );
+          const { overlaps, file: name } = JSON.parse(await page.eval(BAR_PARTS));
+          seen[`${size} at ${width}`] = {
+            sideways: bar.sideways,
+            offScreen: [...steps.controls, ...bar.controls]
+              .filter((c) => !c.reachable)
+              .map((c) => c.selector),
+            overlaps,
+            // Four characters of the file's name, the least that still says which file this is.
+            fileShown: name >= 4 * 7,
+          };
+        }
+      } finally {
+        // Every later review in this browser opens at the size picked last.
+        await page.eval("localStorage.setItem('textSize', 'm')");
+        await page.close();
+      }
+    }
+    const fits = { sideways: [], offScreen: [], overlaps: [], fileShown: true };
+    assert.deepEqual(
+      seen,
+      Object.fromEntries(Object.keys(seen).map((at) => [at, fits])),
+      "the bar at each text size and width",
+    );
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
 const CELL = (row) => `main > table > tbody > tr:nth-of-type(${row}) > td:nth-of-type(2)`;
 
 /** Waits for the frame to paint `count` pins, and says where each stands against its target. */
@@ -6854,6 +7015,163 @@ test(
       "html at 1440": [],
       "markdown at 1440": [],
     });
+  },
+);
+
+/** A private copy of the form fixture: four fields to a row, each with its label and hint or error. */
+function copyOfForm() {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-form-"));
+  const file = join(dir, "form.html");
+  copyFileSync(join(dirname(fixture), "form.html"), file);
+  return file;
+}
+
+/** Every control's box in the page's viewport, by its id. */
+const CONTROL_BOXES = `JSON.stringify([...document.querySelectorAll("input, textarea, select, button")].map((c) => {
+  const r = c.getBoundingClientRect();
+  return { id: c.id, left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+}))`;
+
+const distanceTo = (x, y, r) =>
+  Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+
+test(
+  "a field's pin stands nearer its own field than any other control, on no word, at every width",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const strays = {};
+    const fields = ["#say", "#print", "#type", "#agent"];
+    for (const width of [390, 800, 1440, 2560]) {
+      const file = copyOfForm();
+      const url = (await cli([file], lab.env)).json().session.url;
+      const { page, artifact } = await openReview(url, { width, height: 900 });
+      const pins = await pinsOnEach(page, artifact, fields);
+      const controls = JSON.parse(await artifact.eval(CONTROL_BOXES));
+      strays[width] = [
+        ...pins.flatMap((pin, i) => {
+          const x = (pin.left + pin.right) / 2;
+          const y = (pin.top + pin.bottom) / 2;
+          const own = controls.find((c) => `#${c.id}` === fields[i]);
+          const mine = distanceTo(x, y, own);
+          return controls
+            .filter((c) => c !== own && distanceTo(x, y, c) < mine)
+            .map(
+              (c) =>
+                `${pin.name} centred at ${Math.round(x)}, ${Math.round(y)} is ${Math.round(distanceTo(x, y, c))} px from #${c.id}, ${Math.round(mine)} px from its own ${fields[i]}`,
+            );
+        }),
+        ...(await wordsUnderPins(artifact, pins)),
+        ...(await pinsOffFrame(artifact, pins)),
+      ];
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(strays, { 390: [], 800: [], 1440: [], 2560: [] });
+  },
+);
+
+/**
+ * Where the open card stands against what it must leave in view, in the tab's coordinates: the
+ * target, its label and the hint or error tied to it, and the frame it must stay inside.
+ */
+async function cardAgainst(page, artifact, ids) {
+  const frame = JSON.parse(
+    await page.eval(`(() => {
+      const f = document.getElementById("artifact");
+      const r = f.getBoundingClientRect();
+      const c = document.getElementById("card").getBoundingClientRect();
+      return JSON.stringify({
+        left: r.left + f.clientLeft, top: r.top + f.clientTop, width: f.clientWidth, height: f.clientHeight,
+        card: { left: c.left, top: c.top, right: c.right, bottom: c.bottom },
+      });
+    })()`),
+  );
+  const boxes = JSON.parse(
+    await artifact.eval(`JSON.stringify(${JSON.stringify(ids)}.map((id) => {
+      const r = document.getElementById(id).getBoundingClientRect();
+      return { id, left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    }))`),
+  );
+  const { card } = frame;
+  const round = (r) => [r.left, r.top, r.right, r.bottom].map(Math.round).join(",");
+  const covered = boxes
+    .map((b) => ({
+      ...b,
+      left: b.left + frame.left,
+      right: b.right + frame.left,
+      top: b.top + frame.top,
+      bottom: b.bottom + frame.top,
+    }))
+    // Only what shows in the frame can be covered; a box the page scrolled out of view is not.
+    .filter((b) => b.bottom > frame.top && b.top < frame.top + frame.height)
+    .filter(
+      (b) =>
+        card.left < b.right - 0.5 &&
+        b.left < card.right - 0.5 &&
+        card.top < b.bottom - 0.5 &&
+        b.top < card.bottom - 0.5,
+    )
+    .map((b) => `the card ${round(card)} covers #${b.id} ${round(b)}`);
+  const hidden = boxes
+    .map((b) => b.top + frame.top)
+    .filter((top) => top < frame.top || top > frame.top + frame.height)
+    .map(() => `the card's target is out of the frame's view`);
+  const outside =
+    card.left < frame.left - 0.5 ||
+    card.right > frame.left + frame.width + 0.5 ||
+    card.top < frame.top - 0.5 ||
+    card.bottom > frame.top + frame.height + 0.5
+      ? [
+          `the card ${round(card)} runs past the frame ${round({ left: frame.left, top: frame.top, right: frame.left + frame.width, bottom: frame.top + frame.height })}`,
+        ]
+      : [];
+  return [...covered, ...hidden.slice(0, 1), ...outside];
+}
+
+test(
+  "the note card leaves a field, its label and its hint or error in view, inside the frame, at every width",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const seen = {};
+    // Each field with what the card must leave in view; at 390 the textarea's block is centred in
+    // the frame first, where the card fits on neither side of it until the page scrolls.
+    const fields = [
+      ["say", ["say", "say-hint"]],
+      ["print", ["print", "print-error"]],
+      ["type", ["type"]],
+      ["agent", ["agent", "agent-hint"]],
+    ];
+    for (const width of [390, 800, 1440, 2560]) {
+      const file = copyOfForm();
+      const url = (await cli([file], lab.env)).json().session.url;
+      const { page, artifact } = await openReview(url, { width, height: 844 });
+      seen[width] = [];
+      for (const [id, kept] of fields) {
+        const ids = [...kept, `${id}-label`];
+        await artifact.eval(`(() => {
+          for (const label of document.querySelectorAll("label")) label.id ||= label.htmlFor + "-label";
+          window.scrollTo({ top: 0, behavior: "instant" });
+          ${id === "agent" ? `document.getElementById("agent").parentElement.scrollIntoView({ block: "center", behavior: "instant" });` : ""}
+        })()`);
+        await pointAt(page, artifact, `#${id}`);
+        // A card that has to scroll the page moves it a moment after it opens, so the property is
+        // waited for, and what the card covered on the last look is what a failure reports.
+        let last = [];
+        await until(
+          async () => {
+            last = await cardAgainst(page, artifact, ids);
+            return last.length === 0;
+          },
+          { what: `the card on #${id} at ${width}` },
+        ).catch(() => {});
+        seen[width].push(...last.map((problem) => `#${id}: ${problem}`));
+        await page.eval("document.getElementById('cardCancel').click()");
+        await page.waitFor("document.body.dataset.handoff === 'settled'");
+      }
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    assert.deepEqual(seen, { 390: [], 800: [], 1440: [], 2560: [] });
   },
 );
 
@@ -7719,6 +8037,52 @@ test(
 );
 
 test(
+  "the highlight keeps 3:1 on a white page and a dark one, whichever scheme the reviewer prefers, in screenshot pixels",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const seen = {};
+    // A page under review keeps its own ground whatever the reviewer prefers: plan.html is white,
+    // the dark fixture near black.
+    for (const [name, file] of [
+      ["white page", copyOfFixture().file],
+      ["dark page", copyOfDark()],
+    ]) {
+      const session = (await cli([file], lab.env)).json().session;
+      const { page, artifact } = await openReview(session.url, { width: 1440, height: 900 });
+      await pointAt(page, artifact, "h1");
+      const frame = JSON.parse(await page.eval(FRAME_BOX));
+      const heading = JSON.parse(
+        await artifact.eval("JSON.stringify(document.querySelector('h1').getBoundingClientRect())"),
+      );
+      for (const scheme of ["light", "dark"]) {
+        await page.send("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-color-scheme", value: scheme }],
+        });
+        await artifact.waitFor(`matchMedia("(prefers-color-scheme: ${scheme})").matches`);
+        await artifact.eval(SETTLED);
+        const shot = await screenshotOf(page);
+        const ground = shot.pixel(Math.round(frame.left + 4), Math.round(frame.top + 4));
+        // The highlight's top edge, read down from just above the heading's box, where its 2 px
+        // ring stands 2 px clear of the box.
+        const x = Math.round(frame.left + heading.left + 10);
+        const ring = Math.max(
+          ...[1, 2, 3, 4, 5, 6].map((dy) =>
+            contrast(shot.pixel(x, Math.round(frame.top + heading.top) - dy), ground),
+          ),
+        );
+        seen[`${scheme} scheme on a ${name}`] = Number(ring.toFixed(2));
+      }
+      await page.send("Emulation.setEmulatedMedia", { features: [] });
+      await page.close();
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+    console.log(`highlight edges: ${JSON.stringify(seen)}`);
+    const under = Object.entries(seen).filter(([, ratio]) => ratio < 3);
+    assert.deepEqual(under, [], `the highlight under 3:1: ${JSON.stringify(seen)}`);
+  },
+);
+
+test(
   "the reviewer sets the chrome's text size in the bar, and it stays for the next review",
   { skip: !executable && "no browser found" },
   async () => {
@@ -7774,6 +8138,56 @@ test(
     await clickOn(page, step("m"));
     await page.waitFor(`${checked} === "Medium"`);
     await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "under reduced motion a switch still changes colour as it flips, and its thumb jumps rather than travels",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.waitFor("document.body.dataset.annotate === '1'");
+    // The page's clock stands still, so every transition a flip starts is still there to be read,
+    // however late the read comes.
+    await page.send("Animation.enable");
+    await page.send("Animation.setPlaybackRate", { playbackRate: 0 });
+    const MOVES = `JSON.stringify(document.getAnimations()
+      .filter((a) => a.effect.target === document.getElementById('annotate'))
+      .map((a) => [a.effect.pseudoElement ?? '', a.transitionProperty, a.effect.getTiming().duration])
+      .sort())`;
+    const flip = async (motion, to) => {
+      await page.send("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-reduced-motion", value: motion }],
+      });
+      await clickOn(page, "document.getElementById('annotate')");
+      await page.waitFor(`document.body.dataset.annotate === '${to}'`);
+      const moves = JSON.parse(await page.eval(MOVES));
+      await page.eval("document.getAnimations().forEach((a) => a.finish())");
+      return moves;
+    };
+    try {
+      // With motion allowed the thumb travels, which shows a movement here is seen at all.
+      assert.deepEqual(await flip("no-preference", "0"), [
+        ["", "background-color", 120],
+        ["::after", "translate", 120],
+      ]);
+      // Reduced, the house's rule: the colours still change over its 100 ms and nothing travels.
+      assert.deepEqual(await flip("reduce", "1"), [
+        ["", "background-color", 100],
+        ["", "border-bottom-color", 100],
+        ["", "border-left-color", 100],
+        ["", "border-right-color", 100],
+        ["", "border-top-color", 100],
+        ["::after", "background-color", 100],
+      ]);
+    } finally {
+      await page.send("Animation.setPlaybackRate", { playbackRate: 1 });
+      await page.send("Animation.disable");
+      await page.send("Emulation.setEmulatedMedia", { features: [] });
+      await page.close();
+    }
     rmSync(dirname(file), { recursive: true, force: true });
   },
 );
