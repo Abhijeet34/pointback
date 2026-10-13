@@ -7,15 +7,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { pidAlive } from "../src/daemon-lock.js";
 import { until } from "./helpers/wait.js";
 
 const killed = fileURLToPath(new URL("./fixtures/interrupted.js", import.meta.url));
+const windows = process.platform === "win32";
 
-test("a test run killed outright still stops the daemon its test started, and removes its state", async () => {
+test("a test run killed outright ends its file, which stops the daemon its test started and removes its state where the platform lets it run", async () => {
   const report = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-interrupt-")), "report");
-  // Killed outright, the runner closes the pipe its file reports on, which every platform tells the
-  // file on its next write; a signal it would pass on as SIGTERM ends a process at once on Windows.
+  // Killed outright, the runner closes the pipe its file reports on, which POSIX tells the file on its
+  // next write. Windows ends the file with the runner, so it runs nothing (helpers/interrupt.js).
   const env = { ...process.env, TEST_INTERRUPT_REPORT: report };
   // A run of its own: this file inherits NODE_TEST_CONTEXT, which makes a runner report as a child.
   delete env.NODE_TEST_CONTEXT;
@@ -36,12 +38,18 @@ test("a test run killed outright still stops the daemon its test started, and re
       { what: "the test in the run to open its review", timeoutMs: 30_000 },
     );
     runner.kill("SIGKILL");
-    const left = () => ({ daemon: pidAlive(opened.pid), state: existsSync(opened.dir) });
-    await until(() => !left().daemon && !left().state, {
-      what: "the killed run's daemon to stop and its state directory to go",
+    const left = () => ({
+      file: pidAlive(opened.file),
+      daemon: pidAlive(opened.pid),
+      state: existsSync(opened.dir),
+    });
+    // On Windows the file ends with the runner and its daemon, detached, is left to idle out.
+    const expected = { file: false, daemon: windows, state: windows };
+    await until(() => isDeepStrictEqual(left(), expected), {
+      what: "the killed run's file to end, with what it stops",
       timeoutMs: 30_000,
     }).catch(() => {});
-    assert.deepEqual(left(), { daemon: false, state: false });
+    assert.deepEqual(left(), expected);
   } finally {
     runner.kill("SIGKILL");
     // Before this fix the killed file wrote on into the closed pipe and ran on, as did its daemon.

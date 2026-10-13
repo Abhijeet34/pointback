@@ -39,7 +39,9 @@ function interrupt(code) {
 
 // `node --test` passes SIGINT and SIGTERM on to each file as SIGTERM; a terminal's Ctrl-C sends SIGINT
 // to the whole group and a closed terminal SIGHUP. A runner killed outright closes the pipe the file
-// reports on, which is the one sign of it the file gets.
+// reports on, which is the one sign of it the file gets on POSIX. Windows runs none of this: a SIGTERM
+// ends a process at once, and libuv ends every child it did not detach with its parent, so there the
+// file, its CLIs and its browser go with the runner, and only the detached daemons stay, to idle out.
 for (const [signal, code] of [
   ["SIGINT", 130],
   ["SIGTERM", 143],
