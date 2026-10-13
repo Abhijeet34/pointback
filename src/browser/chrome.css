@@ -1,5 +1,5 @@
 /* Colour, type, space and motion are the house's roles and scales, and the controls its components
-   (src/browser/house/, pinned in pin.json); dark is pinned by data-theme on <html>. Every size is
+   (src/browser/house/, pinned in pin.json), light or dark as the reviewer's browser prefers. Every size is
    rem, so the house text-size setting on <html> grows the whole chrome. One accent means the
    annotation channel and nothing else. */
 
@@ -22,12 +22,9 @@
 }
 
 :root {
+  color-scheme: light dark;
   /* The page under review, not chrome: it shows only until the artifact paints its own ground. */
   --paper: oklch(96% 0.005 90);
-}
-
-[data-theme="dark"] {
-  color-scheme: dark;
 }
 
 * {

@@ -236,10 +236,10 @@ It carries seven things.
 - **A gone file.** A file moved or deleted under review stops the page: Annotate, Send and End review turn off and the notice says why, and the file coming back turns Annotate on again, if the reviewer had wanted it on, and reloads the review where it was.
 - **The end.** Ending from the tab confirms first, and when notes are queued the confirming action is to send them. The agent's own `end` leaves a queue sendable, because notes nobody can deliver are worse than a queue the agent picks up on its next check.
 
-When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send turns off until it is back, and a note being written stays in its card with Add note held until then.
+When the stream drops, the header says the tab is not connected and the notice says what happens next, once each; Send and End review turn off until it is back, and a note being written stays in its card with Add note held until then.
 It keeps trying, because a daemon that idled out or was stopped comes back at the agent's next command on the same port with the same token, and the tab picks the review up from there.
-A tab opened while nothing answers waits the same way, including when the request for the review itself goes unanswered; only an answer makes it say the link no longer works, an HTTP error or a health check that does not prove the token.
-If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection; running the command on the file again opens a fresh tab with the notes in it.
+A tab opened while nothing answers waits the same way, including when the request for the review itself goes unanswered; only an answer makes it say it can no longer reach its review, an HTTP error or a health check that does not prove the token.
+If something else took that port in the meantime and answers there, the tab cannot prove it holds the token it was given, so it says once that it is disconnected and promises no reconnection, and turns Annotate off, since nothing pointed at can be added from it; running the command on the file again opens a fresh tab with the notes in it.
 
 The agent's end, a gone file or another tab taking over never closes a card with words in it.
 The card stays open with the reason on it, and Add note still keeps the note with the others.
@@ -327,11 +327,11 @@ The chrome is built from the house design system, [halderworks-design](https://g
 Every size is rem on the house ramp, so `data-text-size` on `<html>` (13 to 22 px at the root) grows the whole chrome.
 The bar's Aa button opens the five steps, S to XL and XXL, in a house popover, and the size reaches a rendered Markdown page, the review's own, while an HTML page keeps the sizes its author set; this browser keeps the choice for the next review, and each step is a share of the browser's own default size, so a reviewer who raised that keeps the raise.
 The faces are Archivo for the interface, IBM Plex Mono for file names, and Literata for a rendered Markdown page's prose, served by the daemon from `src/browser/house/fonts/` with their OFL texts, so a review makes no request off loopback.
-The pins inside the page under review cannot load the chrome's sheets, so `sdk.js` draws them with the house pin's shape and its dark roles as literals.
+The pins inside the page under review cannot load the chrome's sheets, so `sdk.js` draws them with the house pin's shape and its roles, light and dark, as literals.
 Its brand ramps, `roles.css`, `scales.css`, `components.css`, `radiogroup.js` (the segmented control's arrow keys) and the three faces are vendored byte for byte into `src/browser/house/`, and `src/browser/house/pin.json` records the commit they came from and each file's SHA-256; `.gitattributes` keeps that directory out of line-ending normalisation, because IBM Plex Mono's `OFL.txt` is CRLF upstream.
 A copy rather than a package, because the house publishes no package and the chrome makes no request off the daemon; a commit rather than a branch, because a look that changes when someone else merges is not one anybody reviewed.
 `test/house.test.js` fails if a vendored file differs from its recorded digest, so a hand edit there is drift: change the house and move the pin with `node scripts/sync-house.js ../halderworks-design`, which refuses a checkout with an uncommitted change to any file it vendors.
-Dark is pinned by `data-theme="dark"` on `chrome.html`; the light theme resolves from the same roles and is deliberately not offered.
+The chrome and a rendered Markdown page follow the reviewer's `prefers-color-scheme`, light or dark, from the same roles.
 `docs/GIT-WORKFLOW.md` covers how a change reaches `main`, how a release is cut, and what npm does and does not permit when one has to be withdrawn.
 
 ## Contributing, security and support
