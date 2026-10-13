@@ -51,7 +51,8 @@ export function watchFile(
   return Object.assign(stop, { missing: () => (last = null) });
 }
 
-function signature(file) {
+/** The file as a watch tells its saves apart: mtime and size, or null when it is gone. */
+export function signature(file) {
   try {
     const stat = statSync(file);
     return `${stat.mtimeMs}:${stat.size}`;

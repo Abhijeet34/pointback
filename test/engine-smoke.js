@@ -60,7 +60,7 @@ async function smoke(engine) {
     }
     await act(browser, (page) => focusLeavesNoteAlone(page, lab, engine));
     await act(browser, addAfterAnIdle);
-    await act(browser, (page) => faceRefusedOffline(page, lab, engine));
+    await act(browser, (page) => faceRefusedOffline(page, lab));
     const schemes = [];
     for (const colorScheme of ["light", "dark"]) {
       schemes.push(
@@ -731,10 +731,9 @@ async function addAfterAnIdle(page) {
 /**
  * The chrome's code face is still loading when the browser goes offline, and fails: the review stays
  * on screen and says the browser is offline, never the browser's error page a reload would bring,
- * and back online the chrome reloads for the face. WebKit leaves a refused face `unloaded` and fires
- * no `loadingerror`, so there the chrome never learns of it and only the notice clears.
+ * and back online the chrome reloads for the face, in WebKit too, which fires no `loadingerror`.
  */
-async function faceRefusedOffline(page, lab, engine) {
+async function faceRefusedOffline(page, lab) {
   const held = [];
   await page.route("**/house/fonts/ibm-plex-mono/**", (route) =>
     held.length === 0 ? held.push(route) : route.continue(),
@@ -757,11 +756,10 @@ async function faceRefusedOffline(page, lab, engine) {
   );
   await page.context().setOffline(false);
   await page.waitForFunction(
-    (reload) =>
-      (!reload || performance.getEntriesByType("navigation")[0]?.type === "reload") &&
+    () =>
+      performance.getEntriesByType("navigation")[0]?.type === "reload" &&
       document.body?.dataset.ready === "1" &&
       document.getElementById("noticeText").textContent === "",
-    engine !== "webkit",
   );
 }
 

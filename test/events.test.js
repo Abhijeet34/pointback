@@ -108,6 +108,21 @@ test("a second tab takes the review, and closing it hands the review back", () =
   assert.equal(streams.live(key), false, "the last tab gone, the next open opens one again");
 });
 
+test("a save made while no tab follows the review reaches the next tab that opens, numbered", () => {
+  const { artifact, key, streams } = lab();
+  // Saved after the open and before the first stream, as when a tab's first connect is refused.
+  writeFileSync(artifact, "<p>two, saved before any tab followed</p>");
+  const first = tab(streams, key);
+  assert.equal(first.lines[0].revision, 1, "the save before the first stream is numbered");
+  // A reload: the old stream closes, the save lands, and only then does the new stream open.
+  first.detach();
+  writeFileSync(artifact, "<p>three, saved while the page reloaded</p>");
+  const reloaded = tab(streams, key);
+  assert.equal(reloaded.lines[0].revision, 2, "the save between two streams is numbered");
+  reloaded.detach();
+  assert.equal(tab(streams, key).lines[0].revision, 2, "an unchanged file is not numbered again");
+});
+
 test("an open under another root moves an open tab to the page's new address, and only then", async () => {
   const { dir, artifact, key, streams, store } = lab();
   const one = tab(streams, key);
