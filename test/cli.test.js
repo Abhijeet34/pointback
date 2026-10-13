@@ -288,34 +288,88 @@ test("a review with tabs open is never evicted, closing one leaves the daemon up
   }
 });
 
-test("when every review held has a tab open, a new open is refused with the reason and the way out", async () => {
+// The refusal used to name the four causes and their remedies for all 64 reviews at once, so the
+// agent could not tell which review to clear, or how.
+test("when every review held is in use, a new open is refused naming what holds each one and how to free it", async () => {
   const own = isolatedEnv();
   const tabs = [];
+  const files = [];
+  let polling;
   try {
     const { dir, file } = scratch();
     const keys = [keyOf(await cli([file], own.env))];
-    tabs.push(await tab(own, keys[0]));
     const api = daemon(own);
+    files.push(file);
     for (let i = 1; i < limits.sessions; i += 1) {
       const other = join(dir, `other-${i}.html`);
       writeFileSync(other, "<p></p>");
       const { key } = await (await api.call("POST", "/api/sessions", { file: other })).json();
+      files.push(realpathSync.native(other));
       keys.push(key);
-      tabs.push(await tab(own, key));
     }
+    // Named as the daemon keys them: only the native realpath expands a Windows 8.3 short name
+    // such as RUNNER~1 in the temp directory.
+    files[0] = realpathSync.native(file);
+    // One review per cause, and one held for two; every other review has a tab open.
+    const [polled, received, unsent, both] = [1, 2, 3, 4];
+    polling = cli(["poll", files[polled], "--timeout-ms", "20000"], own.env);
+    await until(async () => (await presenceOf(own.serverInfo(), keys[polled])) === "listening", {
+      what: "the poll to attach",
+    });
+    await api.note(keys[received], "a note the agent has not polled for");
+    for (const key of [keys[unsent], keys[both]]) {
+      const kept = await api.call("POST", `/api/${key}/drafts`, {
+        draft: { prompt: "not sent yet", selector: "#title", tag: "h1", text: "Rollout" },
+      });
+      assert.equal(kept.status, 200, await kept.text());
+    }
+    for (const [index, key] of keys.entries())
+      if (![polled, received, unsent].includes(index)) tabs.push(await tab(own, key));
+
     const oneMore = join(dir, "one-more.html");
     writeFileSync(oneMore, "<p></p>");
     const refused = await cli([oneMore], own.env);
     assert.equal(refused.code, 1, refused.stdout);
-    assert.match(
-      refused.stderr,
-      /open in a tab, being polled or holding notes.*ask the reviewer to close the tab of a finished review, let a poll on a review run to the end or end that review, or for a review holding notes, poll it until a poll comes back with no new notes, or ask the reviewer to discard unsent notes, or to send them and then poll it that way \(a review held for more than one of these needs each cleared\)/,
+    const lines = refused.stderr.trimEnd().split("\n");
+    assert.equal(
+      lines[0],
+      `error: all ${limits.sessions} reviews held are in use, so none can make room; free one by what holds it, then open the file again (a review listed twice needs both cleared):`,
     );
+    const held = (cause) => {
+      const line = lines.find((entry) => entry.startsWith(`- ${cause}`));
+      assert.ok(line, `a line for ${cause}: ${refused.stderr}`);
+      return line.slice(line.indexOf(": ") + 2).split(", ");
+    };
+    const others = files.filter((_, index) => ![polled, received, unsent].includes(index));
+    assert.deepEqual(
+      held("open in a tab, so ask the reviewer to close that tab once they are done"),
+      others,
+    );
+    assert.deepEqual(
+      held(`being polled, so let the poll run to its end or run \`${name} end <file>\``),
+      [files[polled]],
+    );
+    assert.deepEqual(
+      held("holding notes the agent has not received, so poll it until a poll brings no new notes"),
+      [files[received]],
+    );
+    assert.deepEqual(
+      held(
+        "holding notes the reviewer has not sent, so ask the reviewer to send them and then poll it, or to discard them",
+      ),
+      [files[unsent], files[both]],
+    );
+    assert.equal(lines.length, 5, refused.stderr);
     const statuses = [];
     for (const key of keys) statuses.push((await api.call("GET", `/api/${key}/session`)).status);
     assert.deepEqual(statuses, Array(limits.sessions).fill(200), "every held review still answers");
   } finally {
     for (const open of tabs) open.close();
+    // Ending the polled review answers its poll at once, rather than at the poll's own timeout.
+    if (polling) {
+      await cli(["end", files[1]], own.env);
+      await polling;
+    }
     await own.stop();
   }
 });
@@ -959,6 +1013,23 @@ test("a daemon whose state directory is removed before it publishes exits instea
   }
 });
 
+// A daemon whose state directory was removed under it after it published served on until its idle-out,
+// beside the daemon the next open started there, while `stop` found no record and said not-running.
+test("a running daemon whose state directory is removed exits instead of serving where no stop can find it", async () => {
+  const lost = isolatedEnv({ POINTBACK_IDLE_MS: "600000" });
+  let pid;
+  try {
+    const opened = await cli([fixture], lost.env);
+    assert.equal(opened.code, 0, opened.stderr);
+    pid = lost.serverInfo().pid;
+    rmSync(lost.dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    await until(() => !pidAlive(pid), { what: "the daemon that lost its directory to exit" });
+  } finally {
+    if (pid && pidAlive(pid)) process.kill(pid);
+    await lost.stop();
+  }
+});
+
 // windows-2025, 3 of about 2160 traced rounds: a stop right after concurrent opens was followed by a
 // daemon one of those opens had spawned and that was still booting, which claimed the directory the
 // stop freed and ran on after it. Here such a start is held before any of its own code runs until the
@@ -1265,6 +1336,31 @@ test("a stopped daemon comes back on the address and token an open tab already h
   }
 });
 
+// windows-2025 hunt job 115033372086: the shared daemon was stopped, and two minutes later every open
+// on its directory printed nothing and exited 1, its restart refused the recorded port with EACCES,
+// where only EADDRINUSE fell back to a new port.
+test("a stopped daemon whose port the system now refuses with EACCES comes back on another", async () => {
+  const own = isolatedEnv();
+  try {
+    assert.equal((await cli([fixture], own.env)).code, 0);
+    const before = own.serverInfo();
+    assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+    const opened = await cli(
+      [fixture],
+      loading(own.env, "refused-port.js", { TEST_REFUSED_PORT: String(before.port) }),
+    );
+    assert.equal(opened.code, 0, opened.stderr);
+    const after = own.serverInfo();
+    assert.notEqual(after.port, before.port);
+    assert.notEqual(after.token, before.token, "a token is never carried to a new port");
+    const { session } = opened.json();
+    assert.ok(session.url.startsWith(`http://127.0.0.1:${after.port}/`), session.url);
+    assert.equal((await fetch(session.url)).status, 200, "the review it answered with opens");
+  } finally {
+    await own.stop();
+  }
+});
+
 // The loop closes on the agent's side: every note can be answered done, declined or with a
 // question, the answer is what the reviewer's tab is sent, and a uid the review never issued is
 // refused rather than stored against nothing.
@@ -1338,9 +1434,13 @@ test("reply answers a note done, declined or with a question, and refuses a uid 
     /^error: --message is over 2000 characters$/m,
   );
   const never = join(scratch().dir, "a.html");
+  writeFileSync(never, "<p></p>");
   const unopened = await cli(["reply", never, "1", "--done"], lab.env);
   assert.equal(unopened.code, 1);
-  assert.match(unopened.stderr, /no such session/);
+  assert.match(
+    unopened.stderr,
+    /^error: no review of \S*a\.html is open: run `\S+ \S*a\.html` to open one$/m,
+  );
 });
 
 test("a reply that meets a session another process rewrote is made once more and lands", async () => {
@@ -1471,16 +1571,56 @@ test("a poll longer than one request may last waits its whole timeout, then deli
   }
 });
 
-test("a --timeout-ms the server refuses is refused at once with its message, as before", async () => {
+// The waiting line used to come first, then the server's own name for the flag; a negative value
+// never reached either, refused by the argument parser with advice about dashes.
+test("a --timeout-ms that is not a whole number of milliseconds is refused by its own name, before any wait", async () => {
   const { file } = scratch();
   assert.equal((await cli([file], lab.env)).code, 0);
-  for (const value of ["Infinity", "300000.5"]) {
-    const refused = await cli(["poll", file, "--timeout-ms", value], lab.env, {
-      timeoutMs: 30_000,
-    });
-    assert.equal(refused.code, 1, value);
-    assert.equal(refused.stdout, "", value);
-    assert.ok(refused.stderr.endsWith("error: timeoutMs must be a non-negative integer\n"), value);
+  for (const value of [["abc"], ["-5"], ["--timeout-ms=-5"], ["1.5"], ["Infinity"], ["700000x"]]) {
+    const args = value[0].startsWith("--") ? value : ["--timeout-ms", ...value];
+    const refused = await cli(["poll", file, ...args], lab.env, { timeoutMs: 30_000 });
+    assert.equal(refused.code, 1, value[0]);
+    assert.equal(refused.stdout, "", value[0]);
+    assert.equal(
+      refused.stderr,
+      "error: --timeout-ms must be a whole number of milliseconds, 0 or more\n",
+      value[0],
+    );
+  }
+});
+
+// A file no review can open, or one with no review open, used to answer "no such session".
+// A file no review shows is refused before any wait; one that merely has no review open is known so
+// only from the daemon's answer, which comes at once, after the line saying the poll is waiting.
+test("poll, end and reply on a file with no review say why and what to run", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-noreview-"));
+  const notes = join(dir, "notes.txt");
+  const plan = join(dir, "plan.html");
+  writeFileSync(notes, "plain notes\n");
+  writeFileSync(plan, "<p>never opened</p>");
+  const cases = [
+    [
+      notes,
+      "error: notes.txt cannot be reviewed: open an HTML (.html, .htm) or Markdown (.md, .markdown) file\n",
+    ],
+    [plan, `error: no review of ${plan} is open: run \`${name} ${plan}\` to open one\n`],
+  ];
+  for (const [file, message] of cases) {
+    for (const args of [
+      ["poll", file, "--timeout-ms", "0"],
+      ["end", file],
+      ["reply", file, "1", "--done"],
+    ]) {
+      const refused = await cli(args, lab.env);
+      assert.equal(refused.code, 1, args.join(" "));
+      assert.equal(refused.stdout, "", args.join(" "));
+      const waited = file === plan && args[0] === "poll";
+      assert.equal(
+        refused.stderr,
+        `${waited ? `waiting for feedback on ${plan}...\n` : ""}${message}`,
+        args.join(" "),
+      );
+    }
   }
 });
 

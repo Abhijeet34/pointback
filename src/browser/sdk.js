@@ -130,8 +130,9 @@
       // The agent may have rewritten the page, so every note is found again by its anchor.
       setPins(data.pins);
       // The chrome counts the page shown only once it has finished loading, been put back where
-      // the reviewer was, and become annotatable; anything earlier is a page still moving.
-      whenLoaded(() => send({ type: "shown" }));
+      // the reviewer was, and become annotatable; anything earlier is a page still moving. The
+      // outline goes with it for a note the chrome composes without a target, an answer.
+      whenLoaded(() => send({ type: "shown", structure: pageOutline() }));
     } else if (data?.nonce === nonce && data.type === "annotate") {
       setAnnotate(data.on);
       // The chrome cannot otherwise know when this arrived: it posts into a
@@ -187,7 +188,7 @@
    * `:nth-of-type` down one, so the selector alone would silently name a different element.
    */
   function readingAnchor(to) {
-    const bySelector = document.querySelector(to.selector);
+    const bySelector = query(to.selector);
     if (!to.text || (bySelector && visibleText(bySelector) === to.text)) return bySelector;
     let seen = 0;
     for (const element of document.body.querySelectorAll("*")) {
@@ -346,7 +347,9 @@
         parts.unshift(`#${CSS.escape(node.id)}`);
         break;
       }
-      const tag = node.tagName.toLowerCase();
+      // Escaped, because Office exports carry tags such as `st1:place`, which unescaped reads as
+      // the tag `st1` with a pseudo-class and is no selector at all.
+      const tag = CSS.escape(node.tagName.toLowerCase());
       const siblings = [...node.parentElement.children].filter((s) => s.tagName === node.tagName);
       parts.unshift(
         siblings.length > 1 ? `${tag}:nth-of-type(${siblings.indexOf(node) + 1})` : tag,
@@ -753,31 +756,47 @@
     );
     const { start = 0, before = "", after = "" } = pin.target ?? {};
     const best = (element) => {
+      const whole = element.textContent;
+      // The squashed text either side of a match, read only as far as `before` and `after` need.
+      // Squashing the whole prefix and suffix for every match held a long <pre> for seconds.
+      const behind = (at) => {
+        for (let span = 2 * QUOTE_CHARS; ; span *= 2) {
+          const text = squash(whole.slice(Math.max(0, at - span), at));
+          if (text.length >= before.length || span >= at) return text;
+        }
+      };
+      const ahead = (at) => {
+        for (let span = 2 * QUOTE_CHARS; ; span *= 2) {
+          const text = squash(whole.slice(at, at + span));
+          if (text.length >= after.length || at + span >= whole.length) return text;
+        }
+      };
       let found = null;
-      for (const match of element.textContent.matchAll(pattern)) {
-        const whole = element.textContent;
+      for (const match of whole.matchAll(pattern)) {
         const end = match.index + match[0].length;
-        const context =
-          squash(whole.slice(0, match.index)).endsWith(before) &&
-          squash(whole.slice(end)).startsWith(after);
+        const context = behind(match.index).endsWith(before) && ahead(end).startsWith(after);
         const score = (context ? 0 : 1e9) + Math.abs(match.index - start);
         if (!found || score < found.score) found = { start: match.index, end, score };
       }
       return found;
     };
-    let element = bySelector && best(bySelector) ? bySelector : null;
+    let hit = bySelector && best(bySelector);
+    let element = hit ? bySelector : null;
     if (!element) {
       let seen = 0;
+      let least = Infinity;
       for (const node of document.body.querySelectorAll("*")) {
         if (++seen > MAX_FOCUSABLE) break;
         if (SKIP.has(tagName(node)) || host.contains(node)) continue;
+        const text = node.textContent;
         pattern.lastIndex = 0;
-        const size = node.textContent.length;
-        if ((!element || size < element.textContent.length) && pattern.test(node.textContent))
+        if (text.length < least && pattern.test(text)) {
           element = node;
+          least = text.length;
+        }
       }
+      hit = element && best(element);
     }
-    const hit = element && best(element);
     return (hit && rangeAt(element, hit.start, hit.end)) ?? bySelector;
   }
 
