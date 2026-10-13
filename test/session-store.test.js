@@ -265,7 +265,7 @@ test("a refused watcher write adopts the newer copy and tells every open tab to 
   const events = [];
   tabs.on(key, (event) => events.push(event));
   tabs.fileChanged(key);
-  assert.deepEqual(events, [{ type: "reload", revision: tabs.get(key).revision }]);
+  assert.deepEqual(events, [{ type: "reload", revision: tabs.get(key).revision, outside: [] }]);
   assert.deepEqual(
     tabs.get(key).pending.map((p) => p.prompt),
     ["written by the other process"],
@@ -881,17 +881,18 @@ test("an attach inside a grace clears working, so the tab does not show working 
   t.mock.timers.reset();
 });
 
-test("a file change bumps the revision, persists it and is announced", () => {
+test("a file change bumps the revision, persists it and is announced with what it loads from outside", () => {
   const { dir, artifact } = lab();
   const store = new SessionStore(dir);
   const { key } = store.open(artifact);
   const events = [];
   store.on(key, (event) => events.push(event));
   assert.equal(store.fileChanged(key), 1);
+  writeFileSync(artifact, '<link rel="stylesheet" href="../shared.css"><p>plan</p>');
   assert.equal(store.fileChanged(key), 2);
   assert.deepEqual(events, [
-    { type: "reload", revision: 1 },
-    { type: "reload", revision: 2 },
+    { type: "reload", revision: 1, outside: [] },
+    { type: "reload", revision: 2, outside: ["../shared.css"] },
   ]);
   assert.equal(new SessionStore(dir).status(key).revision, 2);
 });
