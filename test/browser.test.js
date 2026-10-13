@@ -7503,7 +7503,7 @@ test(
       const top = Math.round(rings[0].top - words.top);
       return left <= 0 && left >= -6 && top <= 0 && top >= -6
         ? "round its words"
-        : `${left} px left, ${top} px down of its words`;
+        : `its inner edge ${left}, ${top} px from its words' left and top`;
     };
     const after = async (type, act) => {
       const before = Number(await artifact.eval(`window.seen.${type}`));
