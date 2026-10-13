@@ -7486,8 +7486,9 @@ test(
       addEventListener("scroll", () => window.seen.scroll++, true);
       addEventListener("resize", () => window.seen.resize++);
     })()`);
-    // Where the ring sits against the first 14 characters' boxes, read in one place on both sides.
-    const offset = async (id) => {
+    // Where the ring sits against the first 14 characters' boxes: round them is a ring whose inner
+    // edge stands up to 6 px outside their left and top (the house ring's 2 px offset when drawn).
+    const placed = async (id) => {
       const rings = await ringsOn(artifact);
       const [words] = JSON.parse(
         await artifact.eval(`(() => {
@@ -7497,22 +7498,24 @@ test(
           return JSON.stringify([...range.getClientRects()]);
         })()`),
       );
-      return rings?.length === 1
-        ? { left: Math.round(rings[0].left - words.left), top: Math.round(rings[0].top - words.top) }
-        : rings;
+      if (rings?.length !== 1) return `${rings?.length ?? "no"} rings`;
+      const left = Math.round(rings[0].left - words.left);
+      const top = Math.round(rings[0].top - words.top);
+      return left <= 0 && left >= -6 && top <= 0 && top >= -6
+        ? "round its words"
+        : `${left} px left, ${top} px down of its words`;
     };
     const after = async (type, act) => {
       const before = Number(await artifact.eval(`window.seen.${type}`));
       await act();
       await artifact.waitFor(`window.seen.${type} > ${before}`);
     };
-    // Each move's ring against its words, beside where the ring sat when it was first drawn.
-    const drawnAt = {};
-    const now = {};
+    const where = {};
     for (const [id, scroll] of [
       ["page", "scrollBy(0, 150)"],
       ["boxed", "document.getElementById('box').scrollBy(0, 40)"],
     ]) {
+      // Centred, so the card opens with no scroll to make room for it and the only move is the test's.
       const frameBox = JSON.parse(await page.eval(FRAME_BOX));
       const words = JSON.parse(
         await artifact.eval(`(() => {
@@ -7532,10 +7535,8 @@ test(
       await page.waitFor(
         "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
       );
-      const drawn = await until(() => offset(id), { what: `the ring round the ${id} passage` });
       await after("scroll", () => artifact.eval(scroll));
-      drawnAt[`${id} scrolled`] = drawn;
-      now[`${id} scrolled`] = await offset(id);
+      where[`${id} scrolled`] = await placed(id);
       if (id === "page") {
         // Narrower than the body's 40rem, so the words move left as well as down.
         await after("resize", () =>
@@ -7546,8 +7547,7 @@ test(
             mobile: false,
           }),
         );
-        drawnAt[`${id} resized`] = drawn;
-        now[`${id} resized`] = await offset(id);
+        where[`${id} resized`] = await placed(id);
       }
       await clickOn(page, "document.getElementById('cardCancel')");
       await page.waitFor(
@@ -7556,7 +7556,11 @@ test(
     }
     await page.close();
     rmSync(dirname(file), { recursive: true, force: true });
-    assert.deepEqual(now, drawnAt, "the ring keeps its place against its words");
+    assert.deepEqual(where, {
+      "page scrolled": "round its words",
+      "page resized": "round its words",
+      "boxed scrolled": "round its words",
+    });
   },
 );
 
