@@ -3650,8 +3650,8 @@ for (const [after, first] of REFUSED_FIRST) {
               await page
                 .eval(
                   `JSON.stringify({
-                    text: document.getElementById('cardText').value,
-                    open: !document.getElementById('card').hidden,
+                    text: document.getElementById('cardText')?.value ?? null,
+                    open: document.getElementById('card')?.hidden === false,
                   })`,
                 )
                 .catch(unlessReloaded),
