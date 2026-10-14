@@ -359,6 +359,52 @@ test(
   },
 );
 
+// A key the daemon does not hold is what a reloaded link to an evicted review asks for.
+test(
+  "a reloaded link to a review the daemon no longer holds says the review ended, in light and dark",
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
+  async () => {
+    const { port, token } = lab.serverInfo();
+    const page = await browser.page("about:blank");
+    const looks = {};
+    try {
+      for (const scheme of ["light", "dark"]) {
+        await page.send("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-color-scheme", value: scheme }],
+        });
+        // Not `navigate`, whose load event never fired for the JSON a spent link was answered with.
+        await page.send("Page.navigate", {
+          url: `http://127.0.0.1:${port}/session/0000000000000000?${scheme}#${token}`,
+        });
+        await page.waitFor(
+          `location.search === "?${scheme}" && document.readyState === "complete"`,
+        );
+        looks[scheme] = JSON.parse(
+          await page.eval(`JSON.stringify({
+            title: document.title,
+            text: document.body.innerText.trim(),
+            background: getComputedStyle(document.body).backgroundColor,
+            color: getComputedStyle(document.body).color,
+          })`),
+        );
+      }
+    } finally {
+      await page.close();
+    }
+    for (const look of Object.values(looks)) {
+      assert.equal(
+        look.text,
+        "This review has ended\n\n" +
+          "This link belongs to a review that is no longer open, so there is nothing left to show.\n\n" +
+          "To review the file again, ask your agent to open it once more. It will give you a fresh link.",
+      );
+      assert.equal(look.title, "Review ended");
+    }
+    assert.notEqual(looks.light.background, looks.dark.background);
+    assert.notEqual(looks.light.color, looks.dark.color);
+  },
+);
+
 /** The reference implementation's snapshot: every element to depth 6 with 80 characters of text. */
 const REFERENCE_SNAPSHOT = `(() => {
   const lines = [];
