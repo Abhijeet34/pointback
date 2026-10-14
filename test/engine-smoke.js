@@ -33,6 +33,10 @@ const STEP_MS = 30_000;
 const NOTE = "Make the title shorter";
 // `ACTIVATION_MS` in src/browser/chrome.js: how long the chrome hears nothing from the page after a key.
 const GATE_MS = 5000;
+// Playwright holds every element action until its record of the main frame's navigation clears,
+// and in Firefox that record can stay set after the review committed (docs/ENGINEERING-NOTES.md).
+// Every act waits on the chrome's own word before acting, so the check guards nothing here.
+process.env.PLAYWRIGHT_SKIP_NAVIGATION_CHECK = "1";
 
 async function smoke(engine) {
   const lab = isolatedEnv();
@@ -42,31 +46,29 @@ async function smoke(engine) {
   try {
     browser = await ENGINES[engine].launch({ timeout: STEP_MS * 2 });
     named = `${engine} ${browser.version()}`;
-    await act(browser, (page) => coreAct(page, lab));
-    await act(browser, (page) => enterIsNotThePages(page, lab));
-    await act(browser, (page) => clickInsideTheGate(page, lab));
-    await act(browser, (page) => endKeepsTheCard(page, lab));
-    await act(browser, (page) => readingPlace(page, lab, engine));
-    await act(browser, (page) => wordPage(page, lab, engine));
-    await act(browser, (page) => pressOverThePage(page, lab));
-    await act(browser, (page) => tabFromTheNote(page, lab, engine));
-    await act(browser, (page) => keysAfterAMouseNote(page, lab, engine));
-    const control = await act(browser, (page) => keysReachThePage(page, lab, engine));
+    await act(browser, coreAct, lab);
+    await act(browser, enterIsNotThePages, lab);
+    await act(browser, clickInsideTheGate, lab);
+    await act(browser, endKeepsTheCard, lab);
+    await act(browser, readingPlace, lab, engine);
+    await act(browser, wordPage, lab, engine);
+    await act(browser, pressOverThePage, lab);
+    await act(browser, tabFromTheNote, lab, engine);
+    await act(browser, keysAfterAMouseNote, lab, engine);
+    const control = await act(browser, keysReachThePage, lab, engine);
     const probes = [];
     const ms = [];
     for (let round = 1; round <= UNLOAD_ROUNDS; round += 1) {
-      const result = await act(browser, (page) => unloadRound(page, lab, engine, round));
+      const result = await act(browser, unloadRound, lab, engine, round);
       probes.push(result.probe);
       ms.push(result.ms);
     }
-    await act(browser, (page) => focusLeavesNoteAlone(page, lab, engine));
+    await act(browser, focusLeavesNoteAlone, lab, engine);
     await act(browser, addAfterAnIdle);
-    await act(browser, (page) => faceRefusedOffline(page, lab));
+    await act(browser, faceRefusedOffline, lab);
     const schemes = [];
     for (const colorScheme of ["light", "dark"]) {
-      schemes.push(
-        await act(browser, (page) => followsScheme(page, lab, colorScheme), { colorScheme }),
-      );
+      schemes.push(await act(browser, { colorScheme }, followsScheme, lab, colorScheme));
     }
     return `${named} passed; ${schemes.join("; ")}; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds; probe keys reaching the page per round ${probes.join(", ")}; move to unloaded ms per round ${ms.join(", ")}; the key channel reported ${control} keys of the page's own`;
   } catch (error) {
@@ -79,15 +81,26 @@ async function smoke(engine) {
 
 /**
  * Each act on a page of its own, closed when the act ends, so no act inherits another's tab. A
- * failed act says what the chrome showed, as `describe` in test/helpers/cdp.js does for Chromium:
- * a timeout alone cannot tell a key that missed the card from a page that never loaded.
+ * failed act names itself, its line and the locator it waited on in the verdict's first line, the
+ * only one the job summary keeps, and says what the chrome showed, as `describe` in
+ * test/helpers/cdp.js does for Chromium: a timeout alone cannot tell a key that missed the card from
+ * a page that never loaded.
  */
-async function act(browser, fn, options = {}) {
+async function act(browser, ...call) {
+  // An act may open its page with context options first, as followsScheme does its colour scheme.
+  const options = typeof call[0] === "function" ? {} : call.shift();
+  const [fn, ...args] = call;
   const page = await browser.newPage(options);
   page.setDefaultTimeout(STEP_MS);
   try {
-    return await fn(page);
+    return await fn(page, ...args);
   } catch (error) {
+    // A helper's timer leaves no line of this file in the stack, and a call log may be coloured.
+    const line = error.stack?.match(/engine-smoke\.js:\d+/)?.[0];
+    const locator = error.message?.match(/waiting for (locator\(.*\))/)?.[1];
+    error.step = [fn.name, line && `at test/${line}`, locator && `on ${locator}`]
+      .filter(Boolean)
+      .join(" ");
     const shown = await page
       .evaluate(() => ({
         url: location.href.replace(/#.*/, "#..."),
@@ -109,6 +122,8 @@ async function act(browser, fn, options = {}) {
         add: document.getElementById("cardAdd")?.disabled ? "disabled" : "enabled",
         stream: document.getElementById("presence")?.dataset.state,
         status: document.getElementById("status")?.textContent,
+        // A chrome file refused after boot asks for a reload (src/browser/recover.js).
+        recover: sessionStorage.getItem("recoverReloaded"),
       }))
       .catch((reason) => `unreadable: ${reason.message.split("\n")[0]}`);
     // The verdict prints the stack, which V8 composed when the error was made.
@@ -806,7 +821,7 @@ for (const engine of requested.length ? requested : Object.keys(ENGINES)) {
   // One line per engine, always, which the workflow lifts into the job summary.
   const verdict = await smoke(engine).catch((error) => {
     failed = true;
-    return `${error.named ?? engine} FAILED: ${error.stack ?? error}`;
+    return `${error.named ?? engine} FAILED${error.step ? ` in ${error.step}` : ""}: ${error.stack ?? error}`;
   });
   console.log(`engine smoke: ${verdict}`);
 }
