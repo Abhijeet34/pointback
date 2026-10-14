@@ -25,7 +25,8 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   Drive Annotate with the CDP harness, never chrome-devtools-axi, which never moves focus into the out-of-process frame.
   The harness's launch keeps the browser out of the system keychain (`--use-mock-keychain`, `--password-store=basic` in `launchBrowser`); without them macOS asks the developer for their login password mid-suite.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
-  The browser suite shares one daemon, which never evicts a review holding notes and refuses an open past `limits.sessions`; its `afterEach` releases what each test leaves.
+  The browser suite shares one daemon, which never evicts a review holding notes and refuses an open past `limits.sessions`; its `afterEach` releases what each test leaves, its tabs, interception and listeners first (`release` in `test/helpers/cdp.js`).
+  A test spawns a CLI through `cli` and a browser through `launchBrowser`, which `test/helpers/interrupt.js` ends, with each `isolatedEnv` daemon, when its file is interrupted (`test/interrupt.test.js`).
 - A record or lock standing for a daemon that exited names `DEAD_PID` (`test/helpers/stall.js`), never the pid of a process the test watched exit, which Windows can hand to the next process it starts (`docs/ENGINEERING-NOTES.md`).
 - A test that mocks `setTimeout` makes its HTTP requests with `node:http`, never `fetch`, which stalls on a reused connection under the mock on Node 24.20.0 (`docs/ENGINEERING-NOTES.md`).
 - `clickIn` measures its point after the pointer wait and fails unless the press landed inside its element, with what it hit and every scroll the page made meanwhile (`RECORD_PRESS` in `test/browser.test.js`, `docs/ENGINEERING-NOTES.md`); never retry a click or loosen a geometry check around it.
