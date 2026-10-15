@@ -1449,17 +1449,23 @@ function hearKeys(page) {
 
 /**
  * Waits for the page to report that its own field holds the focus. The chrome can unload the page for
- * that move before the window comes back, which removes the page's target, so the page is never asked.
+ * that move before the window comes back, which removes the page's target, so the page is never asked;
+ * and that removal can outrun the report, which then never arrives (windows-2025, hunt 38285518351),
+ * so the page's target gone is the move handled too: only the chrome's unload for it removes the page.
  */
-const pageTookFocus = (what) => until(() => focusReports.at(-1)?.id === "field", { what });
+const pageTookFocus = (page, artifact, what) =>
+  until(() => focusReports.at(-1)?.id === "field" || !page.children.has(artifact.sessionId), {
+    what,
+  });
 
 /** Real key presses, which go wherever the browser has the focus. */
-async function press(page, word) {
+async function press(page, word, { native } = {}) {
   for (const ch of word) {
     await page.key(ch, {
       code: `Key${ch.toUpperCase()}`,
       keyCode: ch.toUpperCase().charCodeAt(0),
       text: ch,
+      native,
     });
   }
 }
@@ -1740,33 +1746,6 @@ test(
 );
 
 test(
-  "focus handling leaves a move into the page alone after a press outside the note",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const { session } = await focusCallsReview();
-    const { page, artifact } = await openReview(session.url);
-    await pointAt(page, artifact, "#p1");
-    await clickOn(page, "document.getElementById('appName')");
-    await page.waitFor("document.activeElement === document.body");
-    // The press's own focus-out is handled a task later; this waits for that task before the move.
-    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
-    await page.eval("document.getElementById('artifact').focus()");
-    await page.waitFor("document.activeElement === document.getElementById('artifact')");
-    // The blur's own put-back of a note runs a task later; this waits for that task.
-    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
-    const state = JSON.parse(
-      await page.eval(`JSON.stringify({
-        shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
-        cover: document.getElementById("cover").hidden,
-        focus: document.activeElement.id,
-      })`),
-    );
-    await page.close();
-    assert.deepEqual(state, { shown: true, cover: true, focus: "artifact" });
-  },
-);
-
-test(
   "a move from a note into the page unloads it when the move names the frame",
   { skip: !executable && "no browser found" },
   async () => {
@@ -1843,6 +1822,29 @@ test(
 );
 
 test(
+  "a reviewer's Shift+Tab into the page keeps it loaded when the page's frame reports the focus after the chrome's next task",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    // Chromium on a loaded runner moves the focus into the out-of-process frame only after the chrome's
+    // next task, which then sees it on nothing (ubuntu-24.04, run 38260138769). Running the chrome's
+    // tasks at the note's focus-out, before the frame has it, makes that order certain.
+    await holdTasks(page);
+    await page.eval(`document.addEventListener("focusout", () => runHeld(), { once: true })`);
+    await page.key("Tab", { keyCode: 9, modifiers: 8 });
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    const ran = JSON.parse(await page.eval("JSON.stringify(heldTasks.map((task) => task.focus))"));
+    assert.ok(ran.includes("BODY"), `a chrome task ran with the focus on nothing: ${ran}`);
+    // The chrome's check for a page's move, where it would run, is a task after the move.
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
+    await page.close();
+  },
+);
+
+test(
   "a page that takes the focus while the window is inactive is unloaded when the window comes back",
   { skip: !executable && "no browser found" },
   async () => {
@@ -1854,8 +1856,16 @@ test(
     await until(async () => !(await page.eval("document.hasFocus()")), {
       what: "the review window to lose focus",
     });
-    await artifact.eval("globalThis.calling = true");
-    await pageTookFocus("the page to take the focus in its own field while the window is inactive");
+    // Headless Chromium leaves a window the focus while another window has it, so the window is left
+    // for another tab, which hides the page. A hidden page's timers ran its 20 ms call at a median of
+    // 5 s with a busy process per core (windows-2025, hunt 38282746167), so the call is made from a
+    // task of its own; the answer to this request comes before the call is made.
+    await artifact.eval("takeFocusSoon()");
+    await pageTookFocus(
+      page,
+      artifact,
+      "the page to take the focus in its own field while the window is inactive",
+    );
     await page.front();
     const result = await writeNote(
       page,
@@ -2042,7 +2052,11 @@ for (const late of [false, true]) {
       await until(async () => !(await page.eval("document.hasFocus()")), {
         what: "the review window to lose focus",
       });
-      await pageTookFocus("the page to take the focus in its own field as the window leaves");
+      await pageTookFocus(
+        page,
+        artifact,
+        "the page to take the focus in its own field as the window leaves",
+      );
       if (late) {
         await page.waitFor("document.activeElement === document.getElementById('artifact')", {
           what: "the chrome to hold the page's move while the window is away",
@@ -2096,8 +2110,11 @@ test(
   },
 );
 
+// A press on the chrome's own words leaves the focus on nothing, which a page's focus() leaves with no
+// focus-out to hear, so the page stays shielded while the note is open, and the reviewer's press over it
+// hands it the focus first.
 test(
-  "a press on the page after a press on the chrome reaches the page",
+  "a press over the page after a press on the chrome hands the page the focus, and the next one reaches it",
   { skip: !executable && "no browser found" },
   async () => {
     const { session } = await focusCallsReview();
@@ -2112,17 +2129,21 @@ test(
       await page.eval(`JSON.stringify((() => {
         const box = document.getElementById("artifact").getBoundingClientRect();
         for (const y of [box.top + 8, box.bottom - 8, box.top + box.height / 2])
-          for (const x of [box.left + 8, box.right - 8, box.left + box.width / 2]) {
-            const hit = document.elementFromPoint(x, y)?.id;
-            if (hit === "shield" || hit === "artifact") return { x, y };
-          }
+          for (const x of [box.left + 8, box.right - 8, box.left + box.width / 2])
+            if (document.elementFromPoint(x, y)?.id === "shield") return { x, y };
         return null;
       })())`),
     );
-    assert.ok(at, "a point of the page is not under the card");
+    assert.ok(at, "a point of the page is under the shield");
+    await page.click(at.x, at.y);
+    await page.waitFor(
+      "document.activeElement === document.getElementById('artifact') && document.getElementById('shield').hidden",
+    );
+    await page.pointerInto(artifact, at);
     await page.click(at.x, at.y);
     await artifact.waitFor("globalThis.pressed === true");
     assert.equal(await page.eval("document.getElementById('cover').hidden"), true);
+    assert.notEqual(await pageAddress(page), "about:blank", "the page stays loaded");
     await page.close();
   },
 );
@@ -3145,7 +3166,10 @@ test(
 // 37251442770 attempt 20, a busy page heard that only after the reviewer had opened a margin note to
 // edit it, and took the focus out of the editor; a key pressed before the chrome's next task then
 // reached the page. The page hears the close only once the reviewer has typed, and the chrome, should
-// the page take the focus, is held at the task that answers it while Enter is pressed.
+// the page take the focus, is held at the task that answers it while Enter is pressed. The hold is set
+// before the Edit press, whose margin rebuild the chrome once checked as a move of the page's; that
+// check's task can run after several commands to the chrome, and a hold set later then took it and
+// left every command unanswered (the local gate, and hunts 38260124603 and 38260138769).
 test(
   "a page that hears the card close late gets no key from a note being edited in the margin, and comes back once it is saved",
   { skip: !executable && "no browser found" },
@@ -3161,15 +3185,26 @@ test(
     await page.type("Shorter title");
     await page.enter();
     await page.waitFor("document.getElementById('card').hidden");
+    const answer = await holdChromeAt(page, "if ((now || document.activeElement === frame)");
     await clickOn(page, "document.querySelector('.mark-edit')");
     await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
     await page.type(", four words at most");
     await page.eval("delete document.body.dataset.revision");
-    const answer = await holdChromeAt(page, "if (document.activeElement !== frame || unloaded");
+    // Every task the Edit press queued has run, and none checked a move of the page's, which has not
+    // heard the close yet. A held chrome answers nothing, so the wait for its tasks is raced with the hold.
+    let ran = false;
+    const tasks = page
+      .eval("new Promise((resolve) => setTimeout(resolve, 0))")
+      .then(() => (ran = true));
+    await until(() => ran || answer.held, { what: "the chrome to run the Edit press's tasks" });
+    if (answer.held) {
+      await answer.release();
+      assert.fail("the chrome took its own margin rebuild for a move of the page's");
+    }
+    await tasks;
     // The chrome covers the page in the task it takes it out in; a page out of the wrapper's document
     // has nothing left to hear.
-    if (await page.eval("document.getElementById('cover').hidden"))
-      await artifact.eval("hearNow()");
+    if (await page.eval("document.getElementById('cover').hidden")) await hearClose(artifact);
     else
       await until(async () => (await pageAddress(page)) === "about:blank", {
         what: "the page out",
@@ -3191,6 +3226,52 @@ test(
       document.getElementById("cover").hidden`);
     const back = await page.frame();
     assert.match(await back.eval("location.href"), /\/plan\.html\?r=0$/);
+    await page.close();
+  },
+);
+
+// On macos-15, hunt 38260129160 attempt 5, the chrome ran the tasks the Edit press queued only after
+// the reviewer's next press over the page had handed it the focus. Holding them until then makes that
+// order certain.
+test(
+  "a press over the page just after a press on Edit keeps the page loaded, however late the chrome runs its tasks",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Shorter title");
+    await holdTasks(page);
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+    await pressOverPage(page, false);
+    await page.eval("runHeld()");
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
+    await page.close();
+  },
+);
+
+test(
+  "a press over the page just after a press on the card's words keeps the page loaded, however late the chrome runs its tasks",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await holdTasks(page);
+    // The card's own words take no focus, so a press on them leaves the focus on the chrome's body.
+    const at = JSON.parse(
+      await page.eval(`JSON.stringify((() => {
+        const box = document.getElementById("cardTarget").getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      })())`),
+    );
+    await page.click(at.x, at.y);
+    await page.waitFor("document.activeElement === document.body");
+    await pressOverPage(page, false);
+    await page.eval("runHeld()");
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
     await page.close();
   },
 );
@@ -3297,6 +3378,136 @@ test(
       "cardText",
       "billing",
     ]);
+    await page.close();
+  },
+);
+
+/**
+ * Opens a card by keyboard on `#p1`, the way a reviewer does, with the page hearing the chrome late
+ * from then on (`HEARS_LATE`), and types a note in it.
+ */
+async function keyboardNoteHeardLate(page, artifact) {
+  await pointAt(page, artifact, "#title");
+  await page.key("Escape", { keyCode: 27 });
+  await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
+  await page.tab();
+  await artifact.waitFor("document.activeElement.id === 'p1'");
+  await artifact.eval(HEARS_LATE);
+  await page.enter();
+  await page.waitFor(
+    "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+  );
+  await page.type("Say which queue");
+}
+
+// Issue 57, first path: the page puts the focus back on an element noted by keyboard when it hears the
+// card close, which crosses the wrapper and can land after the reviewer's next key. In Chromium that
+// Tab never reaches the page, whose document holds no focus until its own refocus, and moves on to the
+// margin; Firefox takes it into the page (the engine smoke's `tabBeforeTheClose`).
+test(
+  "a Tab the reviewer presses before the page hears the card close is not undone",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await keyboardNoteHeardLate(page, artifact);
+    await page.enter();
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.activeElement === document.getElementById('artifact')",
+    );
+    await page.tab();
+    await page.waitFor("document.activeElement.classList.contains('mark-target')");
+    // Synchronous: the page has handled the close once this returns.
+    await hearClose(artifact);
+    await page.waitFor("document.body.dataset.handoff === 'settled'");
+    assert.equal(await page.eval("document.activeElement.className"), "mark-target");
+    await page.close();
+  },
+);
+
+// Issue 57, second path: the reviewer moves to a control of the chrome before the page hears the close.
+test(
+  "a chrome control the reviewer moves to before the page hears the card close keeps the focus",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await keyboardNoteHeardLate(page, artifact);
+    await page.eval(
+      "document.getElementById('cardCancel').click(); document.getElementById('annotate').focus()",
+    );
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.activeElement.id === 'annotate'",
+    );
+    await hearClose(artifact);
+    // The page's acknowledgement settles the hand-off, and a pull taken back settles it after the put-back.
+    await page.waitFor("document.body.dataset.handoff === 'settled'");
+    assert.equal(await page.eval("document.activeElement.id"), "annotate");
+    assert.notEqual(await pageAddress(page), "about:blank", "the page stays loaded");
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus while a press on the card has left it on nothing is unloaded until the note is done",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    // The card's own words take no focus, so a press on them leaves the focus on the chrome's body.
+    const at = JSON.parse(
+      await page.eval(`JSON.stringify((() => {
+        const box = document.getElementById("cardTarget").getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      })())`),
+    );
+    await page.click(at.x, at.y);
+    await page.waitFor("document.activeElement === document.body");
+    await artifact.eval("globalThis.calling = true");
+    const result = await writeNote(
+      page,
+      "document.getElementById('cardText')",
+      "document.getElementById('card').hidden",
+    );
+    assert.deepEqual(
+      { text: result.text, keys: result.keys, kept: result.kept },
+      { text: "abc", keys: 0, kept: true },
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus from a chrome control while a note is open is unloaded until the note is done",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await page.eval("document.getElementById('annotate').focus()");
+    await page.waitFor("document.activeElement.id === 'annotate'");
+    const quiet = keyReports.length;
+    await artifact.eval("globalThis.calling = true");
+    // The focus goes back to the control it was taken from, once the page is out.
+    await page.waitFor(`document.activeElement.id === "annotate" &&
+      getComputedStyle(document.getElementById("artifact")).display === "none" &&
+      document.getElementById("coverText").textContent === ${JSON.stringify(UNLOADED_LINE)}`);
+    await until(async () => (await pageAddress(page)) === "about:blank", {
+      what: "the page's frame to hold about:blank",
+    });
+    // Nothing in the chrome handles these, and headless Chromium on macOS sent such keys back to the
+    // focus until they reached the note (macos-15, hunt 38260129160 attempts 8 and 12).
+    await press(page, "xyz", { native: false });
+    await clickOn(page, "document.getElementById('cardText')");
+    await page.waitFor("document.activeElement.id === 'cardText'");
+    await press(page, "def");
+    assert.equal(await page.eval("document.getElementById('cardText').value"), "def");
+    await page.enter();
+    await page.waitFor(
+      `document.getElementById('card').hidden && getComputedStyle(document.getElementById("artifact")).display !== "none" && document.getElementById("cover").hidden`,
+    );
+    assert.equal(keyReports.length - quiet, 0, "no key reached the page");
     await page.close();
   },
 );
@@ -5639,8 +5850,8 @@ async function holdCloseRelay(page) {
 /**
  * Has the page hear the chrome late, as a busy page does, without pausing it: the SDK hears the chrome
  * only from the real `parent`, so with a stand-in there every message the chrome sends waits until
- * `hearNow()` hands it on. The stand-in also reports what a key in the page made it propose, since the
- * SDK stops a key it acts on before any listener added after it.
+ * `hearNow()` hands it on, and `unheard()` names what waits. The stand-in also reports what a key in
+ * the page made it propose, since the SDK stops a key it acts on before any listener added after it.
  */
 const HEARS_LATE = `(() => {
   const realParent = window.parent;
@@ -5657,6 +5868,7 @@ const HEARS_LATE = `(() => {
     },
   };
   window.parent = standIn;
+  globalThis.unheard = () => waiting.map((event) => event.data?.type);
   globalThis.hearNow = () => {
     window.parent = realParent;
     replaying = true;
@@ -5666,6 +5878,16 @@ const HEARS_LATE = `(() => {
     window.parent = standIn;
   };
 })()`;
+
+/**
+ * Has a page that hears late (`HEARS_LATE`) hear the card close, once the close has reached it: it
+ * crosses the wrapper's process on its way, so the chrome can show the card closed while it is still
+ * in flight, and a hand-on before it arrives hands on nothing (windows-2025, hunt 38271034344).
+ */
+async function hearClose(artifact) {
+  await artifact.waitFor("unheard().includes('compose')");
+  await artifact.eval("hearNow()");
+}
 
 /** Collects what `HEARS_LATE` reports the page proposed, in the order the page posts it. */
 async function pageProposals(page, artifact) {

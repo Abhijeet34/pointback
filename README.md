@@ -251,7 +251,7 @@ A first load that comes back unannounced is asked for once more before that, and
 While a note being written holds a reload back, a refused first load of the page gets the cover at once, without the second ask.
 A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled; it also waits while the browser is offline or the tab is not following its review, since the browser would refuse that reload too, and runs once both are back. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
 While a note is being written, a shield lies over the page: a press on it hands the page the focus, and the wheel over it scrolls the page by the same distance while the focus stays in the note.
-A page can also take the keyboard from a note being written, by calling `focus()` on its own elements.
+A page can also take the keyboard while a note is open, by calling `focus()` on its own elements, whether the focus was in the note, on a chrome control, or on nothing; the reviewer's own move into the page, by a press on the shield or a Tab, is left alone.
 The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
 A note opened before the page has heard the last card close unloads the page at once, with a line saying why, and the page comes back when that note is done; that unload is not counted against the page.
 
