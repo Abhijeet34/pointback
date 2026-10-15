@@ -63,7 +63,7 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
   });
   assert.deepEqual(
     one.lines.at(-1),
-    watching ? { type: "reload", revision: 1 } : { type: "reload-off" },
+    watching ? { type: "reload", revision: 1, outside: [] } : { type: "reload-off" },
     watching
       ? "a saved file reloads the tab"
       : "no watching here, so the tab is told live reload is off rather than left waiting on it",
@@ -82,8 +82,12 @@ test("a second tab takes the review, and closing it hands the review back", () =
   assert.deepEqual(one.types(), ["hello", "superseded"], "the first tab is told at once");
   assert.deepEqual(two.types(), ["hello"]);
   store.fileChanged(key);
-  assert.deepEqual(one.lines.at(-1), { type: "reload", revision: 1 }, "both tabs stay informed");
-  assert.deepEqual(two.lines.at(-1), { type: "reload", revision: 1 });
+  assert.deepEqual(
+    one.lines.at(-1),
+    { type: "reload", revision: 1, outside: [] },
+    "both tabs stay informed",
+  );
+  assert.deepEqual(two.lines.at(-1), { type: "reload", revision: 1, outside: [] });
   two.detach();
   assert.deepEqual(one.lines.at(-1), {
     type: "current",

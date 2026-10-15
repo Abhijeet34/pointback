@@ -89,6 +89,9 @@ let liveReload = true;
 let connection = "lost";
 // Lost because the server refused the stream for too many open (4429), not because nothing answered.
 let crowded = false;
+// Whether this stream's hello is in: a server that evicted the review opens the stream and only
+// then refuses it with 4404, so an open alone does not say the review is there.
+let following = false;
 let editing = false;
 let deferredReload = false;
 // The ids of the notes a send has in flight: Send stays shut until the stream reports them sent,
@@ -249,9 +252,9 @@ function show() {
 function holdsReload() {
   return editing || unloaded || (tookFocus && editingNote !== null);
 }
-// A reload while the review does not answer lands on the browser's error page, so it waits for the
-// connection to come back as well.
-globalThis.recover?.hold(() => holdsReload() || editingNote !== null || connection !== "live");
+// A reload while the review does not answer lands on the browser's error page, and one before the
+// hello on a review evicted meanwhile lands on the server's 404, so it waits for the hello as well.
+globalThis.recover?.hold(() => holdsReload() || editingNote !== null || !following);
 
 function showPage() {
   if (holdsReload()) {
@@ -297,15 +300,18 @@ async function listen() {
         // with nothing to close, is done here, not left to swallow the next ordinary close.
         retaking = false;
         crowded = false;
-        // Published for the same reason as ready: `connection` reads live from the health check on,
-        // before the stream opens, and a stream connect Windows refuses is lost for a pause then
-        // retried, so only this says the page is following its review (docs/ENGINEERING-NOTES.md).
+        // Published for the same reason as ready: `connection` reads live from the health check on, a
+        // stream connect Windows refuses is lost for a pause then retried, and the hello rebuilds the
+        // margin the page loaded with, so only this, called once the hello is applied, says the page
+        // follows its review with the review's own state in (docs/ENGINEERING-NOTES.md).
+        following = true;
         document.body.dataset.stream = "open";
         // A failure the lost connection caused is over once it is back.
         problem = null;
         cardProblem = null;
         render();
       });
+      following = false;
       delete document.body.dataset.stream;
     } catch {
       // Nothing answered the health check: the daemon is down or restarting.
@@ -388,6 +394,7 @@ function apply(event) {
     letCardGo();
     followAnnotate();
   } else if (event.type === "reload") {
+    tellOutside(event.outside);
     // A reload means the file is there to read, including one that came back after it was gone.
     fileGone = false;
     revision = event.revision;
@@ -490,6 +497,11 @@ function render() {
   annotateSwitch.disabled = annotateRuledOut();
   // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
   cardAdd.disabled = offline;
+  // So do the margin's changes to a note: each is a call to the review, as Send is.
+  const changes = /** @type {NodeListOf<HTMLButtonElement>} */ (
+    marks.querySelectorAll(".mark-edit, .mark-remove, .mark-editor [type=submit]")
+  );
+  for (const button of changes) button.disabled = offline;
   renderReason();
   // Ending is a call to the review, so it waits for the connection as Send does.
   endButton.disabled = ended !== null || fileGone || offline;
@@ -885,6 +897,8 @@ function editor(n) {
   form.append(box, row);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    // Enter submits past a Save that is waiting for the connection; the words stay in the box.
+    if (save.disabled) return;
     await saveEdit();
   });
   return form;

@@ -89,7 +89,7 @@ This applies to the web UI and the API as well, which sign with GitHub's own key
 
 The gate is `.githooks/pre-push`, which refuses a push before anything reaches the remote.
 The rules are `.gitleaks.toml`.
-**Both files are copies of one canonical gate maintained in `Abhijeet34/gates` and shared across its siblings, and are never hand-edited here.**
+**These files, and `.githooks/commit-msg` (which refuses an agent co-author or generated-by line in a commit message), are copies of one canonical gate maintained in `Abhijeet34/gates` and shared across its siblings, and are never hand-edited here.**
 A change belongs upstream and reaches this tree as a re-sync.
 The hook is also inert until the clone points at it, which no checkout does for you and which the sync does as its last step:
 
