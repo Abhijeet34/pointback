@@ -50,6 +50,7 @@ test("a tab is greeted with the state it must match, and a saved file reloads it
     gone: false,
     drafts: [],
     outside: [],
+    liveReload: true,
   });
   await armed();
   writeFileSync(artifact, "<p>two</p>");
@@ -98,6 +99,7 @@ test("a second tab takes the review, and closing it hands the review back", () =
     gone: false,
     drafts: [],
     outside: [],
+    liveReload: true,
   });
   // A tab that was never current leaves without disturbing the one that is.
   const three = tab(streams, key);
