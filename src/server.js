@@ -64,6 +64,7 @@ const staticFiles = new Map(
 const chromeHtml = readFileSync(new URL("chrome.html", browserDir), "utf8");
 const wrapperHtml = readFileSync(new URL("wrapper.html", browserDir), "utf8");
 const missingHtml = readFileSync(new URL("missing.html", browserDir), "utf8");
+const spentHtml = readFileSync(new URL("spent.html", browserDir), "utf8");
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -265,12 +266,19 @@ async function route(req, res, ctx) {
 
   const chrome = pathname.match(/^\/session\/([^/]+)$/);
   if (req.method === "GET" && chrome) {
-    ctx.store.get(chrome[1]);
-    res.writeHead(200, {
+    // A reviewer reloading the link of a review the daemon let go of reads why, not an API error.
+    let held = true;
+    try {
+      ctx.store.get(chrome[1]);
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      held = false;
+    }
+    res.writeHead(held ? 200 : 404, {
       ...chromeHeaders(req.headers.host),
       "content-type": "text/html; charset=utf-8",
     });
-    return res.end(chromeHtml);
+    return res.end(held ? chromeHtml : spentHtml);
   }
   if (req.method === "GET" && pathname === "/wrapper.html") {
     res.writeHead(200, {

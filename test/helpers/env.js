@@ -1,10 +1,11 @@
 // Every test that touches the daemon gets its own state directory and an ephemeral port,
 // so suites can run in parallel and never see the developer's real ~/.pointback.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ownChild, ownCleanup } from "./interrupt.js";
 
 export const bin = fileURLToPath(new URL("../../bin/pointback.js", import.meta.url));
 export const fixture = fileURLToPath(new URL("../fixtures/plan.html", import.meta.url));
@@ -19,6 +20,19 @@ export function isolatedEnv(extra = {}) {
     POINTBACK_IDLE_MS: "60000",
     ...extra,
   };
+  const remove = () =>
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  // A daemon a test made refuse its stop is named by the refusal, alive and on its port a moment ago.
+  const interrupted = ownCleanup(() => {
+    const { stdout } = spawnSync(process.execPath, [bin, "stop"], {
+      env,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    const { status, pid } = JSON.parse(stdout || "{}");
+    if (status === "refused" && Number.isInteger(pid)) process.kill(pid, "SIGKILL");
+    remove();
+  });
   return {
     dir,
     env,
@@ -28,7 +42,8 @@ export function isolatedEnv(extra = {}) {
       // `stop` waits for its daemon to exit, but a daemon a test killed, or one `stop` reported
       // refused, may not have let go of the state directory yet, and Windows answers EPERM to a
       // removal until it has. Same retry loop and same reason as the browser profile in helpers/cdp.js.
-      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+      remove();
+      interrupted();
     },
   };
 }
@@ -40,7 +55,7 @@ export function isolatedEnv(extra = {}) {
  */
 export function cli(args, env, { timeoutMs = 30_000 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bin, ...args], { env });
+    const child = ownChild(spawn(process.execPath, [bin, ...args], { env }));
     let stdout = "";
     let stderr = "";
     const deadline = setTimeout(() => {
