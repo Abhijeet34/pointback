@@ -627,6 +627,7 @@ test("the event stream greets a tab, supersedes the older one and is capped", as
     gone: false,
     drafts: [],
     outside: [],
+    liveReload: true,
   });
   const second = await eventStream(`/api/${opened.key}/events`);
   assert.equal((await second.next()).type, "hello");

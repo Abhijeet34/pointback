@@ -1449,17 +1449,23 @@ function hearKeys(page) {
 
 /**
  * Waits for the page to report that its own field holds the focus. The chrome can unload the page for
- * that move before the window comes back, which removes the page's target, so the page is never asked.
+ * that move before the window comes back, which removes the page's target, so the page is never asked;
+ * and that removal can outrun the report, which then never arrives (windows-2025, hunt 38285518351),
+ * so the page's target gone is the move handled too: only the chrome's unload for it removes the page.
  */
-const pageTookFocus = (what) => until(() => focusReports.at(-1)?.id === "field", { what });
+const pageTookFocus = (page, artifact, what) =>
+  until(() => focusReports.at(-1)?.id === "field" || !page.children.has(artifact.sessionId), {
+    what,
+  });
 
 /** Real key presses, which go wherever the browser has the focus. */
-async function press(page, word) {
+async function press(page, word, { native } = {}) {
   for (const ch of word) {
     await page.key(ch, {
       code: `Key${ch.toUpperCase()}`,
       keyCode: ch.toUpperCase().charCodeAt(0),
       text: ch,
+      native,
     });
   }
 }
@@ -1740,33 +1746,6 @@ test(
 );
 
 test(
-  "focus handling leaves a move into the page alone after a press outside the note",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const { session } = await focusCallsReview();
-    const { page, artifact } = await openReview(session.url);
-    await pointAt(page, artifact, "#p1");
-    await clickOn(page, "document.getElementById('appName')");
-    await page.waitFor("document.activeElement === document.body");
-    // The press's own focus-out is handled a task later; this waits for that task before the move.
-    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
-    await page.eval("document.getElementById('artifact').focus()");
-    await page.waitFor("document.activeElement === document.getElementById('artifact')");
-    // The blur's own put-back of a note runs a task later; this waits for that task.
-    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
-    const state = JSON.parse(
-      await page.eval(`JSON.stringify({
-        shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
-        cover: document.getElementById("cover").hidden,
-        focus: document.activeElement.id,
-      })`),
-    );
-    await page.close();
-    assert.deepEqual(state, { shown: true, cover: true, focus: "artifact" });
-  },
-);
-
-test(
   "a move from a note into the page unloads it when the move names the frame",
   { skip: !executable && "no browser found" },
   async () => {
@@ -1843,6 +1822,29 @@ test(
 );
 
 test(
+  "a reviewer's Shift+Tab into the page keeps it loaded when the page's frame reports the focus after the chrome's next task",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    // Chromium on a loaded runner moves the focus into the out-of-process frame only after the chrome's
+    // next task, which then sees it on nothing (ubuntu-24.04, run 38260138769). Running the chrome's
+    // tasks at the note's focus-out, before the frame has it, makes that order certain.
+    await holdTasks(page);
+    await page.eval(`document.addEventListener("focusout", () => runHeld(), { once: true })`);
+    await page.key("Tab", { keyCode: 9, modifiers: 8 });
+    await page.waitFor("document.activeElement === document.getElementById('artifact')");
+    const ran = JSON.parse(await page.eval("JSON.stringify(heldTasks.map((task) => task.focus))"));
+    assert.ok(ran.includes("BODY"), `a chrome task ran with the focus on nothing: ${ran}`);
+    // The chrome's check for a page's move, where it would run, is a task after the move.
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
+    await page.close();
+  },
+);
+
+test(
   "a page that takes the focus while the window is inactive is unloaded when the window comes back",
   { skip: !executable && "no browser found" },
   async () => {
@@ -1854,8 +1856,16 @@ test(
     await until(async () => !(await page.eval("document.hasFocus()")), {
       what: "the review window to lose focus",
     });
-    await artifact.eval("globalThis.calling = true");
-    await pageTookFocus("the page to take the focus in its own field while the window is inactive");
+    // Headless Chromium leaves a window the focus while another window has it, so the window is left
+    // for another tab, which hides the page. A hidden page's timers ran its 20 ms call at a median of
+    // 5 s with a busy process per core (windows-2025, hunt 38282746167), so the call is made from a
+    // task of its own; the answer to this request comes before the call is made.
+    await artifact.eval("takeFocusSoon()");
+    await pageTookFocus(
+      page,
+      artifact,
+      "the page to take the focus in its own field while the window is inactive",
+    );
     await page.front();
     const result = await writeNote(
       page,
@@ -2042,7 +2052,11 @@ for (const late of [false, true]) {
       await until(async () => !(await page.eval("document.hasFocus()")), {
         what: "the review window to lose focus",
       });
-      await pageTookFocus("the page to take the focus in its own field as the window leaves");
+      await pageTookFocus(
+        page,
+        artifact,
+        "the page to take the focus in its own field as the window leaves",
+      );
       if (late) {
         await page.waitFor("document.activeElement === document.getElementById('artifact')", {
           what: "the chrome to hold the page's move while the window is away",
@@ -2096,8 +2110,11 @@ test(
   },
 );
 
+// A press on the chrome's own words leaves the focus on nothing, which a page's focus() leaves with no
+// focus-out to hear, so the page stays shielded while the note is open, and the reviewer's press over it
+// hands it the focus first.
 test(
-  "a press on the page after a press on the chrome reaches the page",
+  "a press over the page after a press on the chrome hands the page the focus, and the next one reaches it",
   { skip: !executable && "no browser found" },
   async () => {
     const { session } = await focusCallsReview();
@@ -2112,17 +2129,21 @@ test(
       await page.eval(`JSON.stringify((() => {
         const box = document.getElementById("artifact").getBoundingClientRect();
         for (const y of [box.top + 8, box.bottom - 8, box.top + box.height / 2])
-          for (const x of [box.left + 8, box.right - 8, box.left + box.width / 2]) {
-            const hit = document.elementFromPoint(x, y)?.id;
-            if (hit === "shield" || hit === "artifact") return { x, y };
-          }
+          for (const x of [box.left + 8, box.right - 8, box.left + box.width / 2])
+            if (document.elementFromPoint(x, y)?.id === "shield") return { x, y };
         return null;
       })())`),
     );
-    assert.ok(at, "a point of the page is not under the card");
+    assert.ok(at, "a point of the page is under the shield");
+    await page.click(at.x, at.y);
+    await page.waitFor(
+      "document.activeElement === document.getElementById('artifact') && document.getElementById('shield').hidden",
+    );
+    await page.pointerInto(artifact, at);
     await page.click(at.x, at.y);
     await artifact.waitFor("globalThis.pressed === true");
     assert.equal(await page.eval("document.getElementById('cover').hidden"), true);
+    assert.notEqual(await pageAddress(page), "about:blank", "the page stays loaded");
     await page.close();
   },
 );
@@ -3145,7 +3166,10 @@ test(
 // 37251442770 attempt 20, a busy page heard that only after the reviewer had opened a margin note to
 // edit it, and took the focus out of the editor; a key pressed before the chrome's next task then
 // reached the page. The page hears the close only once the reviewer has typed, and the chrome, should
-// the page take the focus, is held at the task that answers it while Enter is pressed.
+// the page take the focus, is held at the task that answers it while Enter is pressed. The hold is set
+// before the Edit press, whose margin rebuild the chrome once checked as a move of the page's; that
+// check's task can run after several commands to the chrome, and a hold set later then took it and
+// left every command unanswered (the local gate, and hunts 38260124603 and 38260138769).
 test(
   "a page that hears the card close late gets no key from a note being edited in the margin, and comes back once it is saved",
   { skip: !executable && "no browser found" },
@@ -3161,15 +3185,26 @@ test(
     await page.type("Shorter title");
     await page.enter();
     await page.waitFor("document.getElementById('card').hidden");
+    const answer = await holdChromeAt(page, "if ((now || document.activeElement === frame)");
     await clickOn(page, "document.querySelector('.mark-edit')");
     await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
     await page.type(", four words at most");
     await page.eval("delete document.body.dataset.revision");
-    const answer = await holdChromeAt(page, "if (document.activeElement !== frame || unloaded");
+    // Every task the Edit press queued has run, and none checked a move of the page's, which has not
+    // heard the close yet. A held chrome answers nothing, so the wait for its tasks is raced with the hold.
+    let ran = false;
+    const tasks = page
+      .eval("new Promise((resolve) => setTimeout(resolve, 0))")
+      .then(() => (ran = true));
+    await until(() => ran || answer.held, { what: "the chrome to run the Edit press's tasks" });
+    if (answer.held) {
+      await answer.release();
+      assert.fail("the chrome took its own margin rebuild for a move of the page's");
+    }
+    await tasks;
     // The chrome covers the page in the task it takes it out in; a page out of the wrapper's document
     // has nothing left to hear.
-    if (await page.eval("document.getElementById('cover').hidden"))
-      await artifact.eval("hearNow()");
+    if (await page.eval("document.getElementById('cover').hidden")) await hearClose(artifact);
     else
       await until(async () => (await pageAddress(page)) === "about:blank", {
         what: "the page out",
@@ -3191,6 +3226,52 @@ test(
       document.getElementById("cover").hidden`);
     const back = await page.frame();
     assert.match(await back.eval("location.href"), /\/plan\.html\?r=0$/);
+    await page.close();
+  },
+);
+
+// On macos-15, hunt 38260129160 attempt 5, the chrome ran the tasks the Edit press queued only after
+// the reviewer's next press over the page had handed it the focus. Holding them until then makes that
+// order certain.
+test(
+  "a press over the page just after a press on Edit keeps the page loaded, however late the chrome runs its tasks",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await noteOn(page, artifact, "#title", "Shorter title");
+    await holdTasks(page);
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+    await pressOverPage(page, false);
+    await page.eval("runHeld()");
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
+    await page.close();
+  },
+);
+
+test(
+  "a press over the page just after a press on the card's words keeps the page loaded, however late the chrome runs its tasks",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await holdTasks(page);
+    // The card's own words take no focus, so a press on them leaves the focus on the chrome's body.
+    const at = JSON.parse(
+      await page.eval(`JSON.stringify((() => {
+        const box = document.getElementById("cardTarget").getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      })())`),
+    );
+    await page.click(at.x, at.y);
+    await page.waitFor("document.activeElement === document.body");
+    await pressOverPage(page, false);
+    await page.eval("runHeld()");
+    await page.eval("new Promise((resolve) => setTimeout(resolve, 0))");
+    await assertPageHeld(page);
     await page.close();
   },
 );
@@ -3297,6 +3378,136 @@ test(
       "cardText",
       "billing",
     ]);
+    await page.close();
+  },
+);
+
+/**
+ * Opens a card by keyboard on `#p1`, the way a reviewer does, with the page hearing the chrome late
+ * from then on (`HEARS_LATE`), and types a note in it.
+ */
+async function keyboardNoteHeardLate(page, artifact) {
+  await pointAt(page, artifact, "#title");
+  await page.key("Escape", { keyCode: 27 });
+  await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
+  await page.tab();
+  await artifact.waitFor("document.activeElement.id === 'p1'");
+  await artifact.eval(HEARS_LATE);
+  await page.enter();
+  await page.waitFor(
+    "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+  );
+  await page.type("Say which queue");
+}
+
+// Issue 57, first path: the page puts the focus back on an element noted by keyboard when it hears the
+// card close, which crosses the wrapper and can land after the reviewer's next key. In Chromium that
+// Tab never reaches the page, whose document holds no focus until its own refocus, and moves on to the
+// margin; Firefox takes it into the page (the engine smoke's `tabBeforeTheClose`).
+test(
+  "a Tab the reviewer presses before the page hears the card close is not undone",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await keyboardNoteHeardLate(page, artifact);
+    await page.enter();
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.activeElement === document.getElementById('artifact')",
+    );
+    await page.tab();
+    await page.waitFor("document.activeElement.classList.contains('mark-target')");
+    // Synchronous: the page has handled the close once this returns.
+    await hearClose(artifact);
+    await page.waitFor("document.body.dataset.handoff === 'settled'");
+    assert.equal(await page.eval("document.activeElement.className"), "mark-target");
+    await page.close();
+  },
+);
+
+// Issue 57, second path: the reviewer moves to a control of the chrome before the page hears the close.
+test(
+  "a chrome control the reviewer moves to before the page hears the card close keeps the focus",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await keyboardNoteHeardLate(page, artifact);
+    await page.eval(
+      "document.getElementById('cardCancel').click(); document.getElementById('annotate').focus()",
+    );
+    await page.waitFor(
+      "document.getElementById('card').hidden && document.activeElement.id === 'annotate'",
+    );
+    await hearClose(artifact);
+    // The page's acknowledgement settles the hand-off, and a pull taken back settles it after the put-back.
+    await page.waitFor("document.body.dataset.handoff === 'settled'");
+    assert.equal(await page.eval("document.activeElement.id"), "annotate");
+    assert.notEqual(await pageAddress(page), "about:blank", "the page stays loaded");
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus while a press on the card has left it on nothing is unloaded until the note is done",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    // The card's own words take no focus, so a press on them leaves the focus on the chrome's body.
+    const at = JSON.parse(
+      await page.eval(`JSON.stringify((() => {
+        const box = document.getElementById("cardTarget").getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      })())`),
+    );
+    await page.click(at.x, at.y);
+    await page.waitFor("document.activeElement === document.body");
+    await artifact.eval("globalThis.calling = true");
+    const result = await writeNote(
+      page,
+      "document.getElementById('cardText')",
+      "document.getElementById('card').hidden",
+    );
+    assert.deepEqual(
+      { text: result.text, keys: result.keys, kept: result.kept },
+      { text: "abc", keys: 0, kept: true },
+    );
+    await page.close();
+  },
+);
+
+test(
+  "a page that takes the focus from a chrome control while a note is open is unloaded until the note is done",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { session } = await focusCallsReview();
+    const { page, artifact } = await openReview(session.url);
+    await pointAt(page, artifact, "#p1");
+    await page.eval("document.getElementById('annotate').focus()");
+    await page.waitFor("document.activeElement.id === 'annotate'");
+    const quiet = keyReports.length;
+    await artifact.eval("globalThis.calling = true");
+    // The focus goes back to the control it was taken from, once the page is out.
+    await page.waitFor(`document.activeElement.id === "annotate" &&
+      getComputedStyle(document.getElementById("artifact")).display === "none" &&
+      document.getElementById("coverText").textContent === ${JSON.stringify(UNLOADED_LINE)}`);
+    await until(async () => (await pageAddress(page)) === "about:blank", {
+      what: "the page's frame to hold about:blank",
+    });
+    // Nothing in the chrome handles these, and headless Chromium on macOS sent such keys back to the
+    // focus until they reached the note (macos-15, hunt 38260129160 attempts 8 and 12).
+    await press(page, "xyz", { native: false });
+    await clickOn(page, "document.getElementById('cardText')");
+    await page.waitFor("document.activeElement.id === 'cardText'");
+    await press(page, "def");
+    assert.equal(await page.eval("document.getElementById('cardText').value"), "def");
+    await page.enter();
+    await page.waitFor(
+      `document.getElementById('card').hidden && getComputedStyle(document.getElementById("artifact")).display !== "none" && document.getElementById("cover").hidden`,
+    );
+    assert.equal(keyReports.length - quiet, 0, "no key reached the page");
     await page.close();
   },
 );
@@ -3617,26 +3828,6 @@ async function lookOf(
   await page.key("ArrowLeft", { keyCode: 37 });
   await page.waitFor(`${checked} === "Medium"`);
   return look;
-}
-
-/**
- * Waits for the chrome to have reloaded itself. A look that lands as the reload replaces the document
- * is answered "Inspected target navigated or closed", which is that reload under way (macos-15, run
- * 37387213092), so it looks again.
- */
-function reloadOf(page) {
-  return page.explained(
-    until(
-      () =>
-        page
-          .eval("performance.getEntriesByType('navigation')[0]?.type === 'reload'")
-          .catch((error) => {
-            if (error.message === "Inspected target navigated or closed") return false;
-            throw error;
-          }),
-      { what: "the chrome to reload itself" },
-    ),
-  );
 }
 
 /**
@@ -4036,232 +4227,315 @@ for (const errorFirst of [false, true])
     },
   );
 
-test(
-  "a chrome face refused while a margin note holds typed text keeps the text, and the chrome reloads for the face once the note is saved",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const own = isolatedEnv();
-    const page = await browser.page("about:blank");
-    const held = [];
-    const listener = ({ method, params, sessionId }) => {
-      if (method !== "Fetch.requestPaused" || sessionId) return;
-      if (held.length === 0) held.push(params.requestId);
-      else
-        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
-    };
-    page.browser.listeners.push(listener);
-    try {
-      const { file } = copyOfFixture();
-      const url = (await cli([file], own.env)).json().session.url;
-      const { port } = own.serverInfo();
-      await page.browser.send("Fetch.enable", {
-        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
-      });
-      // The held face holds the chrome's load event, so the navigation is not waited on for it; the
-      // review's own ready is what reviewIn waits for.
-      await page.send("Page.navigate", { url });
-      const { artifact } = await reviewIn(page);
-      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
-      await pointAt(page, artifact, "#title");
-      await page.type("Shorter title");
-      await page.browser.send("Fetch.failRequest", {
-        requestId: held[0],
-        errorReason: "ConnectionRefused",
-      });
-      // The face's load has failed once the document's faces have settled; two frames after that let
-      // recover.js's rejected `loaded` be heard before the note is read.
-      await page.eval(SETTLED);
-      assert.deepEqual(
-        JSON.parse(
-          await page.eval(`JSON.stringify({
-            text: document.getElementById('cardText').value,
-            open: !document.getElementById('card').hidden,
-            navigation: performance.getEntriesByType('navigation')[0].type,
-          })`),
-        ),
-        { text: "Shorter title", open: true, navigation: "navigate" },
-      );
-      await page.enter();
-      await reloadOf(page);
-      const reloaded = await reviewIn(page);
-      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
-      await sameReview(
-        {
-          note: await page.eval(
-            "document.querySelector('.mark:not(.sent)').textContent.includes('Shorter title')",
-          ),
-          look: await lookOf(page, reloaded.artifact),
-          face: await paintedFace(page, "#fileName"),
-        },
-        {
-          note: true,
-          look: (await healthyReview()).look,
-          face: "IBM Plex Mono",
-        },
-        page,
-      );
-    } finally {
-      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
-      await page.browser.send("Fetch.disable").catch(() => {});
-      await page.close();
-      await own.stop();
-    }
-  },
-);
+/**
+ * A look that lands as a reload replaces the document is that reload under way (macos-15, run
+ * 37387213092): it answers null, so a wait looks again and an assertion reports the reload.
+ */
+function unlessReloaded(error) {
+  if (error.message === "Inspected target navigated or closed") return null;
+  throw error;
+}
 
-test(
-  "a chrome face refused while a margin note edit holds typed text keeps the text, and the chrome reloads for the face once the edit is saved",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const own = isolatedEnv();
-    const page = await browser.page("about:blank");
-    const held = [];
-    const listener = ({ method, params, sessionId }) => {
-      if (method !== "Fetch.requestPaused" || sessionId) return;
-      if (held.length === 0) held.push(params.requestId);
-      else
-        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
-    };
-    page.browser.listeners.push(listener);
-    try {
-      const { file } = copyOfFixture();
-      const url = (await cli([file], own.env)).json().session.url;
-      const { port } = own.serverInfo();
-      await page.browser.send("Fetch.enable", {
-        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
-      });
-      await page.send("Page.navigate", { url });
-      const { artifact } = await reviewIn(page);
-      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
-      await noteOn(page, artifact, "#title", "Shorter title");
-      await clickOn(page, "document.querySelector('.mark-edit')");
-      await page.waitFor("document.activeElement?.classList.contains('mark-edit-text')");
-      await press(page, "again");
-      await page.browser.send("Fetch.failRequest", {
-        requestId: held[0],
-        errorReason: "ConnectionRefused",
-      });
-      await page.eval(SETTLED);
-      assert.deepEqual(
-        JSON.parse(
-          await page.eval(`JSON.stringify({
-            text: document.querySelector('.mark-edit-text')?.value ?? null,
-            navigation: performance.getEntriesByType('navigation')[0].type,
-          })`),
-        ),
-        { text: "Shorter titleagain", navigation: "navigate" },
-      );
-      await page.enter();
-      await reloadOf(page);
-      const reloaded = await reviewIn(page);
-      await page.waitFor(
-        "document.querySelectorAll('.mark:not(.sent)').length === 1 && document.querySelector('.mark:not(.sent)').textContent.includes('Shorter titleagain')",
-      );
-      await sameReview(
-        {
-          look: await lookOf(page, reloaded.artifact),
-          face: await paintedFace(page, "#fileName"),
-        },
-        {
-          look: (await healthyReview()).look,
-          face: "IBM Plex Mono",
-        },
-        page,
-      );
-    } finally {
-      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
-      await page.browser.send("Fetch.disable").catch(() => {});
-      await page.close();
-      await own.stop();
-    }
-  },
-);
-
-test(
-  "a chrome face refused while the browser is offline keeps the review on screen and says so, and the chrome reloads for the face once back online",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const own = isolatedEnv();
-    const page = await browser.page("about:blank");
-    const held = [];
-    let reloads = 0;
-    const listener = ({ method, params, sessionId }) => {
-      if (method === "Page.frameRequestedNavigation" && sessionId === page.sessionId) {
-        if (params.frameId === page.targetId && params.reason === "reload") reloads += 1;
+/**
+ * Holds the chrome's code face, as a slow connect would, until `refuse` fails it, and counts the
+ * reloads the chrome asks for. A chrome file the network refuses on the tab's first load (Windows,
+ * docs/ENGINEERING-NOTES.md), or the `first` one refused here, reloads the chrome before the reviewer
+ * does anything (windows-2025 job 115342699497), so the face held is the one the load on screen asked
+ * for, and a test is held to the reloads asked since, never to that load's navigation type. A face of
+ * the chrome's refused by the network after it is ready still reloads it under the test.
+ */
+function holdFace(page, port, first) {
+  const origin = `http://127.0.0.1:${port}`;
+  const loaderOf = new Map();
+  const paused = [];
+  let shown = null;
+  let reloads = 0;
+  /** Reloads asked since the load on screen committed. */
+  let asked = 0;
+  let firstRefused = false;
+  let face = null;
+  let refused = false;
+  const listener = ({ method, params, sessionId }) => {
+    if (sessionId === page.sessionId) {
+      if (method === "Network.requestWillBeSent") loaderOf.set(params.requestId, params.loaderId);
+      else if (method === "Page.frameNavigated" && params.frame.id === page.targetId) {
+        shown = params.frame.loaderId;
+        asked = 0;
+      } else if (
+        method === "Page.frameRequestedNavigation" &&
+        params.frameId === page.targetId &&
+        params.reason === "reload"
+      ) {
+        reloads += 1;
+        asked += 1;
       }
-      if (method !== "Fetch.requestPaused" || sessionId) return;
-      if (held.length === 0) held.push(params.requestId);
-      else
-        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
-    };
-    page.browser.listeners.push(listener);
-    const offline = (on) =>
-      page.send("Network.emulateNetworkConditions", {
-        offline: on,
-        latency: 0,
-        downloadThroughput: -1,
-        uploadThroughput: -1,
-      });
-    try {
-      const { file } = copyOfFixture();
-      const url = (await cli([file], own.env)).json().session.url;
-      const { port } = own.serverInfo();
+      return;
+    }
+    if (method !== "Fetch.requestPaused" || sessionId) return;
+    const { requestId, networkId, request } = params;
+    const pass = (command, extra) =>
+      page.browser.send(command, { requestId, ...extra }).catch(() => {});
+    if (first && !firstRefused && request.url.startsWith(origin + first)) {
+      firstRefused = true;
+      pass("Fetch.failRequest", { errorReason: "ConnectionRefused" });
+    } else if (!refused && request.url.startsWith(`${origin}/house/fonts/ibm-plex-mono/`))
+      paused.push({ requestId, networkId });
+    else pass("Fetch.continueRequest");
+  };
+  page.browser.listeners.push(listener);
+  return {
+    async start() {
       await page.browser.send("Fetch.enable", {
-        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
+        patterns: [
+          { urlPattern: `${origin}/house/fonts/ibm-plex-mono/*` },
+          ...(first ? [{ urlPattern: `${origin}${first}*` }] : []),
+        ],
       });
-      await page.send("Page.navigate", { url });
-      await reviewIn(page);
-      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
-      // The face is still loading when the tab goes offline, so its load fails the way the
-      // browser fails it then (runs 38219818479 and 38227307855).
-      await page.send("Network.enable");
-      await offline(true);
-      await page.browser.send("Fetch.failRequest", {
-        requestId: held[0],
-        errorReason: "InternetDisconnected",
-      });
-      // The face's load has failed once the document's faces have settled; two frames after that let
-      // recover.js's rejected `loaded` be heard before the chrome is read.
-      await page.explained(page.eval(SETTLED));
-      await page.waitFor("/offline/.test(document.getElementById('noticeText').textContent)");
-      assert.deepEqual(
-        JSON.parse(
-          await page.eval(`JSON.stringify({
-            path: location.pathname.split('/')[1],
-            file: document.getElementById('fileName').textContent,
-            notice: document.getElementById('noticeText').textContent,
-            navigation: performance.getEntriesByType('navigation')[0].type,
-          })`),
-        ),
-        {
-          path: "session",
-          file: "plan.html",
-          notice:
-            "This browser is offline. Your notes are kept, and this page catches up once it is back online.",
-          navigation: "navigate",
-        },
+    },
+    /**
+     * Waits for a load that is ready, asked no reload, and has its face held, and counts reloads from
+     * then: by ready every sheet and script of the chrome's has loaded or failed, so only a face is left
+     * to reload it.
+     */
+    async held() {
+      const settled = async () => {
+        const loader = shown;
+        const found = paused.find(({ networkId }) => loaderOf.get(networkId) === loader);
+        if (!found || asked > 0) return false;
+        const ready = await page.eval("document.body?.dataset.ready === '1'").catch(unlessReloaded);
+        if (!ready || shown !== loader || asked > 0) return false;
+        face = { ...found, loader, reloads };
+        return true;
+      };
+      await page.explained(
+        until(settled, { what: "a ready chrome that asked no reload to have its code face held" }),
       );
-
-      await offline(false);
-      await reloadOf(page);
-      await reviewIn(page);
-      assert.deepEqual(
-        {
-          reloads,
-          face: await paintedFace(page, "#fileName"),
-          notice: await page.eval("document.getElementById('noticeText').textContent"),
-        },
-        { reloads: 1, face: "IBM Plex Mono", notice: "" },
+      if (first)
+        assert.ok(firstRefused && face.reloads >= 1, `the refused ${first} reloaded the chrome`);
+    },
+    /** The reloads the chrome asked for since its face was held. */
+    get reloads() {
+      return reloads - face.reloads;
+    },
+    async refuse(errorReason) {
+      refused = true;
+      await page.browser.send("Fetch.failRequest", { requestId: face.requestId, errorReason });
+    },
+    /** Waits for the chrome's load after the one whose face was held. */
+    reloaded() {
+      return page.explained(
+        until(() => shown !== face.loader, { what: "the chrome to reload itself" }),
       );
-    } finally {
+    },
+    async stop() {
       page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
       await page.browser.send("Fetch.disable").catch(() => {});
-      await page.close();
-      await own.stop();
-    }
-  },
-);
+    },
+  };
+}
 
+/** Each held-face test as it runs, then with a chrome file the network refused on the first load. */
+const REFUSED_FIRST = [
+  ["", undefined],
+  [", even after a chrome sheet refused on the first load reloaded it", "/house/roles.css"],
+  [", even after the chrome's script refused on the first load reloaded it", "/chrome.js"],
+];
+
+for (const [after, first] of REFUSED_FIRST) {
+  test(
+    `a chrome face refused while a margin note holds typed text keeps the text, and the chrome reloads for the face once the note is saved${after}`,
+    { skip: !executable && "no browser found" },
+    async () => {
+      const own = isolatedEnv();
+      const page = await browser.page("about:blank");
+      let face;
+      try {
+        const { file } = copyOfFixture();
+        const url = (await cli([file], own.env)).json().session.url;
+        face = holdFace(page, own.serverInfo().port, first);
+        await face.start();
+        // The held face holds the chrome's load event, so the navigation is not waited on for it; the
+        // review's own ready is what `held` waits for.
+        await page.send("Page.navigate", { url });
+        await face.held();
+        const { artifact } = await reviewIn(page);
+        await pointAt(page, artifact, "#title");
+        await page.type("Shorter title");
+        await face.refuse("ConnectionRefused");
+        // The face's load has failed once the document's faces have settled; two frames after that let
+        // recover.js's rejected `loaded` be heard before the note is read.
+        await page.eval(SETTLED).catch(unlessReloaded);
+        assert.deepEqual(
+          {
+            ...JSON.parse(
+              await page
+                .eval(
+                  `JSON.stringify({
+                    text: document.getElementById('cardText')?.value ?? null,
+                    open: document.getElementById('card')?.hidden === false,
+                  })`,
+                )
+                .catch(unlessReloaded),
+            ),
+            reloads: face.reloads,
+          },
+          { text: "Shorter title", open: true, reloads: 0 },
+        );
+        await page.enter();
+        await face.reloaded();
+        const reloaded = await reviewIn(page);
+        await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+        sameReview(
+          {
+            note: await page.eval(
+              "document.querySelector('.mark:not(.sent)').textContent.includes('Shorter title')",
+            ),
+            look: await lookOf(page, reloaded.artifact),
+            face: await paintedFace(page, "#fileName"),
+            reloads: face.reloads,
+          },
+          {
+            note: true,
+            look: (await healthyReview()).look,
+            face: "IBM Plex Mono",
+            reloads: 1,
+          },
+          page,
+        );
+      } finally {
+        await face?.stop();
+        await page.close();
+        await own.stop();
+      }
+    },
+  );
+
+  test(
+    `a chrome face refused while a margin note edit holds typed text keeps the text, and the chrome reloads for the face once the edit is saved${after}`,
+    { skip: !executable && "no browser found" },
+    async () => {
+      const own = isolatedEnv();
+      const page = await browser.page("about:blank");
+      let face;
+      try {
+        const { file } = copyOfFixture();
+        const url = (await cli([file], own.env)).json().session.url;
+        face = holdFace(page, own.serverInfo().port, first);
+        await face.start();
+        await page.send("Page.navigate", { url });
+        await face.held();
+        const { artifact } = await reviewIn(page);
+        await noteOn(page, artifact, "#title", "Shorter title");
+        await clickOn(page, "document.querySelector('.mark-edit')");
+        await page.waitFor("document.activeElement?.classList.contains('mark-edit-text')");
+        await press(page, "again");
+        await face.refuse("ConnectionRefused");
+        await page.eval(SETTLED).catch(unlessReloaded);
+        assert.deepEqual(
+          {
+            text: await page
+              .eval("document.querySelector('.mark-edit-text')?.value ?? null")
+              .catch(unlessReloaded),
+            reloads: face.reloads,
+          },
+          { text: "Shorter titleagain", reloads: 0 },
+        );
+        await page.enter();
+        await face.reloaded();
+        const reloaded = await reviewIn(page);
+        await page.waitFor(
+          "document.querySelectorAll('.mark:not(.sent)').length === 1 && document.querySelector('.mark:not(.sent)').textContent.includes('Shorter titleagain')",
+        );
+        sameReview(
+          {
+            look: await lookOf(page, reloaded.artifact),
+            face: await paintedFace(page, "#fileName"),
+            reloads: face.reloads,
+          },
+          {
+            look: (await healthyReview()).look,
+            face: "IBM Plex Mono",
+            reloads: 1,
+          },
+          page,
+        );
+      } finally {
+        await face?.stop();
+        await page.close();
+        await own.stop();
+      }
+    },
+  );
+
+  test(
+    `a chrome face refused while the browser is offline keeps the review on screen and says so, and the chrome reloads for the face once back online${after}`,
+    { skip: !executable && "no browser found" },
+    async () => {
+      const own = isolatedEnv();
+      const page = await browser.page("about:blank");
+      const offline = (on) =>
+        page.send("Network.emulateNetworkConditions", {
+          offline: on,
+          latency: 0,
+          downloadThroughput: -1,
+          uploadThroughput: -1,
+        });
+      let face;
+      try {
+        const { file } = copyOfFixture();
+        const url = (await cli([file], own.env)).json().session.url;
+        face = holdFace(page, own.serverInfo().port, first);
+        await face.start();
+        await page.send("Page.navigate", { url });
+        await face.held();
+        await reviewIn(page);
+        // The face is still loading when the tab goes offline, so its load fails the way the
+        // browser fails it then (runs 38219818479 and 38227307855).
+        await offline(true);
+        await face.refuse("InternetDisconnected");
+        // The face's load has failed once the document's faces have settled; two frames after that let
+        // recover.js's rejected `loaded` be heard before the chrome is read.
+        await page.explained(page.eval(SETTLED));
+        await page.waitFor("/offline/.test(document.getElementById('noticeText').textContent)");
+        assert.deepEqual(
+          {
+            ...JSON.parse(
+              await page.eval(`JSON.stringify({
+                path: location.pathname.split('/')[1],
+                file: document.getElementById('fileName').textContent,
+                notice: document.getElementById('noticeText').textContent,
+              })`),
+            ),
+            reloads: face.reloads,
+          },
+          {
+            path: "session",
+            file: "plan.html",
+            notice:
+              "This browser is offline. Your notes are kept, and this page catches up once it is back online.",
+            reloads: 0,
+          },
+        );
+
+        await offline(false);
+        await face.reloaded();
+        await reviewIn(page);
+        assert.deepEqual(
+          {
+            reloads: face.reloads,
+            face: await paintedFace(page, "#fileName"),
+            notice: await page.eval("document.getElementById('noticeText').textContent"),
+          },
+          { reloads: 1, face: "IBM Plex Mono", notice: "" },
+        );
+      } finally {
+        await face?.stop();
+        await page.close();
+        await own.stop();
+      }
+    },
+  );
+}
 test(
   "a refused first load of a reload held behind an open answer card gets the stray cover and Back, never the file-changed line",
   { skip: !executable && "no browser found" },
@@ -4632,6 +4906,77 @@ test(
   },
 );
 
+/** A daemon started with this env has its first file watcher fail when `KILL_WATCH_ON` is written. */
+const killingWatch = (env) => ({
+  ...env,
+  NODE_OPTIONS: `--import=${new URL("./helpers/kill-watch.mjs", import.meta.url).href}`,
+  KILL_WATCH_ON: "kill-watch",
+});
+const killWatch = (file) => writeFileSync(join(dirname(file), "kill-watch"), "");
+const LIVE_RELOAD_STOPPED = noticeSays(
+  "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+);
+const STOPPED_ANSWERING =
+  "/stopped answering/.test(document.getElementById('noticeText').textContent)";
+
+test(
+  "a daemon restarted with a working watcher clears the live reload notice the old one left",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    const own = isolatedEnv();
+    const { file, html } = copyOfFixture();
+    const url = (await cli([file], killingWatch(own.env))).json().session.url;
+    const page = await browser.page(url);
+    try {
+      await page.waitFor("document.body.dataset.revision === '0'");
+      await page.waitFor(FOLLOWING);
+      killWatch(file);
+      await page.waitFor(LIVE_RELOAD_STOPPED);
+      assert.equal((await cli(["stop"], own.env)).code, 0);
+      await page.waitFor(STOPPED_ANSWERING);
+      // The agent's next command starts a daemon whose watcher works, and the tab follows it again.
+      assert.equal((await cli(["poll", file, "--timeout-ms", "0"], own.env)).code, 0);
+      await page.waitFor(FOLLOWING);
+      await page.waitFor("document.getElementById('notice').hidden");
+      writeFileSync(file, html.replace("Bottom of the plan", "Bottom of the saved plan"));
+      await page.waitFor("document.body.dataset.revision === '1'");
+      assert.equal(await page.eval("document.getElementById('notice').hidden"), true);
+    } finally {
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a tab opened after the file's watcher died follows the file",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    const own = isolatedEnv();
+    const { file, html } = copyOfFixture();
+    const url = (await cli([file], killingWatch(own.env))).json().session.url;
+    const first = await browser.page(url);
+    let second;
+    try {
+      await first.waitFor("document.body.dataset.revision === '0'");
+      await first.waitFor(FOLLOWING);
+      killWatch(file);
+      await first.waitFor(LIVE_RELOAD_STOPPED);
+      // The first tab stays open, so the review's watch is never stopped and started afresh.
+      second = await browser.page(url);
+      await second.waitFor("document.body.dataset.revision === '0'");
+      await second.waitFor(FOLLOWING);
+      writeFileSync(file, html.replace("Bottom of the plan", "Bottom of the saved plan"));
+      await second.waitFor("document.body.dataset.revision === '1'");
+      assert.equal(await second.eval("document.getElementById('notice').hidden"), true);
+    } finally {
+      await second?.close();
+      await first.close();
+      await own.stop();
+    }
+  },
+);
+
 test(
   "a save keeps the place and Annotate on a Word page, and a note on a smart tag names it in valid CSS",
   { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
@@ -4682,6 +5027,47 @@ test(
       );
     } finally {
       await page.close();
+    }
+  },
+);
+
+test(
+  "a tab another took over stops taking notes once a save leaves its page behind the file",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    // The older tab ignores the reload, so a note made in it names an element of a page the file
+    // no longer holds: a section added above moves its selector onto a different element.
+    const { file, html } = copyOfFixture();
+    const url = (await cli([file], lab.env)).json().session.url;
+    const older = await browser.page(url);
+    let newer;
+    try {
+      // The tab whose stream connects last takes the review (`open` in src/events.js), and a tab
+      // connects only after its load event, so the older one follows before the newer one opens.
+      await older.waitFor(FOLLOWING);
+      newer = await browser.page(url);
+      await newer.waitFor("document.body.dataset.revision === '0'");
+      await older.waitFor(
+        "/Another tab took over/.test(document.getElementById('noticeText').textContent)",
+      );
+      writeFileSync(file, html.replace("<main>", "<main><section><h2>Added above</h2></section>"));
+      await newer.waitFor("document.body.dataset.revision === '1'");
+      await older.front();
+      await older.waitFor("document.body.dataset.annotate === '0'");
+      // It never takes the review back on its own: the newer tab keeps it, the older keeps its page.
+      assert.equal(await older.eval("document.body.dataset.revision"), "0");
+      assert.equal(await newer.eval("document.body.dataset.annotate"), "1");
+      assert.equal(
+        await older.eval("document.getElementById('status').textContent"),
+        "The file changed since this page loaded. Take over here to point at it as it is now.",
+      );
+      // Take over is the way back: the page catches up, and Annotate returns with it.
+      await clickOn(older, "document.getElementById('takeOver')");
+      await older.waitFor("document.body.dataset.revision === '1'");
+      await older.waitFor("document.body.dataset.annotate === '1'");
+    } finally {
+      await older.close();
+      await newer?.close();
     }
   },
 );
@@ -5554,8 +5940,8 @@ async function holdCloseRelay(page) {
 /**
  * Has the page hear the chrome late, as a busy page does, without pausing it: the SDK hears the chrome
  * only from the real `parent`, so with a stand-in there every message the chrome sends waits until
- * `hearNow()` hands it on. The stand-in also reports what a key in the page made it propose, since the
- * SDK stops a key it acts on before any listener added after it.
+ * `hearNow()` hands it on, and `unheard()` names what waits. The stand-in also reports what a key in
+ * the page made it propose, since the SDK stops a key it acts on before any listener added after it.
  */
 const HEARS_LATE = `(() => {
   const realParent = window.parent;
@@ -5572,6 +5958,7 @@ const HEARS_LATE = `(() => {
     },
   };
   window.parent = standIn;
+  globalThis.unheard = () => waiting.map((event) => event.data?.type);
   globalThis.hearNow = () => {
     window.parent = realParent;
     replaying = true;
@@ -5581,6 +5968,16 @@ const HEARS_LATE = `(() => {
     window.parent = standIn;
   };
 })()`;
+
+/**
+ * Has a page that hears late (`HEARS_LATE`) hear the card close, once the close has reached it: it
+ * crosses the wrapper's process on its way, so the chrome can show the card closed while it is still
+ * in flight, and a hand-on before it arrives hands on nothing (windows-2025, hunt 38271034344).
+ */
+async function hearClose(artifact) {
+  await artifact.waitFor("unheard().includes('compose')");
+  await artifact.eval("hearNow()");
+}
 
 /** Collects what `HEARS_LATE` reports the page proposed, in the order the page posts it. */
 async function pageProposals(page, artifact) {
@@ -8453,6 +8850,106 @@ test(
     assert.deepEqual(clear, {
       "main > h2:nth-of-type(1)": "clear",
       "main > p:nth-of-type(2)": "clear",
+    });
+  },
+);
+
+test(
+  "a passage's ring stays on its words when the page or a box in it scrolls, and when the window resizes",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const line = (id) => `<p id="${id}">Move the queue to the worker that drains it first.</p>`;
+    writeFileSync(
+      file,
+      `<!doctype html><title>Passages</title><body style="max-width:40rem;margin:2rem auto">` +
+        `${line("page")}<div id="box" style="height:6rem;overflow:auto">${line("boxed")}` +
+        `${"<p>filler</p>".repeat(20)}</div>${"<p>filler</p>".repeat(80)}</body>`,
+    );
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+      width: 1000,
+      height: 700,
+    });
+    // Counted from listeners added after the sdk's, which therefore run once the sdk has redrawn.
+    await artifact.eval(`(() => {
+      window.seen = { scroll: 0, resize: 0 };
+      addEventListener("scroll", () => window.seen.scroll++, true);
+      addEventListener("resize", () => window.seen.resize++);
+    })()`);
+    // Where the ring sits against the first 14 characters' boxes: round them is a ring whose inner
+    // edge stands up to 6 px outside their left and top (the house ring's 2 px offset when drawn).
+    const placed = async (id) => {
+      const rings = await ringsOn(artifact);
+      const [words] = JSON.parse(
+        await artifact.eval(`(() => {
+          const range = document.createRange();
+          range.setStart(document.getElementById(${JSON.stringify(id)}).firstChild, 0);
+          range.setEnd(document.getElementById(${JSON.stringify(id)}).firstChild, 14);
+          return JSON.stringify([...range.getClientRects()]);
+        })()`),
+      );
+      if (rings?.length !== 1) return `${rings?.length ?? "no"} rings`;
+      const left = Math.round(rings[0].left - words.left);
+      const top = Math.round(rings[0].top - words.top);
+      return left <= 0 && left >= -6 && top <= 0 && top >= -6
+        ? "round its words"
+        : `its inner edge ${left}, ${top} px from its words' left and top`;
+    };
+    const after = async (type, act) => {
+      const before = Number(await artifact.eval(`window.seen.${type}`));
+      await act();
+      await artifact.waitFor(`window.seen.${type} > ${before}`);
+    };
+    const where = {};
+    for (const [id, scroll] of [
+      ["page", "scrollBy(0, 150)"],
+      ["boxed", "document.getElementById('box').scrollBy(0, 40)"],
+    ]) {
+      // Centred, so the card opens with no scroll to make room for it and the only move is the test's.
+      const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+      const words = JSON.parse(
+        await artifact.eval(`(() => {
+          document.getElementById(${JSON.stringify(id)}).scrollIntoView({ block: "center" });
+          const range = document.createRange();
+          range.setStart(document.getElementById(${JSON.stringify(id)}).firstChild, 0);
+          range.setEnd(document.getElementById(${JSON.stringify(id)}).firstChild, 14);
+          return JSON.stringify(range.getBoundingClientRect());
+        })()`),
+      );
+      const y = frameBox.top + words.top + words.height / 2;
+      await page.pointerInto(artifact, { x: frameBox.left + words.left + 1, y });
+      await page.drag(
+        { x: frameBox.left + words.left + 1, y },
+        { x: frameBox.left + words.right - 1, y },
+      );
+      await page.waitFor(
+        "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+      );
+      await after("scroll", () => artifact.eval(scroll));
+      where[`${id} scrolled`] = await placed(id);
+      if (id === "page") {
+        // Narrower than the body's 40rem, so the words move left as well as down.
+        await after("resize", () =>
+          page.send("Emulation.setDeviceMetricsOverride", {
+            width: 500,
+            height: 700,
+            deviceScaleFactor: 1,
+            mobile: false,
+          }),
+        );
+        where[`${id} resized`] = await placed(id);
+      }
+      await clickOn(page, "document.getElementById('cardCancel')");
+      await page.waitFor(
+        "document.getElementById('card').hidden && document.body.dataset.handoff === 'settled'",
+      );
+    }
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+    assert.deepEqual(where, {
+      "page scrolled": "round its words",
+      "page resized": "round its words",
+      "boxed scrolled": "round its words",
     });
   },
 );
