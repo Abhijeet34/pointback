@@ -4,7 +4,9 @@
     <meta charset="utf-8" />
     <title>Incident review</title>
     <script>
-      // While `calling` is set, the page moves the focus to its own field every 20 ms. Every key event
+      // While `calling` is set, the page moves the focus to its own field every 20 ms (`takeFocus`), and
+      // `takeFocusSoon` has it do so once, from a task of its own, which a hidden page's timers would
+      // run late or not at all. Every key event
       // the page receives is reported to the console as it arrives, in the capture phase, so the test
       // process hears it even after the frame is removed. A focus() on an element already focused does
       // nothing, so it lets go first; it keeps the page where the reviewer scrolled it. The element the
@@ -19,14 +21,19 @@
           true,
         );
       }
-      setInterval(() => {
-        if (!globalThis.calling) return;
+      function takeFocus() {
         const field = document.getElementById("field");
         field.blur();
         field.focus({ preventScroll: true });
         if (document.activeElement.id !== holding)
           console.log("focus-calls focus", (holding = document.activeElement.id));
-      }, 20);
+      }
+      globalThis.takeFocusSoon = () => {
+        const { port1, port2 } = new MessageChannel();
+        port1.onmessage = takeFocus;
+        port2.postMessage(null);
+      };
+      setInterval(() => globalThis.calling && takeFocus(), 20);
     </script>
   </head>
   <body>

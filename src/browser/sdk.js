@@ -542,7 +542,9 @@
     open = hit;
     // A press focuses what it lands on, and a note made by mouse must leave nothing in the page
     // holding the keys once the card closes: a field would take them, and Space would note again.
-    if (hit.pointed) /** @type {HTMLElement} */ (document.activeElement)?.blur();
+    // One made by keyboard lets go too, as Firefox 157 keeps the focus in a frame whose element holds
+    // it against the card's own focus(); `closeTarget` gives it back.
+    /** @type {HTMLElement} */ (document.activeElement)?.blur();
     outlineRects(hit.rects);
     send({
       type: "target",
@@ -589,9 +591,9 @@
 
   // Whether the focused element is outlined; not after a note made by mouse, until a key is pressed.
   let focusShown = true;
-  // The target last noted by mouse, which H moves on from while nothing in the page holds the focus,
-  // as Tab moves on from it by the browser's own starting point.
-  let pointedLast = null;
+  // The target last noted, which H moves on from while nothing in the page holds the focus, as Tab
+  // moves on from it by the browser's own starting point.
+  let notedLast = null;
 
   function closeTarget(refocus) {
     if (!open) return;
@@ -601,13 +603,16 @@
     // Only a target reached by keyboard is outlined once its note is done, since after a click the
     // box reads as a selection never made.
     focusShown = !pointed;
-    if (pointed) pointedLast = element;
+    notedLast = element;
     // Not once the reviewer has pressed in the page: this close can land mid-drag, and moving focus
-    // then ends the drag, so the passage is recorded cut short or as its whole element.
+    // then ends the drag, so the passage is recorded cut short or as its whole element. Nor once they
+    // have moved the focus to another element here, as a Tab does in Firefox (issue 57).
     if (!refocus || !annotate || pressed) return;
-    // Focus goes back to a target reached by keyboard, so the next Tab starts from the note. One
-    // reached by mouse was let go when it was noted (`selectTarget`), so the page takes the keys
-    // back with nothing in it focused.
+    const at = document.activeElement;
+    if (document.hasFocus() && at !== document.body && at !== element) return;
+    // Focus goes back to a target reached by keyboard, which let it go when it was noted
+    // (`selectTarget`), so the next Tab starts from the note. One reached by mouse stays let go, so
+    // the page takes the keys back with nothing in it focused.
     if (pointed) window.focus();
     else if (element.isConnected) element.focus({ preventScroll: true });
   }
@@ -1206,8 +1211,8 @@
     const from =
       active && active !== document.body
         ? active
-        : pointedLast?.isConnected
-          ? pointedLast
+        : notedLast?.isConnected
+          ? notedLast
           : document.body;
     const headings = focusable.filter((e) => /^H[1-6]$/.test(tagName(e)) && e.checkVisibility());
     const ahead = (h) =>
