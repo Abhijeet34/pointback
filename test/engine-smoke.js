@@ -2,7 +2,7 @@
 // browser, which is Safari on an unconfigured Mac, while test/browser.test.js drives Chromium
 // only. Open a file, point at an element, write a note, send, and a poll returns it. Then the gate
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
-// Keys pressed after a note made by mouse edit nothing in the page.
+// Keys pressed after a note made by mouse edit nothing in the page, and a Tab out of a note keeps it.
 // A save of a Word export keeps the reviewer's place and Annotate.
 // A note made by keyboard gives its element the focus back, a Tab pressed before the page hears the
 // card close is not undone, and a Tab from the note into the page leaves it loaded and unshielded.
@@ -35,6 +35,10 @@ const STEP_MS = 30_000;
 const NOTE = "Make the title shorter";
 // `ACTIVATION_MS` in src/browser/chrome.js: how long the chrome hears nothing from the page after a key.
 const GATE_MS = 5000;
+// Playwright holds every element action until its record of the main frame's navigation clears,
+// and in Firefox that record can stay set after the review committed (docs/ENGINEERING-NOTES.md).
+// Every act waits on the chrome's own word before acting, so the check guards nothing here.
+process.env.PLAYWRIGHT_SKIP_NAVIGATION_CHECK = "1";
 
 async function smoke(engine) {
   const lab = isolatedEnv();
@@ -44,33 +48,32 @@ async function smoke(engine) {
   try {
     browser = await ENGINES[engine].launch({ timeout: STEP_MS * 2 });
     named = `${engine} ${browser.version()}`;
-    await act(browser, (page) => coreAct(page, lab));
-    await act(browser, (page) => enterIsNotThePages(page, lab));
-    await act(browser, (page) => clickInsideTheGate(page, lab));
-    await act(browser, (page) => endKeepsTheCard(page, lab));
-    await act(browser, (page) => readingPlace(page, lab, engine));
-    await act(browser, (page) => wordPage(page, lab, engine));
-    await act(browser, (page) => pressOverThePage(page, lab));
-    await act(browser, (page) => keysAfterAMouseNote(page, lab, engine));
-    const control = await act(browser, (page) => keysReachThePage(page, lab, engine));
+    await act(browser, coreAct, lab);
+    await act(browser, enterIsNotThePages, lab);
+    await act(browser, clickInsideTheGate, lab);
+    await act(browser, endKeepsTheCard, lab);
+    await act(browser, readingPlace, lab, engine);
+    await act(browser, wordPage, lab, engine);
+    await act(browser, pressOverThePage, lab);
+    await act(browser, tabFromTheNote, lab, engine);
+    await act(browser, keysAfterAMouseNote, lab, engine);
+    const control = await act(browser, keysReachThePage, lab, engine);
     const probes = [];
     const ms = [];
     for (let round = 1; round <= UNLOAD_ROUNDS; round += 1) {
-      const result = await act(browser, (page) => unloadRound(page, lab, engine, round));
+      const result = await act(browser, unloadRound, lab, engine, round);
       probes.push(result.probe);
       ms.push(result.ms);
     }
-    await act(browser, (page) => focusLeavesNoteAlone(page, lab, engine));
-    await act(browser, (page) => keyboardNoteRefocuses(page, lab, engine));
-    await act(browser, (page) => tabBeforeTheClose(page, lab, engine));
-    await act(browser, (page) => tabIntoThePage(page, lab, engine));
+    await act(browser, focusLeavesNoteAlone, lab, engine);
+    await act(browser, keyboardNoteRefocuses, lab, engine);
+    await act(browser, tabBeforeTheClose, lab, engine);
+    await act(browser, tabIntoThePage, lab, engine);
     await act(browser, addAfterAnIdle);
-    await act(browser, (page) => faceRefusedOffline(page, lab));
+    await act(browser, faceRefusedOffline, lab);
     const schemes = [];
     for (const colorScheme of ["light", "dark"]) {
-      schemes.push(
-        await act(browser, (page) => followsScheme(page, lab, colorScheme), { colorScheme }),
-      );
+      schemes.push(await act(browser, { colorScheme }, followsScheme, lab, colorScheme));
     }
     return `${named} passed; ${schemes.join("; ")}; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds; probe keys reaching the page per round ${probes.join(", ")}; move to unloaded ms per round ${ms.join(", ")}; the key channel reported ${control} keys of the page's own`;
   } catch (error) {
@@ -83,15 +86,26 @@ async function smoke(engine) {
 
 /**
  * Each act on a page of its own, closed when the act ends, so no act inherits another's tab. A
- * failed act says what the chrome showed, as `describe` in test/helpers/cdp.js does for Chromium:
- * a timeout alone cannot tell a key that missed the card from a page that never loaded.
+ * failed act names itself, its line and the locator it waited on in the verdict's first line, the
+ * only one the job summary keeps, and says what the chrome showed, as `describe` in
+ * test/helpers/cdp.js does for Chromium: a timeout alone cannot tell a key that missed the card from
+ * a page that never loaded.
  */
-async function act(browser, fn, options = {}) {
+async function act(browser, ...call) {
+  // An act may open its page with context options first, as followsScheme does its colour scheme.
+  const options = typeof call[0] === "function" ? {} : call.shift();
+  const [fn, ...args] = call;
   const page = await browser.newPage(options);
   page.setDefaultTimeout(STEP_MS);
   try {
-    return await fn(page);
+    return await fn(page, ...args);
   } catch (error) {
+    // A helper's timer leaves no line of this file in the stack, and a call log may be coloured.
+    const line = error.stack?.match(/engine-smoke\.js:\d+/)?.[0];
+    const locator = error.message?.match(/waiting for (locator\(.*\))/)?.[1];
+    error.step = [fn.name, line && `at test/${line}`, locator && `on ${locator}`]
+      .filter(Boolean)
+      .join(" ");
     const shown = await page
       .evaluate(() => ({
         url: location.href.replace(/#.*/, "#..."),
@@ -99,7 +113,11 @@ async function act(browser, fn, options = {}) {
         focus: document.hasFocus(),
         active: document.activeElement?.id || document.activeElement?.tagName,
         card: document.getElementById("card")?.hidden === false,
-        text: document.getElementById("cardText")?.value,
+        // A closed card keeps the last note's words until the next one opens it empty.
+        text:
+          document.getElementById("card")?.hidden === false
+            ? document.getElementById("cardText").value
+            : null,
         marks: document.querySelectorAll(".mark:not(.sent)").length,
         sent: document.querySelectorAll(".mark.sent").length,
         notice: document.getElementById("noticeText")?.textContent,
@@ -109,6 +127,8 @@ async function act(browser, fn, options = {}) {
         add: document.getElementById("cardAdd")?.disabled ? "disabled" : "enabled",
         stream: document.getElementById("presence")?.dataset.state,
         status: document.getElementById("status")?.textContent,
+        // A chrome file refused after boot asks for a reload (src/browser/recover.js).
+        recover: sessionStorage.getItem("recoverReloaded"),
       }))
       .catch((reason) => `unreadable: ${reason.message.split("\n")[0]}`);
     // The verdict prints the stack, which V8 composed when the error was made.
@@ -441,6 +461,37 @@ async function pressOverThePage(page, lab) {
     })),
     { shown: true, cover: true },
     "a press over the page is the reviewer's own move into it, so the page is not held",
+  );
+}
+
+/**
+ * A Tab the reviewer presses in an open note is the keyboard's way into the page, so the move it makes
+ * is theirs, as a press over the page is: the chrome leaves the page loaded and shown and the note open.
+ * WebKit 26.6 names nothing as where the focus went, so there it rests on the chrome hearing the Tab's
+ * trusted keydown first (`tabbing` in src/browser/chrome.js); Firefox 155 fires no focusout in the
+ * chrome for this move, so there it holds without that.
+ */
+async function tabFromTheNote(page, lab, engine) {
+  await openFocusFixture(page, lab, "tab");
+  await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
+  await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  await page.keyboard.press("Shift+Tab");
+  await page.waitForFunction(() => document.activeElement?.id === "artifact");
+  // Two tasks: the check the focus move starts runs in one, so the second means it has run.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0)));
+  const shown = await page.evaluate(() => ({
+    card: !document.getElementById("card").hidden,
+    cover: document.getElementById("cover").hidden,
+    frame: getComputedStyle(document.getElementById("artifact")).display,
+  }));
+  const address = page
+    .frames()
+    .find((frame) => frame.parentFrame()?.url().endsWith("/wrapper.html"))
+    ?.url();
+  assert.deepEqual(
+    { ...shown, unloaded: address === undefined || address.startsWith("about:blank") },
+    { card: true, cover: true, frame: "block", unloaded: false },
+    `${engine}: a Shift+Tab from the note into the page`,
   );
 }
 
@@ -914,7 +965,7 @@ for (const engine of requested.length ? requested : Object.keys(ENGINES)) {
   // One line per engine, always, which the workflow lifts into the job summary.
   const verdict = await smoke(engine).catch((error) => {
     failed = true;
-    return `${error.named ?? engine} FAILED: ${error.stack ?? error}`;
+    return `${error.named ?? engine} FAILED${error.step ? ` in ${error.step}` : ""}: ${error.stack ?? error}`;
   });
   console.log(`engine smoke: ${verdict}`);
 }

@@ -15,12 +15,13 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { after, afterEach, before, test } from "node:test";
 import { pidAlive } from "../src/daemon-lock.js";
 import { envPrefix } from "../src/identity.js";
@@ -59,6 +60,15 @@ console.log(
     : `browser suite: SKIPPED, no end-to-end coverage in this run (${envPrefix}BROWSER=none)`,
 );
 
+// A run started without --test-timeout, as one test picked by name usually is, has no other bound,
+// and one hung for 13 hours holding its browser. The whole file takes about 150 s locally; ending
+// the process here ends the browser with it, through the launcher's DevTools pipe.
+const RUN_MS = 30 * 60_000;
+setTimeout(() => {
+  console.error(`browser suite: still running after ${RUN_MS} ms, so it ends here`);
+  process.exit(1);
+}, RUN_MS).unref();
+
 const lab = isolatedEnv();
 let browser;
 let opened;
@@ -69,6 +79,17 @@ test("the browser suite has a browser to run against", () => {
   assert.ok(
     executable || optedOut,
     `no browser found. Install Chrome or set ${envPrefix}BROWSER to its path, or to "none" to opt out of the only end-to-end coverage this repository has.`,
+  );
+});
+
+// CI drives Google Chrome on every runner, so a developer machine with Chrome beside Brave runs the
+// suite in the browser CI does, and its transcripts compare with CI's.
+test("where Chrome is installed beside Brave, the suite drives Chrome, as CI does", () => {
+  const brave = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser";
+  const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  assert.equal(
+    findBrowser({}, (path) => path === brave || path === chrome),
+    chrome,
   );
 });
 
@@ -162,6 +183,7 @@ before(
   async () => {
     if (!executable) return;
     browser = await launchBrowser(executable, { width: 800, height: 600 });
+    console.log(`browser suite: ${executable} is ${browser.product}`);
     opened = (await cli([fixture], lab.env, { timeoutMs: OPEN_MS })).json();
   },
   { timeout: LAUNCH_BOUND_MS + OPEN_MS + MARGIN_MS },
@@ -174,9 +196,11 @@ after(async () => {
 // The suite shares one daemon, which holds at most `limits.sessions` reviews and never makes room by
 // dropping one still holding notes, unsent or not yet acknowledged. Most tests leave one so, and the
 // 64th refused every open after it. So what each test leaves is released after it, as a reviewer and
-// an agent would: its drafts discarded, and its review polled until a poll brings nothing new.
+// an agent would: its drafts discarded, and its review polled until a poll brings nothing new. Its
+// tabs go first, passed or failed, so none of them runs on into the next test.
 afterEach(async () => {
   if (!executable) return;
+  await browser.release();
   const { port, token } = lab.serverInfo();
   const dir = join(lab.dir, "sessions");
   for (const name of readdirSync(dir).filter((entry) => entry.endsWith(".json"))) {
@@ -215,6 +239,294 @@ test(
   },
 );
 
+// A test that fails stops before its own close, so whatever it opened is still open when the next one
+// starts: on macos-15 (hunt job 114963804203) a failed test's tab ran on through the rest of the file.
+// The first of these two leaves what such a test would; the second is the test after it.
+let leftListening = 0;
+test(
+  "a test that stops early leaves a tab on a review, a tab of its own, a held request and a listener",
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
+  async () => {
+    const page = await browser.page(opened.session.url);
+    await page.waitFor("document.body?.dataset.ready === '1'");
+    await page.browser.send("Target.createTarget", { url: "about:blank" });
+    await page.browser.send("Fetch.enable", {
+      patterns: [{ urlPattern: `http://127.0.0.1:${lab.serverInfo().port}/chrome.css*` }],
+    });
+    page.browser.listeners.push(() => (leftListening += 1));
+  },
+);
+
+test(
+  "the test after one that stopped early starts with none of what it left, and its review loads",
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
+  async () => {
+    const heard = leftListening;
+    const page = await browser.page("about:blank");
+    const { targetInfos } = await page.browser.send("Target.getTargets");
+    const tabs = targetInfos
+      .filter(({ type, targetId }) => type === "page" && targetId !== page.targetId)
+      .map(({ url }) => new URL(url).pathname.replace(/[0-9a-f]{16}/, "<key>"));
+    const loaded = await page
+      .navigate(opened.session.url)
+      .then(() => page.waitFor("document.body?.dataset.ready === '1'"))
+      .catch((error) => error.message.split("\n")[0]);
+    assert.deepEqual(
+      { tabs, heard: leftListening - heard, loaded },
+      { tabs: ["blank"], heard: 0, loaded: true },
+    );
+  },
+);
+
+// Every DevTools message is handed to every listener on the connection, so one left behind by each
+// closed tab is work every later message pays for, for the rest of the suite.
+test(
+  "a closed tab leaves none of its listeners on the browser's connection",
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
+  async () => {
+    const other = await browser.page("about:blank");
+    const listening = other.browser.listeners.length;
+    const page = await browser.page(opened.session.url);
+    await page.frame();
+    await page.close();
+    assert.equal(other.browser.listeners.length, listening);
+    await other.close();
+  },
+);
+
+/** Whether a process is still there; a refusal to signal it means it is, and someone else's. */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+// A run that is killed, by a developer or by a runner ending a hung job, never reaches the launcher's
+// own cleanup, and a browser left behind held CPU and memory on a developer machine for 13 hours.
+test(
+  "a browser whose test run is killed exits with it",
+  { skip: !executable && "no browser found", timeout: LAUNCH_BOUND_MS + MARGIN_MS },
+  async () => {
+    const temp = mkdtempSync(join(lab.dir, "holder-"));
+    const holder = spawn(
+      process.execPath,
+      [join(dirname(fixture), "../helpers/browser-holder.js"), executable],
+      { env: { ...process.env, TMPDIR: temp }, stdio: ["ignore", "pipe", "inherit"] },
+    );
+    let said = "";
+    holder.stdout.on("data", (chunk) => (said += chunk));
+    let pid;
+    try {
+      pid = await until(
+        () => {
+          if (holder.exitCode !== null) throw new Error(`the holder exited ${holder.exitCode}`);
+          return Number(/^browser pid (\d+)$/m.exec(said)?.[1]);
+        },
+        { what: "the holder to launch its browser", timeoutMs: LAUNCH_BOUND_MS },
+      );
+      holder.kill("SIGKILL");
+      await until(() => !alive(pid), {
+        what: `the browser ${pid} to exit after its run was killed`,
+      });
+    } finally {
+      holder.kill("SIGKILL");
+      if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+      rmSync(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    }
+  },
+);
+
+// Target.closeTarget answers before the browser has destroyed the tab (50 of 50 locally), so a test
+// that looks right after a close could still find it.
+test(
+  "a tab is gone once its close answers",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const page = await browser.page("about:blank");
+    const destroyed = [];
+    const listener = (message) =>
+      message.method === "Target.targetDestroyed" && destroyed.push(message.params.targetId);
+    page.browser.listeners.push(listener);
+    try {
+      await page.close();
+      assert.ok(destroyed.includes(page.targetId), "the browser has said the tab is destroyed");
+    } finally {
+      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
+    }
+  },
+);
+
+// On windows-2025 a fresh tab's first load has stalled with its document answered 200 and the tab
+// answering nothing (hunt 38189872095, attempt 18), and the tab was left open for the rest of the suite.
+// A server that never answers stands in for it: the tab must go, and the failure must say whether the
+// navigation committed, since a tab answers nothing while one is in flight.
+test(
+  "a tab whose first load never finishes is closed, and its failure says nothing committed",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const held = [];
+    const server = createTcpServer((socket) => held.push(socket));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${server.address().port}/never`;
+    const other = await browser.page("about:blank");
+    const tabs = async () =>
+      (await other.browser.send("Target.getTargets")).targetInfos.map((target) => target.targetId);
+    try {
+      const listening = other.browser.listeners.length;
+      const before = await tabs();
+      const message = await browser.page(url).then(
+        () => assert.fail("a load nothing answered finished"),
+        (error) => error.message,
+      );
+      // By id: a tab that never committed may still be listed under about:blank.
+      const after = await tabs();
+      assert.deepEqual(
+        {
+          open: after.filter((id) => !before.includes(id)).length,
+          listening: other.browser.listeners.length,
+          committed: /\n {2}committed: (.*)/.exec(message)?.[1],
+        },
+        { open: 0, listening, committed: "none" },
+        message,
+      );
+    } finally {
+      for (const socket of held) socket.destroy();
+      server.close();
+      await other.close();
+    }
+  },
+);
+
+// A key the daemon does not hold is what a reloaded link to an evicted review asks for.
+test(
+  "a reloaded link to a review the daemon no longer holds says the review ended, in light and dark",
+  { skip: !executable && `no browser found; set ${envPrefix}BROWSER` },
+  async () => {
+    const { port, token } = lab.serverInfo();
+    const page = await browser.page("about:blank");
+    const looks = {};
+    try {
+      for (const scheme of ["light", "dark"]) {
+        await page.send("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-color-scheme", value: scheme }],
+        });
+        // Not `navigate`, whose load event never fired for the JSON a spent link was answered with.
+        await page.send("Page.navigate", {
+          url: `http://127.0.0.1:${port}/session/0000000000000000?${scheme}#${token}`,
+        });
+        await page.waitFor(
+          `location.search === "?${scheme}" && document.readyState === "complete"`,
+        );
+        looks[scheme] = JSON.parse(
+          await page.eval(`JSON.stringify({
+            title: document.title,
+            text: document.body.innerText.trim(),
+            background: getComputedStyle(document.body).backgroundColor,
+            color: getComputedStyle(document.body).color,
+          })`),
+        );
+      }
+    } finally {
+      await page.close();
+    }
+    for (const look of Object.values(looks)) {
+      assert.equal(
+        look.text,
+        "This review has ended\n\n" +
+          "This link belongs to a review that is no longer open, so there is nothing left to show.\n\n" +
+          "To review the file again, ask your agent to open it once more. It will give you a fresh link.",
+      );
+      assert.equal(look.title, "Review ended");
+    }
+    assert.notEqual(looks.light.background, looks.dark.background);
+    assert.notEqual(looks.light.color, looks.dark.color);
+  },
+);
+
+// A command goes unanswered either because the page it went to never settles or because the browser
+// stopped, and the two need different fixes, so the failure says which. Each case launches a browser of
+// its own, so the shared one is never stalled, and shortens the wait for only the command it stalls:
+// on macos-15 a 1000 ms wait on the whole launch failed it (hunt 38291498209).
+test(
+  "a page that never answers is named as the stall, and the browser goes on answering",
+  { skip: !executable && "no browser found", timeout: LAUNCH_BOUND_MS + MARGIN_MS },
+  async () => {
+    const own = await launchBrowser(executable);
+    try {
+      const page = await own.page("about:blank");
+      const never = { expression: "new Promise(() => {})", awaitPromise: true };
+      await assert.rejects(page.send("Runtime.evaluate", never, 1000), {
+        message:
+          "the browser sent no reply to Runtime.evaluate within 1000 ms, yet it answered " +
+          "Browser.getVersion at once: what stalled is the page it was sent to, its script busy " +
+          "or an awaited promise never settled, not the browser",
+      });
+      assert.equal(await page.eval("1 + 1"), 2);
+    } finally {
+      await own.close();
+    }
+  },
+);
+
+// Once, locally at 52e25a1, the browser stopped answering mid-suite: the first test waited 30 s on
+// Runtime.evaluate and every test after it 30 s more on Target.createTarget, each saying only that.
+test(
+  "a browser that stops answering is named as stopped, and every later command fails with that name",
+  {
+    skip: (!executable && "no browser found") || (process.platform === "win32" && "no SIGSTOP"),
+    timeout: LAUNCH_BOUND_MS + MARGIN_MS,
+  },
+  async () => {
+    const own = await launchBrowser(executable);
+    try {
+      const page = await own.page("about:blank");
+      process.kill(own.pid, "SIGSTOP");
+      const stopped = await page.send("Runtime.evaluate", { expression: "1" }, 1000).then(
+        () => assert.fail("a stopped browser answered"),
+        (error) => error.message,
+      );
+      assert.equal(
+        stopped,
+        "the browser stopped answering DevTools: no reply to Runtime.evaluate within 1000 ms, " +
+          "nor to Browser.getVersion within 5000 ms after it, so every later command fails with this",
+      );
+      await assert.rejects(own.page("about:blank"), { message: stopped });
+    } finally {
+      process.kill(own.pid, "SIGCONT");
+      await own.close();
+    }
+  },
+);
+
+// A reply that comes past its wait but ahead of the probe the wait set off was slow, not stalled. The
+// browser is stopped so the command cannot be answered within its 1 ms, and resumed once that has passed.
+test(
+  "a command answered past its wait but ahead of the probe is returned, never named a stall",
+  {
+    skip: (!executable && "no browser found") || (process.platform === "win32" && "no SIGSTOP"),
+    timeout: LAUNCH_BOUND_MS + MARGIN_MS,
+  },
+  async () => {
+    const own = await launchBrowser(executable);
+    try {
+      const page = await own.page("about:blank");
+      process.kill(own.pid, "SIGSTOP");
+      const slow = page.browser.send("Target.getTargets", {}, undefined, 1);
+      // Set after the command's own 1 ms timer, so it fires after that one has.
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      process.kill(own.pid, "SIGCONT");
+      const { targetInfos } = await slow;
+      assert.ok(targetInfos.some(({ targetId }) => targetId === page.targetId));
+    } finally {
+      process.kill(own.pid, "SIGCONT");
+      await own.close();
+    }
+  },
+);
+
 /** The reference implementation's snapshot: every element to depth 6 with 80 characters of text. */
 const REFERENCE_SNAPSHOT = `(() => {
   const lines = [];
@@ -235,11 +547,12 @@ test(
   async () => {
     const page = await browser.page(opened.session.url);
     const started = Date.now();
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.ready === '1'");
-    const readyMs = Date.now() - started;
-    await page.waitFor(FOLLOWING);
-    const artifact = await attaching;
+    let readyMs;
+    const artifact = await frameWhile(page, async () => {
+      await page.waitFor("document.body.dataset.ready === '1'");
+      readyMs = Date.now() - started;
+      await page.waitFor(FOLLOWING);
+    });
     // The chrome is ready as soon as the SDK announces itself, which is earlier than the
     // artifact having laid its stylesheet out; the rects below are measured from it.
     await artifact.waitFor("document.readyState === 'complete'");
@@ -585,9 +898,9 @@ test(
   { skip: !executable && "no browser found" },
   async () => {
     const page = await browser.page(opened.session.url);
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.revision === '0'");
-    const artifact = await attaching;
+    const artifact = await frameWhile(page, () =>
+      page.waitFor("document.body.dataset.revision === '0'"),
+    );
     await artifact.waitFor("document.readyState === 'complete'");
     const frameBox = JSON.parse(await page.eval(FRAME_BOX));
     const title = JSON.parse(
@@ -660,6 +973,34 @@ function componentSheet() {
   );
   return { repo, file };
 }
+
+test(
+  "a save that makes the page load a file outside its folder says so in the tab it reloads, and one that stops says nothing",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    const { page } = await openReview((await cli([file], lab.env)).json().session.url);
+    const outsideLine =
+      "(() => { const line = document.getElementById('outside'); return line.checkVisibility() ? line.textContent : null; })()";
+    await page.waitFor(FOLLOWING);
+    assert.equal(await page.eval(outsideLine), null, "every file the page loads is served");
+
+    // The line is drawn from the event that reloads the page, so it is there once the save shows.
+    writeFileSync(
+      file,
+      html.replace("</head>", '<link rel="stylesheet" href="../shared.css" /></head>'),
+    );
+    await page.waitFor("document.body.dataset.revision === '1'");
+    assert.equal(
+      await page.eval(outsideLine),
+      "../shared.css is outside the folder this review serves, so the page shows without it. Your agent can open it with --root to include it.",
+    );
+    writeFileSync(file, html);
+    await page.waitFor("document.body.dataset.revision === '2'");
+    assert.equal(await page.eval(outsideLine), null, "the save that drops it takes the line away");
+    await page.close();
+  },
+);
 
 test(
   "a sheet whose styles live above its folder paints styled under --root, and only there",
@@ -851,9 +1192,10 @@ setInterval(() => {
     );
     const session = (await cli([file], lab.env)).json().session;
     const page = await browser.page(session.url);
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.ready === '1'");
-    await handled(page, await attaching, "rounds");
+    const artifact = await frameWhile(page, () =>
+      page.waitFor("document.body.dataset.ready === '1'"),
+    );
+    await handled(page, artifact, "rounds");
     assert.equal(
       await page.eval("document.querySelectorAll('#marks .mark').length"),
       0,
@@ -1066,16 +1408,21 @@ const slowFrameOnHide = (page) =>
     }).observe(frame, { attributes: true, attributeFilter: ["hidden"] });
   })()`);
 
-/** The address of the page's frame as the browser has it, from the wrapper's frame tree. */
-async function pageAddress(page) {
+/** The wrapper's own DevTools session and its frame tree, which holds the page's frame. */
+async function wrapperOf(page) {
   for (const session of page.children.keys()) {
     const tree = await page.browser
       .send("Page.getFrameTree", {}, session)
       .then((answer) => answer.frameTree)
       .catch(() => null);
-    if (tree?.frame.url.endsWith("/wrapper.html")) return tree.childFrames?.[0]?.frame.url ?? null;
+    if (tree?.frame.url.endsWith("/wrapper.html")) return { session, tree };
   }
   return null;
+}
+
+/** The address of the page's frame as the browser has it, from the wrapper's frame tree. */
+async function pageAddress(page) {
+  return (await wrapperOf(page))?.tree.childFrames?.[0]?.frame.url ?? null;
 }
 
 /**
@@ -1086,19 +1433,18 @@ async function pageAddress(page) {
  */
 let keyReports = [];
 let focusReports = [];
-let hearing = false;
+const heard = (message) => {
+  if (message.method !== "Runtime.consoleAPICalled") return;
+  const [marker, type, key] = message.params.args.map((arg) => arg.value);
+  if (marker === "focus-calls key") keyReports.push(`${type} ${key}`);
+  else if (marker === "focus-calls focus")
+    focusReports.push({ id: type, at: message.params.timestamp });
+};
 function hearKeys(page) {
   keyReports = [];
   focusReports = [];
-  if (hearing) return;
-  hearing = true;
-  page.browser.listeners.push((message) => {
-    if (message.method !== "Runtime.consoleAPICalled") return;
-    const [marker, type, key] = message.params.args.map((arg) => arg.value);
-    if (marker === "focus-calls key") keyReports.push(`${type} ${key}`);
-    else if (marker === "focus-calls focus")
-      focusReports.push({ id: type, at: message.params.timestamp });
-  });
+  // Armed again in each test that hears, since the release after a test takes every listener it added.
+  if (!page.browser.listeners.includes(heard)) page.browser.listeners.push(heard);
 }
 
 /**
@@ -2221,8 +2567,24 @@ test(
         fetch(`http://127.0.0.1:${port}/health`)
           .then((r) => r.ok)
           .catch(() => false);
-      const page = await browser.page(session.url);
-      await page.waitFor("document.body.dataset.ready === '1'");
+      // The idle starts at the open, and on windows-2025 the tab's first request came after it: the
+      // daemon had idled out and refused the review's own page (run 38189872095, job 114620117308).
+      // Until the tab follows its review, the test's own probes are the activity that holds it.
+      let opening = true;
+      const holding = (async () => {
+        while (opening) {
+          await alive();
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      })();
+      let page;
+      try {
+        page = await browser.page(session.url);
+        await page.waitFor(FOLLOWING);
+      } finally {
+        opening = false;
+        await holding;
+      }
       // With the tab's event stream open, the daemon does not idle out past its short idle.
       // Nothing here touches it in the meantime, or the probe would be the thing keeping it
       // alive: the tab's own heartbeat, every 500 ms against a 1500 ms window, is the claim. A
@@ -2592,6 +2954,26 @@ test(
     await pointAt(page, artifact, "#title");
     assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: "", reason: null });
     await second.close();
+    await page.close();
+  },
+);
+
+test(
+  "the card opened after a note was added and sent starts empty",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.waitFor(FOLLOWING);
+    await noteOn(page, artifact, "#title", "Cut the title to four words");
+    await clickOn(page, "document.getElementById('send')");
+    await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+    await pointAt(page, artifact, "#p1");
+    assert.deepEqual(JSON.parse(await page.eval(CARD_SEEN)), { words: "", reason: null });
+    assert.deepEqual(
+      (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json().prompts.map((p) => p.prompt),
+      ["Cut the title to four words"],
+    );
     await page.close();
   },
 );
@@ -3484,7 +3866,7 @@ function reloadOf(page) {
  */
 async function openWithOneRefused(
   path,
-  { copy = copyOfFixture, heading = "#title" } = {},
+  { copy = copyOfFixture, heading = "#title", times = 1 } = {},
   navigation = "navigate",
 ) {
   const own = isolatedEnv();
@@ -3516,7 +3898,7 @@ async function openWithOneRefused(
     const { port } = own.serverInfo();
     const at = (where) => where.replace("<port>", String(port));
     const planned = typeof path === "string" ? 1 : (path?.length ?? 0);
-    if (typeof path === "string") refused = await refuseLoads(page, at(path));
+    if (typeof path === "string") refused = await refuseLoads(page, at(path), times);
     else if (path)
       refused = await refuseLoads(
         page,
@@ -3541,7 +3923,8 @@ async function openWithOneRefused(
     // Counted before the look is read: DevTools fetches the chrome's sheets again for the CSS domain.
     const counts = { ...(refused?.counts ?? { asked: 0, refused: 0 }) };
     const refusedLoads = refusedIn.size;
-    return { seen, look: await lookOf(page, artifact), reloads, refusedLoads, ...counts };
+    const look = await lookOf(page, artifact);
+    return { seen, look, reloads, refusedLoads, ...counts, described: await page.describe() };
   } finally {
     page.browser.listeners.splice(page.browser.listeners.indexOf(asksToReload), 1);
     await refused?.stop();
@@ -3558,6 +3941,47 @@ const healthyReview = (fixture) => {
   return healthy.get(fixture);
 };
 
+/**
+ * Asserts a review's look and counts against what they should be. A look that differs is most often
+ * a load that failed, which the diff alone never names, so a mismatch also says what the tab saw:
+ * `tab` is the tab, or the description it gave before it closed (`describe`).
+ */
+async function sameReview(actual, expected, tab) {
+  try {
+    assert.deepEqual(actual, expected);
+  } catch (error) {
+    error.message += `\n  ${typeof tab === "string" ? tab : await tab.describe()}`;
+    throw error;
+  }
+}
+
+// A face refused at every ask leaves the chrome in its fallback face for good: a look that differs
+// for a reason a hunt log has to name.
+test(
+  "a look that differs from the healthy review's names the load that failed it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { seen, look } = await healthyReview();
+    const refused = await openWithOneRefused(
+      "http://127.0.0.1:<port>/house/fonts/ibm-plex-mono/*",
+      { times: Infinity },
+      "reload",
+    );
+    const message = await sameReview(
+      { seen: refused.seen, look: refused.look },
+      { seen, look },
+      refused.described,
+    ).then(
+      () => assert.fail("a chrome with its code face refused for good looked healthy"),
+      (error) => error.message,
+    );
+    assert.match(
+      message,
+      /loads failed:(?:\n {4}.*)*\n {4}chrome: net::ERR_CONNECTION_REFUSED Font http:\/\/127\.0\.0\.1:\d+\/house\/fonts\/ibm-plex-mono\//,
+    );
+  },
+);
+
 test(
   "a review whose loads all answer is loaded once, with the help line, and the review it opens is the look the refused ones are held to",
   { skip: !executable && "no browser found" },
@@ -3566,8 +3990,9 @@ test(
       [undefined, "plan.html"],
       [MARKDOWN, "README.md"],
     ]) {
-      const { seen, reloads, refusedLoads, asked, refused } = await healthyReview(fixture);
-      assert.deepEqual(
+      const { seen, reloads, refusedLoads, asked, refused, described } =
+        await healthyReview(fixture);
+      await sameReview(
         { seen, reloads, asked, refused },
         {
           seen: { cover: null, status: HELP_LINE, file },
@@ -3576,6 +4001,7 @@ test(
           asked: 0,
           refused: 0,
         },
+        described,
       );
     }
   },
@@ -3606,13 +4032,17 @@ for (const [what, path, navigation, fixture] of [
     `a refused first load of ${what} is asked for again, and the reviewer gets a working review, never a dead end`,
     { skip: !executable && "no browser found" },
     async () => {
-      const { asked, refusedLoads, ...rest } = await openWithOneRefused(path, fixture, navigation);
+      const { asked, refusedLoads, described, ...rest } = await openWithOneRefused(
+        path,
+        fixture,
+        navigation,
+      );
       const { seen, look } = await healthyReview(fixture);
       // One reload for the refusal here when it is the chrome's own file, and one more for each load
       // in which the network refused one itself, which the chrome recovers the same way.
       const own = navigation === "reload" ? 1 : 0;
       assert.ok(refusedLoads >= own, `${refusedLoads} of the chrome's loads met a refused file`);
-      assert.deepEqual(rest, { seen, look, reloads: refusedLoads, refused: 1 });
+      await sameReview(rest, { seen, look, reloads: refusedLoads, refused: 1 }, described);
       // A refused face is asked for again on the reloaded chrome: measured as 3 asks (the refused one,
       // then two on the reloaded chrome) in 1200 of 1200 windows-2025 samples for Plex Mono. Not pinned
       // at 3, since how often Chrome requests a face can change with its version, not with this code.
@@ -3631,10 +4061,10 @@ test(
   { skip: !executable && "no browser found" },
   async () => {
     const { seen, look } = await healthyReview();
-    const { refusedLoads, ...rest } = await openWithOneRefused(
+    const { refusedLoads, described, ...rest } = await openWithOneRefused(
       "http://127.0.0.1:<port>/recover.js*",
     );
-    assert.deepEqual(rest, { seen, look, reloads: refusedLoads, asked: 1, refused: 1 });
+    await sameReview(rest, { seen, look, reloads: refusedLoads, asked: 1, refused: 1 }, described);
   },
 );
 
@@ -3645,7 +4075,7 @@ test(
     const { seen, look } = await healthyReview();
     // The house's roles on the first load, then its components on the load the reload for them made:
     // on windows-2025 (hunt 38168177233, attempt 20) the second left Send in the browser's own style.
-    const { refusedLoads, asked, ...rest } = await openWithOneRefused(
+    const { refusedLoads, asked, described, ...rest } = await openWithOneRefused(
       [
         ["http://127.0.0.1:<port>/house/roles.css*", 1],
         ["http://127.0.0.1:<port>/house/components.css*", 2],
@@ -3655,7 +4085,7 @@ test(
     );
     // Two, or one more for each load in which the network refused a file of the chrome's itself.
     assert.ok(refusedLoads >= 2, `${refusedLoads} of the chrome's loads met a refused file`);
-    assert.deepEqual(rest, { seen, look, reloads: refusedLoads, refused: 2 });
+    await sameReview(rest, { seen, look, reloads: refusedLoads, refused: 2 }, described);
     // The roles on each of the three loads, the components on the last two at least.
     assert.ok(asked >= 5, `asked ${asked}: each refused file asked for again on a later load`);
   },
@@ -3685,9 +4115,10 @@ test(
       await noteOn(page, artifact, "#title", "Name the queue in the title");
       // Counted before the look is read: DevTools fetches the chrome's sheets again for the CSS domain.
       const counts = { ...refused.counts };
-      assert.deepEqual(
+      await sameReview(
         { look: await lookOf(page, artifact), counts },
         { look: (await healthyReview()).look, counts: { asked: 2, refused: 1 } },
+        page,
       );
     } finally {
       await refused?.stop();
@@ -3697,45 +4128,124 @@ test(
   },
 );
 
-test(
-  "a file of the chrome's own that never loads reloads the chrome once, never in a loop",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const own = isolatedEnv();
-    const page = await browser.page("about:blank");
-    let refused;
-    try {
-      const { file } = copyOfFixture();
-      const url = (await cli([file], own.env)).json().session.url;
-      const { port } = own.serverInfo();
-      refused = await refuseLoads(page, `http://127.0.0.1:${port}/chrome.css*`, Infinity);
-      // A reload the chrome asks for fires `navigate` in the same turn as the refused sheet's error,
-      // which comes before the chrome's own script runs and so before the review is ready.
-      await page.send("Page.addScriptToEvaluateOnNewDocument", {
-        source: `window.leaving = 0;
-        navigation.addEventListener("navigate", () => { window.leaving += 1; });`,
-      });
-      await page.navigate(url);
-      // The chrome's script still runs, so the review opens; without its sheet it is the residual a
-      // file refused on both loads leaves (docs/ENGINEERING-NOTES.md).
-      await page.waitFor("document.body?.dataset.ready === '1'");
-      assert.deepEqual(
-        JSON.parse(
-          await page.eval(`JSON.stringify({
-            navigation: performance.getEntriesByType('navigation')[0].type,
-            leaving: window.leaving,
-          })`),
-        ),
-        { navigation: "reload", leaving: 0 },
-      );
-      assert.deepEqual(refused.counts, { asked: 2, refused: 2 });
-    } finally {
-      await refused?.stop();
-      await page.close();
-      await own.stop();
-    }
-  },
-);
+// Once the refused sheet stops blocking the chrome's scripts, the browser picks what runs first: the
+// scripts, which hold the reload until the connection is live (macos-15, hunt job 114963804203), or
+// the sheet's error event, which reloads at once, before the first load could fire (ubuntu-24.04,
+// hunt job 115201959148). The second is forced by holding chrome.js; the first is the order the
+// browser takes almost always once the scripts have arrived, and the test passes in either.
+for (const errorFirst of [false, true])
+  test(
+    `a file of the chrome's own that never loads reloads the chrome once, never in a loop${errorFirst ? ", when its error comes before the chrome's script runs" : ""}`,
+    { skip: !executable && "no browser found" },
+    async () => {
+      const own = isolatedEnv();
+      const page = await browser.page("about:blank");
+      // In the scripts' order, the first health answer waits for the first load's load event, so the
+      // navigation below returns on the document the reload replaces, and the reload's document waits
+      // for that one to be ready, which a read made then finds. In the error's order the first load
+      // never fires, so nothing waits on it. The review is read only on the document the reload commits.
+      let commits = 0;
+      const counts = { asked: 0, refused: 0 };
+      const urls = new Map();
+      const scripts = new Set(["/house/radiogroup.js", "/chrome.js"]);
+      const seen = {};
+      const held = {};
+      const saw = (what) => {
+        seen[what] = true;
+        held[what]?.();
+        delete held[what];
+      };
+      const ordering = ({ method, params, sessionId }) => {
+        if (sessionId !== page.sessionId) return;
+        if (method === "Page.frameNavigated" && params.frame.id === page.targetId) {
+          commits += 1;
+          if (commits === 2) saw("reload");
+        } else if (method === "Network.requestWillBeSent")
+          urls.set(params.requestId, new URL(params.request.url).pathname);
+        else if (
+          method === "Network.loadingFinished" &&
+          scripts.delete(urls.get(params.requestId))
+        ) {
+          if (scripts.size === 0) saw("script");
+        } else if (method === "Page.loadEventFired") saw("load");
+        else if (method === "Runtime.bindingCalled" && params.name === "chromeReady") saw("ready");
+        else if (method === "Fetch.requestPaused") {
+          const { requestId } = params;
+          const path = new URL(params.request.url).pathname;
+          let answer = () => page.send("Fetch.continueRequest", { requestId }).catch(() => {});
+          let after = "load";
+          if (path === "/chrome.css") {
+            counts.asked += 1;
+            after = counts.asked === 1 && !errorFirst ? "script" : null;
+            answer = () => {
+              counts.refused += 1;
+              page
+                .send("Fetch.failRequest", { requestId, errorReason: "ConnectionRefused" })
+                .catch(() => {});
+            };
+          } else if (path === "/chrome.js") after = commits === 1 ? "reload" : null;
+          // Only a first load that fired its load event is ready before the reload, so only then is
+          // the reload's document held for it.
+          else if (path.startsWith("/session/"))
+            after = commits === 1 && seen.load ? "ready" : null;
+          if (!after || seen[after]) answer();
+          else held[after] = answer;
+        }
+      };
+      page.browser.listeners.push(ordering);
+      try {
+        const { file } = copyOfFixture();
+        const url = (await cli([file], own.env)).json().session.url;
+        const { port } = own.serverInfo();
+        const paths = [
+          "chrome.css*",
+          "health*",
+          "session/*",
+          ...(errorFirst ? ["chrome.js*"] : []),
+        ];
+        await page.send("Fetch.enable", {
+          patterns: paths.map((path) => ({ urlPattern: `http://127.0.0.1:${port}/${path}` })),
+        });
+        await page.send("Runtime.addBinding", { name: "chromeReady" });
+        await page.send("Page.addScriptToEvaluateOnNewDocument", {
+          source: `new MutationObserver((_, observer) => {
+            if (document.body?.dataset.ready !== "1") return;
+            observer.disconnect();
+            chromeReady("");
+          }).observe(document, { subtree: true, attributeFilter: ["data-ready"] });`,
+        });
+        // A second reload would fire `navigate` on the reloaded document, counted here from its start.
+        await page.send("Page.addScriptToEvaluateOnNewDocument", {
+          source: `window.leaving = 0;
+          navigation.addEventListener("navigate", () => { window.leaving += 1; });`,
+        });
+        await page.navigate(url);
+        await page.explained(until(() => commits === 2, { what: "the chrome's reload to commit" }));
+        const navigation = "performance.getEntriesByType('navigation')[0].type";
+        assert.equal(
+          await page.eval(navigation),
+          "reload",
+          "the first read after the navigation is on the reloaded chrome",
+        );
+        // The chrome's script still runs, so the review opens; without its sheet it is the residual a
+        // file refused on both loads leaves (docs/ENGINEERING-NOTES.md).
+        await page.waitFor("document.body?.dataset.ready === '1'");
+        assert.deepEqual(
+          JSON.parse(
+            await page.eval(
+              `JSON.stringify({ navigation: ${navigation}, leaving: window.leaving })`,
+            ),
+          ),
+          { navigation: "reload", leaving: 0 },
+        );
+        assert.deepEqual(counts, { asked: 2, refused: 2 });
+      } finally {
+        page.browser.listeners.splice(page.browser.listeners.indexOf(ordering), 1);
+        await page.close();
+        await own.stop();
+      }
+    },
+  );
 
 test(
   "a chrome face refused while a margin note holds typed text keeps the text, and the chrome reloads for the face once the note is saved",
@@ -3786,7 +4296,7 @@ test(
       await reloadOf(page);
       const reloaded = await reviewIn(page);
       await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
-      assert.deepEqual(
+      await sameReview(
         {
           note: await page.eval(
             "document.querySelector('.mark:not(.sent)').textContent.includes('Shorter title')",
@@ -3799,6 +4309,7 @@ test(
           look: (await healthyReview()).look,
           face: "IBM Plex Mono",
         },
+        page,
       );
     } finally {
       page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
@@ -3857,7 +4368,7 @@ test(
       await page.waitFor(
         "document.querySelectorAll('.mark:not(.sent)').length === 1 && document.querySelector('.mark:not(.sent)').textContent.includes('Shorter titleagain')",
       );
-      assert.deepEqual(
+      await sameReview(
         {
           look: await lookOf(page, reloaded.artifact),
           face: await paintedFace(page, "#fileName"),
@@ -3866,6 +4377,7 @@ test(
           look: (await healthyReview()).look,
           face: "IBM Plex Mono",
         },
+        page,
       );
     } finally {
       page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
@@ -4440,6 +4952,23 @@ test(
 );
 
 /**
+ * The page under review (`frame`), looked for from the tab's first load while `waits` run on the tab,
+ * once both are done. A wait that fails first settles only after the look has too, which it has heard,
+ * so a failed open leaves nothing running past its test and no rejection nobody listens for.
+ */
+async function frameWhile(page, waits) {
+  const attaching = page.frame();
+  const looked = attaching.catch(() => {});
+  try {
+    await waits();
+  } catch (error) {
+    await looked;
+    throw error;
+  }
+  return attaching;
+}
+
+/**
  * Opens a review in a fresh tab, with the artifact attached and Annotate on. It starts on, which
  * the slice test asserts; turning it on here when it is not keeps every other test about its own
  * property rather than about that default.
@@ -4451,10 +4980,10 @@ async function openReview(url, viewport) {
 /** Waits for a tab navigated to a review to be ready and following it, as `openReview` describes. */
 async function reviewIn(page) {
   hearKeys(page);
-  const attaching = page.frame();
-  await page.waitFor("document.body?.dataset.ready === '1'");
-  await page.waitFor(FOLLOWING);
-  const artifact = await attaching;
+  const artifact = await frameWhile(page, async () => {
+    await page.waitFor("document.body?.dataset.ready === '1'");
+    await page.waitFor(FOLLOWING);
+  });
   await artifact.waitFor("document.readyState === 'complete'");
   // Read from what the page acknowledged rather than from the switch's markup.
   await page.waitFor("document.body.dataset.annotate !== undefined");
@@ -4464,6 +4993,34 @@ async function reviewIn(page) {
   await page.waitFor("document.body.dataset.annotate === '1'");
   return { page, artifact };
 }
+
+// A tab that never gets ready fails its open on that wait, and the look for the page under review
+// begun alongside it must neither outlive the test nor reject with nobody listening: both muddied
+// the log of every failed open with an error after the test had ended.
+test(
+  "a tab that never gets ready fails its open with nothing of the open still running",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const page = await browser.page("about:blank");
+    const stray = [];
+    const hear = (reason) => stray.push(String(reason?.message ?? reason).split("\n")[0]);
+    process.on("unhandledRejection", hear);
+    let asked = 0;
+    const evaluate = page.eval.bind(page);
+    page.eval = (...args) => ((asked += 1), evaluate(...args));
+    try {
+      await assert.rejects(reviewIn(page), /dataset\.ready === '1'/);
+      const settled = asked;
+      // A wait still running asks the tab again within one 25 ms poll and its round trip; 500 ms
+      // bounds twenty of those, so a look left running shows here.
+      await sleep(500);
+      assert.deepEqual({ stray, askedAfter: asked - settled }, { stray: [], askedAfter: 0 });
+    } finally {
+      process.off("unhandledRejection", hear);
+      await page.close();
+    }
+  },
+);
 
 /**
  * Has the chrome's first `count` event-stream connects fail before they open, as Windows fails about
@@ -4488,6 +5045,57 @@ async function refuseStream(page, count) {
     })()`,
   });
 }
+
+/**
+ * Holds every message the chrome's event stream delivers, in the order it arrives, until the page runs
+ * `releaseStream()`; `streamHeld` lists them meanwhile.
+ */
+async function holdStreamMessages(page) {
+  await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const Real = WebSocket;
+      window.streamHeld = [];
+      window.WebSocket = function (url, protocols) {
+        const socket = new Real(url, protocols);
+        const add = socket.addEventListener.bind(socket);
+        socket.addEventListener = (type, listener, options) =>
+          add(type, type !== "message" ? listener : (event) => {
+            if (window.streamHeld) window.streamHeld.push(() => listener(event));
+            else listener(event);
+          }, options);
+        return socket;
+      };
+      window.WebSocket.prototype = Real.prototype;
+      window.releaseStream = () => {
+        const held = window.streamHeld;
+        window.streamHeld = null;
+        for (const run of held) run();
+      };
+    })()`,
+  });
+}
+
+// The hello the stream opens with rebuilds the margin the page loaded with, so a test that points at
+// the margin once the tab says it follows its review must find the rebuilt one: a press on a mark
+// the hello replaced before its release left the chrome's focus on the body and opened no Answer card
+// in a full local suite.
+test(
+  "a tab says it follows its review only once the review's state from its stream is in",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const url = (await cli([file], lab.env)).json().session.url;
+    const page = await browser.page("about:blank");
+    await holdStreamMessages(page);
+    await page.navigate(url);
+    await page.waitFor("window.streamHeld?.length > 0");
+    const whileHeld = await page.eval("document.body.dataset.stream ?? null");
+    await page.eval("releaseStream()");
+    await page.waitFor(FOLLOWING);
+    await page.close();
+    assert.equal(whileHeld, null, "the tab said it followed its review before the hello was in");
+  },
+);
 
 test(
   "a tab whose first stream connects fail follows its review once one opens, and a note added then reaches the agent",
@@ -4741,6 +5349,9 @@ test(
       );
       assert.ok(section(described, "frames").includes(frameLine));
       assert.ok(section(described, "loads failed").includes(loadLine));
+      // The review's address as the browser committed it, which carries no fragment.
+      const committed = url.split("#")[0];
+      assert.match(described, new RegExp(`\n {2}committed: ${RegExp.escape(committed)}\n`));
     } finally {
       await refusal.stop();
       await page.close();
@@ -4762,9 +5373,113 @@ async function handled(page, artifact, attempts) {
     await artifact.waitFor(`${attempts} >= ${from + 10}`);
   }
   sentinel -= 1;
-  await artifact.eval(`parent.postMessage({ type: "scroll", nonce, y: ${sentinel} }, "*")`);
+  const nonce = JSON.stringify(await nonceOf(page, artifact));
+  await artifact.eval(
+    `parent.postMessage({ type: "scroll", nonce: ${nonce}, y: ${sentinel} }, "*")`,
+  );
   await page.waitFor(`document.body.dataset.scroll === "${sentinel}"`);
 }
+
+/**
+ * The nonce the chrome handed the page's SDK, which a page that does not listen for it never sees. It
+ * is heard in the wrapper, which every message from the page passes through, on the report of the
+ * page's place that a scroll event has the SDK post; that report changes nothing the chrome keeps.
+ * It is posted from an animation frame, so it is taken only behind a mark posted in the same task as
+ * the scroll: then no report is left to land behind the barrier and undo it, and a page posting with
+ * its own copy of the nonce cannot be heard first.
+ */
+async function nonceOf(page, artifact) {
+  const inWrapper = async (expression) => {
+    const wrapper = await wrapperOf(page);
+    if (!wrapper) return null;
+    const answer = await page.browser.send(
+      "Runtime.evaluate",
+      { expression, returnByValue: true },
+      wrapper.session,
+    );
+    return answer.result.value;
+  };
+  await until(
+    () =>
+      inWrapper(`globalThis.heard = "";
+        globalThis.marked = false;
+        globalThis.hearing ??= addEventListener("message", (event) => {
+          if (event.source === parent) return;
+          if (event.data?.type === "handled-mark") marked = true;
+          else if (marked && event.data?.type === "scroll" && event.data.nonce) heard = event.data.nonce;
+        }, true) ?? true`),
+    { what: "the wrapper to listen for the page's messages" },
+  );
+  await artifact.eval(
+    `dispatchEvent(new Event("scroll")); parent.postMessage({ type: "handled-mark" }, "*")`,
+  );
+  return page.explained(
+    until(() => inWrapper("heard"), { what: "the page's SDK to post with its nonce" }),
+  );
+}
+
+// On ubuntu-24.04 (hunt 38234772352) a page that posts with its nonce, as the hostile fixtures do,
+// was heard before the SDK's report of its place, which then landed behind the barrier and put
+// `data-scroll` back to the page's own offset. This page posts on the scroll at once and holds the
+// SDK's animation frames until its own next post, which is the latest that report can land.
+test(
+  "a barrier is not undone by the page's report of its place, however late that report lands",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pb-late-"));
+    const file = join(dir, "late.html");
+    writeFileSync(
+      file,
+      `<!doctype html><meta charset="utf-8"><title>Late</title>
+<script>
+let nonce = "";
+addEventListener("message", (e) => {
+  if (e.data && e.data.type === "init") nonce = e.data.nonce;
+});
+globalThis.lag = () => {
+  const real = parent;
+  const held = [];
+  globalThis.requestAnimationFrame = (callback) => held.push(callback);
+  globalThis.parent = {
+    postMessage(message, origin) {
+      real.postMessage(message, origin);
+      for (const callback of held.splice(0)) callback(performance.now());
+    },
+  };
+  addEventListener("scroll", () => real.postMessage({ type: "lagging", nonce }, "*"), true);
+};
+</script>
+<body><h1 id="t">Release notes</h1></body>`,
+    );
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    try {
+      await artifact.eval("lag()");
+      await handled(page, artifact);
+      assert.equal(await page.eval("document.body.dataset.scroll"), String(sentinel));
+    } finally {
+      await page.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+// The barrier a negative needs, on a page that knows nothing of the chrome's messages: with Annotate
+// off the reviewer's click is the page's own, and the chrome handles whatever the SDK made of it
+// without opening a card.
+test(
+  "a reviewer's click in an ordinary page with Annotate off opens no card",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await page.eval("document.getElementById('annotate').click()");
+    await page.waitFor("document.body.dataset.annotate === '0'");
+    await clickIn(page, artifact, "#title");
+    await handled(page, artifact);
+    assert.equal(await page.eval("document.getElementById('card').hidden"), true);
+    await page.close();
+  },
+);
 
 /**
  * Adds a note the way a reviewer does: point at the element, type, press Enter. The page ignores
@@ -4799,22 +5514,101 @@ async function pointAt(page, artifact, selector) {
   );
 }
 
-/** A real click on an element of the artifact, in from its left edge, after scrolling it into view. */
-async function clickIn(page, artifact, selector, at) {
-  const frameBox = JSON.parse(await page.eval(FRAME_BOX));
-  const box = JSON.parse(
-    await artifact.eval(`(() => {
-      const element = document.querySelector(${JSON.stringify(selector)});
-      element.scrollIntoView({ block: "nearest", behavior: "instant" });
-      return JSON.stringify(element.getBoundingClientRect());
-    })()`),
-  );
-  const point = {
-    x: frameBox.left + box.left + (at?.x ?? Math.min(30, box.width / 2)),
-    y: frameBox.top + box.top + (at?.y ?? box.height / 2),
+/**
+ * Kept in the page under review from a click's first measure: every scroll it makes, with the call
+ * that made it, and what the click's press landed on, reported through the `pressLanded` binding as
+ * it lands, so a press that follows a link is still heard. The press is read even where Annotate
+ * stops it on a control, since the SDK's listener runs ahead of any a test adds. Once per document.
+ */
+const RECORD_PRESS = `(() => {
+  if (globalThis.pressLog) return;
+  const log = (globalThis.pressLog = { scrolls: [], pressed: false, selector: null });
+  const at = () => Math.round(performance.now()) + " ms";
+  const caller = () => new Error().stack.split("\\n").slice(3, 5).map((line) => line.trim()).join(" < ");
+  for (const [owner, name] of [[window, "scrollTo"], [window, "scrollBy"], [window, "scroll"],
+    [Element.prototype, "scrollIntoView"], [Element.prototype, "scrollTo"], [Element.prototype, "scrollBy"]]) {
+    const original = owner[name];
+    owner[name] = function (...args) {
+      log.scrolls.push(at() + " " + name + "(" + JSON.stringify(args) + ") at scrollY " + scrollY + ", " + caller());
+      return original.apply(this, args);
+    };
+  }
+  let last = scrollY;
+  addEventListener("scroll", () => {
+    if (scrollY !== last) log.scrolls.push(at() + " scrollY " + last + " -> " + scrollY);
+    last = scrollY;
+  }, true);
+  const press = (event) => {
+    if (event.type !== "pointerdown" || log.pressed) return;
+    const target = event.target;
+    const name = target instanceof Element ? target.tagName.toLowerCase() + (target.id ? "#" + target.id : "") : String(target);
+    log.pressed = true;
+    const inside = Boolean(log.selector && document.querySelector(log.selector)?.contains(target));
+    globalThis.pressLanded?.(JSON.stringify({ inside, name, scrollY, scrolls: log.scrolls }));
   };
-  await page.pointerInto(artifact, point);
-  await page.click(point.x, point.y);
+  for (const name of ["stopImmediatePropagation", "stopPropagation"]) {
+    const original = Event.prototype[name];
+    Event.prototype[name] = function () {
+      press(this);
+      return original.call(this);
+    };
+  }
+  addEventListener("pointerdown", press, true);
+})()`;
+
+/**
+ * A real click on an element of the artifact, in from its left edge, after scrolling it into view.
+ * The point is measured again once the pointer is in the frame, which can take seconds on
+ * windows-2025, and the press must land inside the element: a page that moved under the click
+ * fails here, naming what it hit and every scroll meanwhile, not as a note on something else.
+ */
+async function clickIn(page, artifact, selector, at) {
+  const measure = async (first) => {
+    const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+    const box = JSON.parse(
+      await artifact.eval(`(() => {
+        ${RECORD_PRESS};
+        pressLog.pressed = false;
+        pressLog.selector = ${JSON.stringify(selector)};
+        if (${first}) pressLog.scrolls = [];
+        const element = document.querySelector(${JSON.stringify(selector)});
+        element.scrollIntoView({ block: "nearest", behavior: "instant" });
+        pressLog.scrolls.push(Math.round(performance.now()) + " ms measured at scrollY " + scrollY);
+        return JSON.stringify({ ...element.getBoundingClientRect().toJSON(), scrollY });
+      })()`),
+    );
+    return {
+      x: frameBox.left + box.left + (at?.x ?? Math.min(30, box.width / 2)),
+      y: frameBox.top + box.top + (at?.y ?? box.height / 2),
+      scrollY: box.scrollY,
+    };
+  };
+  let landed = null;
+  const hear = ({ sessionId, method, params }) => {
+    if (sessionId !== artifact.sessionId || method !== "Runtime.bindingCalled") return;
+    if (params.name === "pressLanded") landed = JSON.parse(params.payload);
+  };
+  await artifact.send("Runtime.addBinding", { name: "pressLanded" });
+  artifact.browser.listeners.push(hear);
+  try {
+    await page.pointerInto(artifact, await measure(true));
+    const point = await measure(false);
+    await page.click(point.x, point.y);
+    // A press that reached no element of the page never reports; the assertion names that.
+    await until(() => landed, { what: `the press on ${selector} to reach the page` }).catch(
+      () => {},
+    );
+    landed ??= { name: "nothing in the page", scrolls: [] };
+    landed.point = point;
+  } finally {
+    artifact.browser.listeners.splice(artifact.browser.listeners.indexOf(hear), 1);
+  }
+  assert.ok(
+    landed.inside,
+    `the press at ${landed.point.x},${landed.point.y} landed on ${landed.name}, not ${selector}: the ` +
+      `frame stood at scrollY ${landed.point.scrollY} when measured and ${landed.scrollY} at the press; its scrolls:\n  ` +
+      landed.scrolls.join("\n  "),
+  );
 }
 
 /**
@@ -4986,7 +5780,7 @@ async function hearClose(artifact) {
 /** Collects what `HEARS_LATE` reports the page proposed, in the order the page posts it. */
 async function pageProposals(page, artifact) {
   const proposed = [];
-  page.browser.listeners.push((message) => {
+  page.listen((message) => {
     if (
       message.sessionId === artifact.sessionId &&
       message.method === "Runtime.consoleAPICalled" &&
@@ -5315,6 +6109,89 @@ test(
       assert.deepEqual(
         polled.prompts.map((p) => p.prompt),
         ["Name the queue in the title", "Say how long each step takes"],
+      );
+      await page.close();
+    } finally {
+      await own.stop();
+    }
+  },
+);
+
+/** Each unsent note's Edit, × and an open edit's Save as they paint, with the words it holds. */
+const MARGIN_PAINT = `JSON.stringify([...document.querySelectorAll('.mark:not(.sent)')].map((li) => {
+  const paint = (button) => button && { disabled: button.disabled, cursor: getComputedStyle(button).cursor };
+  return {
+    edit: paint(li.querySelector('.mark-edit')),
+    remove: paint(li.querySelector('.mark-remove')),
+    save: paint(li.querySelector('.mark-editor [type=submit]')),
+    words: li.querySelector('.mark-edit-text')?.value ?? li.querySelector('.mark-note').textContent,
+  };
+}))`;
+
+test(
+  "a tab that cannot reach its review offers no margin Edit, Remove or Save that would fail, and they work once it is back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    try {
+      const { file } = copyOfFixture();
+      const { page, artifact } = await openReview((await cli([file], own.env)).json().session.url);
+      await page.waitFor(FOLLOWING);
+      await noteOn(page, artifact, "#title", "Make the title shorter");
+      await noteOn(page, artifact, "#p1", "Say how long");
+      await clickOn(page, "document.querySelectorAll('.mark-edit')[1]");
+      await page.waitFor("document.activeElement.classList.contains('mark-edit-text')");
+      await page.type(" each step takes");
+      const live = { disabled: false, cursor: "pointer" };
+      const off = { disabled: true, cursor: "not-allowed" };
+      assert.deepEqual(JSON.parse(await page.eval(MARGIN_PAINT)), [
+        { edit: live, remove: live, save: null, words: "Make the title shorter" },
+        { edit: null, remove: null, save: live, words: "Say how long each step takes" },
+      ]);
+
+      assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
+      await page.waitFor("document.getElementById('notice').checkVisibility()");
+      assert.deepEqual(
+        JSON.parse(await page.eval(MARGIN_PAINT)),
+        [
+          { edit: off, remove: off, save: null, words: "Make the title shorter" },
+          { edit: null, remove: null, save: off, words: "Say how long each step takes" },
+        ],
+        "nothing in the margin offers a call the page cannot make",
+      );
+      // A call refused for want of a connection fails in the turn of the key or press that made
+      // it, so an empty status read after each proves neither tried.
+      const status = "document.getElementById('status').textContent";
+      await page.enter();
+      assert.equal(await page.eval(status), "", "Enter in the edit waits, as Save does");
+      await clickOn(page, "document.querySelectorAll('.mark-remove')[0]");
+      assert.equal(await page.eval(status), "");
+      assert.equal(JSON.parse(await page.eval(MARGIN_PAINT)).length, 2, "both notes are kept");
+
+      assert.equal(
+        (await cli(["poll", file, "--timeout-ms", "0"], own.env)).json().status,
+        "waiting",
+      );
+      await page.waitFor(`${FOLLOWING} && !document.getElementById('notice').checkVisibility()`, {
+        timeoutMs: 20_000,
+      });
+      assert.deepEqual(JSON.parse(await page.eval(MARGIN_PAINT)), [
+        { edit: live, remove: live, save: null, words: "Make the title shorter" },
+        { edit: null, remove: null, save: live, words: "Say how long each step takes" },
+      ]);
+      await clickOn(page, "document.querySelector('.mark-editor [type=submit]')");
+      await page.waitFor(
+        "[...document.querySelectorAll('.mark-note')].map((e) => e.textContent).join('|') === 'Make the title shorter|Say how long each step takes'",
+      );
+      await clickOn(page, "document.querySelectorAll('.mark-remove')[0]");
+      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+      await clickOn(page, "document.getElementById('send')");
+      await page.waitFor("document.querySelectorAll('.mark.sent').length === 1");
+      assert.deepEqual(
+        (await cli(["poll", file, "--timeout-ms", "0"], own.env))
+          .json()
+          .prompts.map((p) => p.prompt),
+        ["Say how long each step takes"],
       );
       await page.close();
     } finally {
@@ -5755,17 +6632,40 @@ test(
 // A tab that could not reach the daemon while its review was evicted (a laptop asleep, a dropped
 // network) comes back to a review that no longer exists: the server refuses its stream with 4404,
 // and the tab must say so and how to get a fresh page, and the agent's next open must give one.
+// Its code face is refused while it is offline, as on macos-15 (run 38274988729), so a reload the
+// chrome holds for that face is in play when the stream opens and the server refuses it.
 test(
   "a tab that was offline while its review was evicted says so on its return, and the next open gives a working tab",
   { skip: !executable && "no browser found" },
   async () => {
     const own = isolatedEnv();
     const pages = [];
+    let reloads = 0;
+    const held = [];
     try {
       const { file } = copyOfFixture();
       const session = (await cli([file], own.env)).json().session;
-      const away = await openReview(session.url);
-      pages.push(away.page);
+      const page = await browser.page("about:blank");
+      pages.push(page);
+      page.listen(({ method, params, sessionId }) => {
+        if (method === "Page.frameRequestedNavigation" && sessionId === page.sessionId) {
+          if (params.frameId === page.targetId && params.reason === "reload") reloads += 1;
+        }
+        if (method !== "Fetch.requestPaused" || sessionId) return;
+        if (held.length === 0) held.push(params.requestId);
+        else
+          page.browser
+            .send("Fetch.continueRequest", { requestId: params.requestId })
+            .catch(() => {});
+      });
+      await page.browser.send("Fetch.enable", {
+        patterns: [
+          { urlPattern: `http://127.0.0.1:${own.serverInfo().port}/house/fonts/ibm-plex-mono/*` },
+        ],
+      });
+      await page.send("Page.navigate", { url: session.url });
+      const away = await reviewIn(page);
+      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
       const offline = (on) =>
         away.page.send("Network.emulateNetworkConditions", {
           offline: on,
@@ -5775,6 +6675,14 @@ test(
         });
       await away.page.send("Network.enable");
       await offline(true);
+      await page.browser.send("Fetch.failRequest", {
+        requestId: held[0],
+        errorReason: "InternetDisconnected",
+      });
+      await page.browser.send("Fetch.disable");
+      // The face's load has failed once the document's faces have settled; two frames after that let
+      // recover.js's loadingerror handler run before the daemon stops.
+      await page.explained(page.eval(SETTLED));
       assert.deepEqual((await cli(["stop"], own.env)).json(), { status: "stopped" });
       await away.page.waitFor("document.getElementById('presence').dataset.state === 'lost'", {
         timeoutMs: 20_000,
@@ -5809,6 +6717,14 @@ test(
       assert.equal(
         await away.page.eval("document.getElementById('noticeText').textContent"),
         GONE_NOTICE,
+      );
+      // A tab whose link is spent holds the face's reload for good, so none can come after this.
+      assert.deepEqual(
+        {
+          reloads,
+          navigation: await page.eval("performance.getEntriesByType('navigation')[0].type"),
+        },
+        { reloads: 0, navigation: "navigate" },
       );
 
       const reopened = await cli([file], own.env);
@@ -6678,10 +7594,10 @@ test(
     const { file } = copyOfFixture();
     const session = (await cli([file], lab.env)).json().session;
     const page = await browser.page(session.url, { width: 390, height: 844 });
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.ready === '1'");
-    await page.waitFor(FOLLOWING);
-    const artifact = await attaching;
+    const artifact = await frameWhile(page, async () => {
+      await page.waitFor("document.body.dataset.ready === '1'");
+      await page.waitFor(FOLLOWING);
+    });
     await artifact.waitFor("document.readyState === 'complete'");
     const usable = async (when, selectors) => {
       const seen = JSON.parse(await page.eval(reachability(selectors)));
@@ -7134,6 +8050,56 @@ test(
     await pinOnFirstLine(review.artifact, onInstall, install);
     await review.page.close();
     rmSync(dirname(readme.file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "a click the page scrolls under while the pointer comes in still lands on what it was aimed at",
+  { skip: !executable && "no browser found" },
+  async () => {
+    // On windows-2025 the frame twice stood 130 px above where the click's scroll had left it when
+    // the press landed, and the note went on the code block over the Install paragraph
+    // (docs/ENGINEERING-NOTES.md). Here the page moves itself at the pointer's first move into it.
+    const readme = copyOfReadme();
+    const { page, artifact } = await openReview(
+      (await cli([readme.file], lab.env)).json().session.url,
+    );
+    await artifact.eval("addEventListener('mousemove', () => scrollBy(0, -122), { once: true })");
+    const install = await noteOnInstall(page, artifact, "Say why two");
+    assert.equal(await page.eval("document.querySelector('.mark-tag').textContent"), "Paragraph");
+    await pinsBesideTargets(artifact, ["Note 1, not sent yet"], [install], "after the page moved");
+    await page.close();
+    rmSync(dirname(readme.file), { recursive: true, force: true });
+  },
+);
+
+test(
+  "a click whose press lands off its target names what it hit, where the page was scrolled, and who scrolled it",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file, html } = copyOfFixture();
+    writeFileSync(
+      file,
+      html
+        .replace(
+          "</main>",
+          '<div style="position: relative"><p id="under">Words a cover lies over.</p>' +
+            '<div id="cover" style="position: absolute; inset: 0"></div></div></main>',
+        )
+        .replace(
+          "</body>",
+          "<script>function moveAway() { scrollBy(0, -40); }" +
+            "addEventListener('mousemove', moveAway, { once: true });</script></body>",
+        ),
+    );
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url);
+    await assert.rejects(clickIn(page, artifact, "#under"), (error) => {
+      assert.match(error.message, /landed on div#cover, not #under/);
+      assert.match(error.message, /scrollY \d+ when measured and \d+ at the press/);
+      assert.match(error.message, /scrollBy\(\[0,-40\]\)[^\n]*moveAway/);
+      return true;
+    });
+    await page.close();
   },
 );
 
@@ -8166,9 +9132,9 @@ test(
     const file = copyOfDark();
     const session = (await cli([file], lab.env)).json().session;
     const page = await browser.page(session.url, { width: 1440, height: 900 });
-    const attaching = page.frame();
-    await page.waitFor("document.body.dataset.ready === '1'");
-    const artifact = await attaching;
+    const artifact = await frameWhile(page, () =>
+      page.waitFor("document.body.dataset.ready === '1'"),
+    );
     await artifact.waitFor("document.readyState === 'complete'");
     await page.waitFor("document.body.dataset.annotate === '1'");
     await pointAt(page, artifact, "#cell");

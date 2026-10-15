@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { env } from "../../src/identity.js";
+import { ownChild, ownCleanup } from "./interrupt.js";
 import { until } from "./wait.js";
 
 /**
@@ -25,8 +26,13 @@ const LAUNCH_MS = 150_000;
 const STARTUP_POLL_MS = 100;
 /** Enough of the browser's own output to name a failure by, without holding a session of it. */
 const STDERR_KEPT = 4000;
-/** No DevTools command in this suite is slow; a reply that never comes is a dead browser. */
+/** No DevTools command in this suite is slow; a reply that never comes is a stall worth naming. */
 const COMMAND_MS = 30_000;
+/**
+ * The browser answers Browser.getVersion from its own process, never a page's, so one unanswered for
+ * this long after a command went unanswered says the browser itself stopped, not the page it was sent to.
+ */
+const PROBE_MS = 5000;
 const TERMINATE_MS = 3000;
 /** A page that never fires its load event is a dead navigation, not a slow one. */
 const LOAD_MS = 15_000;
@@ -51,17 +57,18 @@ const LOG_LINES_KEPT = 10;
  * The longest `launchBrowser` can take, its failure path included. A caller's own timeout must be
  * longer, or it abandons the launch midway and the browser it spawned outlives the suite.
  */
-export const LAUNCH_BOUND_MS = LAUNCH_MS + COMMAND_MS + TERMINATE_MS + PROFILE_REMOVE_MS;
+export const LAUNCH_BOUND_MS = LAUNCH_MS + COMMAND_MS + PROBE_MS + TERMINATE_MS + PROFILE_REMOVE_MS;
 
 /**
- * Every path this repository knows a browser by, most specific first, and the one list of
+ * Every path this repository knows a browser by, Google Chrome first, and the one list of
  * them: the CI workflows resolve through `findBrowser` rather than naming a path of their
  * own, so a runner image that moves Chrome is a one-line change here and not a red release.
+ * CI drives Google Chrome, so a machine that has it runs the suite in what CI runs.
  */
 export const KNOWN_BROWSERS = [
-  "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
   "/usr/bin/google-chrome",
   "/usr/bin/chromium",
   "/usr/bin/chromium-browser",
@@ -70,10 +77,10 @@ export const KNOWN_BROWSERS = [
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
 ];
 
-export function findBrowser(environment = process.env) {
+export function findBrowser(environment = process.env, installed = existsSync) {
   const configured = env("BROWSER", environment);
   if (configured) return configured === "none" ? null : configured;
-  return KNOWN_BROWSERS.find((path) => existsSync(path)) ?? null;
+  return KNOWN_BROWSERS.find((path) => installed(path)) ?? null;
 }
 
 /** SIGTERM, then SIGKILL, then done: nothing this module spawns outlives the call that spawned it. */
@@ -249,10 +256,19 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
       "--disable-dev-shm-usage",
       "--enable-logging",
       `--log-file=${join(profile, LOG_FILE)}`,
+      // DevTools on fds 3 and 4 as well as the port, never spoken on: the browser shuts down when
+      // fd 3 closes, which the kernel does when this process dies however it dies, so a run that is
+      // killed takes its browser with it (`terminate` covers only an exit this process lives to see).
+      "--remote-debugging-pipe",
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "pipe"] },
+    { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"] },
   );
+  // Drained like stderr, so a reply the browser ever writes there cannot fill the pipe and stall it.
+  child.stdio[4].resume();
+  ownChild(child);
+  // Removed if this file is interrupted, after the browser is killed (helpers/interrupt.js).
+  const interrupted = ownCleanup(() => removeProfile(profile));
   const discard = async () => {
     await terminate(child);
     // The child exiting is not every handle on this directory being released: Chromium's
@@ -268,6 +284,7 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
       everyMs: 250,
       minAttempts: 10,
     }).catch(() => false);
+    interrupted();
     if (!gone) {
       console.warn(
         `the browser profile ${profile} was still locked after ${PROFILE_REMOVE_MS} ms; ` +
@@ -276,6 +293,8 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
     }
   };
   let browser;
+  /** What the launch itself left open, which `release` keeps. */
+  let launched;
   try {
     browser = await connect(await devToolsUrl(child, executable, profile, deadline), deadline);
     // Every renderer that crashes, with the address it held, for `describe` to name.
@@ -288,6 +307,11 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
         browser.crashes.push(`${urls.get(params.targetId) ?? params.targetId} (${params.status})`);
     });
     await browser.send("Target.setDiscoverTargets", { discover: true });
+    ({ product: browser.product } = await browser.send("Browser.getVersion"));
+    launched = {
+      listeners: browser.listeners.length,
+      tabs: new Set((await browser.send("Target.getTargets")).targetInfos.map((t) => t.targetId)),
+    };
   } catch (error) {
     // The one line the incident turned on: a browser nobody kills keeps the suite alive
     // long after it has a verdict, and the verdict never gets printed.
@@ -296,6 +320,8 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
   }
   return {
     pid: child.pid,
+    /** The build the browser reports, `Chrome/155.0.8059.40` for Brave 1.97.56: the path names no build. */
+    product: browser.product,
     /** A tab at the launch size, or at `viewport` for a case about one width. */
     async page(url, viewport = { width, height }) {
       const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
@@ -304,15 +330,45 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
         flatten: true,
       });
       const page = new Page(browser, sessionId, targetId);
-      await page.send("Page.enable");
-      await page.watch();
-      await page.send("Emulation.setDeviceMetricsOverride", {
-        ...viewport,
-        deviceScaleFactor: 1,
-        mobile: false,
-      });
-      await page.navigate(url);
+      try {
+        await page.send("Page.enable");
+        await page.watch();
+        await page.send("Emulation.setDeviceMetricsOverride", {
+          ...viewport,
+          deviceScaleFactor: 1,
+          mobile: false,
+        });
+        await page.navigate(url);
+      } catch (error) {
+        // Nobody else holds this tab yet, so a failed first load would leave it open for good.
+        await page.close().catch(() => {});
+        throw error;
+      }
       return page;
+    },
+    /**
+     * Closes what a test opened and left open, as one that fails before its own close does: every tab
+     * but the launch's, the browser-wide request interception, and every listener added since the
+     * launch. Run after every test, so none of it runs on into the next one.
+     */
+    async release() {
+      const left = async () =>
+        (await browser.send("Target.getTargets")).targetInfos.filter(
+          ({ targetId, type }) => type === "page" && !launched.tabs.has(targetId),
+        );
+      for (const { targetId } of await left()) {
+        // A tab a test closed itself can still be listed, and is gone by the time it is closed here.
+        await browser.send("Target.closeTarget", { targetId }).catch((error) => {
+          if (!/No target with given id/.test(error.message)) throw error;
+        });
+      }
+      // Target.closeTarget answers before its tab is gone: the next test listed one still closing in
+      // 5 of 20 windows-2025 jobs of hunt 38369282851.
+      await until(async () => (await left()).length === 0, {
+        what: "the tabs a test left to close",
+      });
+      await browser.send("Fetch.disable");
+      browser.listeners.length = launched.listeners;
     },
     async close() {
       // The reply to Browser.close races the browser's own exit, so the request is sent
@@ -327,6 +383,13 @@ export async function launchBrowser(executable, { width = 1200, height = 800 } =
 /**
  * The DevTools connection, on what is left of the launch's deadline: a browser that has written its
  * port can still be paging itself in off a cold disk before it answers.
+ *
+ * A command left unanswered for its `ms` (COMMAND_MS unless a test of that wait shortens it for one
+ * command) is followed by one Browser.getVersion, which tells the two stalls apart. A page whose script
+ * is busy, or whose awaited promise never settles, leaves the browser answering; a browser that stopped
+ * answering everything (once, locally, at 52e25a1: every test after the first waited its own 30 s on
+ * Target.createTarget) fails every later command at once with that name. A command whose own reply
+ * comes while that probe is out was slow, not stalled, and its reply is returned.
  */
 export function connect(url, deadline) {
   return new Promise((resolve, reject) => {
@@ -334,6 +397,8 @@ export function connect(url, deadline) {
     const pending = new Map();
     const listeners = [];
     let nextId = 1;
+    let stopped = null;
+    let probing = null;
     const left = Math.max(0, deadline - Date.now());
     const timer = setTimeout(() => {
       // Rejected before the close, which fires "error" at once and would report this as a refusal.
@@ -344,27 +409,66 @@ export function connect(url, deadline) {
       );
       socket.close();
     }, left);
+    const exchange = (method, params, sessionId) => {
+      const id = nextId++;
+      socket.send(JSON.stringify({ id, method, params, sessionId }));
+      return { id, reply: new Promise((res, rej) => pending.set(id, { res, rej })) };
+    };
+    const late = Symbol("late");
+    /** The reply, or `late` once `ms` pass without one. */
+    const within = (reply, ms) => {
+      let timer;
+      // Unref'd: while the socket is open it holds the loop and this still fires, and
+      // once the socket is gone there is no caller left for it to keep waiting for.
+      const waited = new Promise((res) => (timer = setTimeout(res, ms, late).unref()));
+      return Promise.race([reply, waited]).finally(() => clearTimeout(timer));
+    };
+    // Shared, so the commands that time out together cost one probe between them.
+    const answers = () =>
+      (probing ??= (async () => {
+        const { id, reply } = exchange("Browser.getVersion", {});
+        // An error reply is an answer too: the browser read the probe and replied.
+        const answer = await within(
+          reply.catch(() => true),
+          PROBE_MS,
+        );
+        if (answer !== late) return true;
+        pending.delete(id);
+        return false;
+      })().finally(() => (probing = null)));
     socket.addEventListener("open", () => {
       clearTimeout(timer);
       resolve({
         socket,
         listeners,
-        send(method, params = {}, sessionId) {
-          const id = nextId++;
-          socket.send(JSON.stringify({ id, method, params, sessionId }));
-          return new Promise((res, rej) => {
-            // Unref'd: while the socket is open it holds the loop and this still fires, and
-            // once the socket is gone there is no caller left for it to keep waiting for.
-            const deadline = setTimeout(() => {
-              pending.delete(id);
-              rej(new Error(`the browser sent no reply to ${method} within ${COMMAND_MS} ms`));
-            }, COMMAND_MS).unref();
-            const done = (fn) => (value) => {
-              clearTimeout(deadline);
-              fn(value);
-            };
-            pending.set(id, { res: done(res), rej: done(rej) });
-          });
+        async send(method, params = {}, sessionId, ms = COMMAND_MS) {
+          if (stopped) throw stopped;
+          const { id, reply } = exchange(method, params, sessionId);
+          const early = await within(reply, ms);
+          if (early !== late) return early;
+          // The browser answers its own commands in the order it read them, so a slow one's reply
+          // beats the probe's (docs/ENGINEERING-NOTES.md, hunt 38291498209).
+          const first = await Promise.race([
+            reply.then((value) => ({ value })),
+            answers().then((alive) => ({ alive })),
+          ]);
+          if ("value" in first) return first.value;
+          pending.delete(id);
+          if (stopped) throw stopped;
+          const unanswered = `the browser sent no reply to ${method} within ${ms} ms`;
+          if (first.alive) {
+            throw new Error(
+              `${unanswered}, yet it answered Browser.getVersion at once: what stalled is ` +
+                `${sessionId ? "the page it was sent to, its script busy or an awaited promise never settled" : "this one command"}, not the browser`,
+            );
+          }
+          stopped ??= new Error(
+            `the browser stopped answering DevTools: no reply to ${method} within ${ms} ms, ` +
+              `nor to Browser.getVersion within ${PROBE_MS} ms after it, so every later command fails with this`,
+          );
+          for (const waiter of pending.values()) waiter.rej(stopped);
+          pending.clear();
+          throw stopped;
         },
       });
     });
@@ -399,32 +503,58 @@ class Page {
     return this.send("Page.bringToFront");
   }
 
-  close() {
-    return this.browser.send("Target.closeTarget", { targetId: this.targetId });
+  /** Resolves once the browser says the tab is destroyed, which comes after the close's own answer. */
+  async close() {
+    for (const listener of this.listeners ?? []) {
+      const index = this.browser.listeners.indexOf(listener);
+      if (index !== -1) this.browser.listeners.splice(index, 1);
+    }
+    this.listeners = [];
+    let gone = false;
+    const listener = (message) => {
+      if (message.method === "Target.targetDestroyed" && message.params.targetId === this.targetId)
+        gone = true;
+    };
+    this.browser.listeners.push(listener);
+    try {
+      await this.browser.send("Target.closeTarget", { targetId: this.targetId });
+      await until(() => gone, { what: `the browser to destroy the tab ${this.targetId}` });
+    } finally {
+      this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+    }
   }
 
-  send(method, params) {
-    return this.browser.send(method, params, this.sessionId);
+  /** Hands `listener` every message on the connection until this tab is closed. */
+  listen(listener) {
+    (this.listeners ??= []).push(listener);
+    this.browser.listeners.push(listener);
   }
 
+  /** `ms` shortens the wait for this one command's reply, for a test of that wait. */
+  send(method, params, ms) {
+    return this.browser.send(method, params, this.sessionId, ms);
+  }
+
+  /**
+   * Waits on the load and the command together: Chromium answers Page.navigate only once the
+   * document does, so a load that times out first would otherwise reject with nobody listening.
+   */
   async navigate(url) {
-    const loaded = this.loaded();
-    await this.send("Page.navigate", { url });
-    await this.explained(loaded);
+    await this.explained(Promise.all([this.loaded(), this.send("Page.navigate", { url })]));
   }
 
   /** A real reload, since navigating to the same URL with a different fragment loads nothing. */
   async reload() {
-    const loaded = this.loaded();
-    await this.send("Page.reload");
-    await this.explained(loaded);
+    await this.explained(Promise.all([this.loaded(), this.send("Page.reload")]));
   }
 
   loaded() {
     return new Promise((resolve, reject) => {
       const settle = (fn, value) => {
         clearTimeout(timer);
-        this.browser.listeners.splice(this.browser.listeners.indexOf(listener), 1);
+        // Already gone when `release` took it after its test: splicing at -1 would take another's.
+        const at = this.browser.listeners.indexOf(listener);
+        if (at !== -1) this.browser.listeners.splice(at, 1);
         fn(value);
       };
       const listener = (message) => {
@@ -533,7 +663,7 @@ class Page {
     this.errors = [];
     this.failed = [];
     this.requests = new Map();
-    this.browser.listeners.push((message) => this.#track(message));
+    this.listen((message) => this.#track(message));
     // Enabled again so the contexts this page already has are announced to the tracker too.
     await this.send("Runtime.disable");
     for (const command of ["Runtime.enable", "Network.enable", "Log.enable"])
@@ -583,7 +713,8 @@ class Page {
     const list = (items) =>
       items.length ? items.map((item) => `\n    ${item}`).join("") : " none";
     return (
-      `the chrome shows ${shown}\n  frames:${list(frames)}\n  documents answered:${list(this.documents)}` +
+      `the chrome shows ${shown}\n  committed: ${this.committed ?? "none"}` +
+      `\n  frames:${list(frames)}\n  documents answered:${list(this.documents)}` +
       `\n  loads failed:${list(this.failed)}\n  console errors:${list(this.errors)}` +
       `\n  crashed renderers:${list(this.browser.crashes)}`
     );
@@ -601,6 +732,10 @@ class Page {
       for (const command of ["Runtime.enable", "Page.enable", "Network.enable", "Log.enable"])
         this.browser.send(command, {}, params.sessionId).catch(() => {});
       this.browser.send("Target.setAutoAttach", ATTACH, params.sessionId).catch(() => {});
+    } else if (method === "Page.frameNavigated" && where === "chrome" && !params.frame.parentId) {
+      // A tab answers nothing while a navigation is in flight, so only this tells a document
+      // answered and never committed from a renderer that stopped after it committed.
+      this.committed = params.frame.url;
     } else if (method === "Network.responseReceived" && params.type === "Document") {
       keep(this.documents, `${params.response.status} ${params.response.url}`);
     } else if (method === "Network.requestWillBeSent") {

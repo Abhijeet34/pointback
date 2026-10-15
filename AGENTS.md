@@ -25,16 +25,20 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   Drive Annotate with the CDP harness, never chrome-devtools-axi, which never moves focus into the out-of-process frame.
   The harness's launch keeps the browser out of the system keychain (`--use-mock-keychain`, `--password-store=basic` in `launchBrowser`); without them macOS asks the developer for their login password mid-suite.
 - Tests touching the daemon take a private state directory and an ephemeral port from `test/helpers/env.js`, never `~/.pointback`.
-  The browser suite shares one daemon, which never evicts a review holding notes and refuses an open past `limits.sessions`; its `afterEach` releases what each test leaves.
+  The browser suite shares one daemon, which never evicts a review holding notes and refuses an open past `limits.sessions`; its `afterEach` releases what each test leaves, its tabs, interception and listeners first (`release` in `test/helpers/cdp.js`).
+  A test spawns a CLI through `cli` and a browser through `launchBrowser`, which `test/helpers/interrupt.js` ends, with each `isolatedEnv` daemon, when its file is interrupted (`test/interrupt.test.js`).
 - A record or lock standing for a daemon that exited names `DEAD_PID` (`test/helpers/stall.js`), never the pid of a process the test watched exit, which Windows can hand to the next process it starts (`docs/ENGINEERING-NOTES.md`).
 - A test that mocks `setTimeout` makes its HTTP requests with `node:http`, never `fetch`, which stalls on a reused connection under the mock on Node 24.20.0 (`docs/ENGINEERING-NOTES.md`).
+- `clickIn` measures its point after the pointer wait and fails unless the press landed inside its element, with what it hit and every scroll the page made meanwhile (`RECORD_PRESS` in `test/browser.test.js`, `docs/ENGINEERING-NOTES.md`); never retry a click or loosen a geometry check around it.
 - Every wait goes through `until` in `test/helpers/wait.js` and carries its own deadline; a failed wait on a tab or the page in it reports what the chrome showed, failed loads included (`describe` in `test/helpers/cdp.js`).
+  A DevTools command left unanswered says whether the page stalled or the whole browser stopped, one answered while that is checked is returned as slow, and a stopped browser fails every later command at once (`connect` in `test/helpers/cdp.js`, `docs/ENGINEERING-NOTES.md`).
   A wait on a value the chrome publishes (`dataset.scroll`, `revision`) waits for the value this step set, never a predicate an earlier report already meets.
   A positive expectation waits for its condition; a negative one waits on the barrier proving the thing it rules out was handled (`handled` and `TRACK_API_ANSWERS` in `test/browser.test.js`), sleeping only where nothing would have fired and saying in a comment what the duration bounds; a latency is printed, never asserted.
   An order a test forces between the chrome and the page holds one side until the other is seen, never a fixed delay (`holdTasks` in `test/browser.test.js`, `docs/ENGINEERING-NOTES.md`).
 - Never assert on the next line of an event stream: a failed watch arrives as `reload-off` on the same stream (`src/events.js`).
 - A test needing a review in a known state takes its own (`copyOfFixture`); a browser test's agent poll runs after the notes are sent, with `--timeout-ms 0`.
-- A test adds or sends on a tab it opened only once the chrome publishes its event stream open (`FOLLOWING` in `test/browser.test.js`): Windows refuses a few of Chrome's new loopback connects, at the rate `docs/ENGINEERING-NOTES.md` measures, and a refused stream is retried after a pause.
+- A test adds or sends on a tab it opened only once the chrome publishes its event stream open (`FOLLOWING` in `test/browser.test.js`), which it does once the stream's `hello` has rebuilt the margin: Windows refuses a few of Chrome's new loopback connects, at the rate `docs/ENGINEERING-NOTES.md` measures, and a refused stream is retried after a pause.
+- A test looks for the page under review alongside a wait on its tab through `frameWhile` (`test/browser.test.js`), never a bare `page.frame()` begun first, and adds a listener for one tab through `page.listen`, which `close` removes (`test/helpers/cdp.js`).
 - A note made by mouse leaves nothing in the page focused once its card closes (only a keyboard-made one refocuses its element; `closeTarget` in `src/browser/sdk.js`), so a test that points with `pointAt` and then drives the page by key moves the focus with Tab or H first.
 - A test driving a tab it sent to the background calls `page.front()` first, and an animation assertion emulates `prefers-reduced-motion: no-preference` first.
   Reduced motion still eases colour over the house's 100 ms, so a test reading a control's colour after a change waits for `SETTLED` first (`test/browser.test.js`).
@@ -65,7 +69,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 
 - `docs/GIT-WORKFLOW.md` is the whole of it; `scripts/apply-repo-settings.sh OWNER/REPO` alone applies the settings under `.github/rulesets/` and `.github/settings/`.
 - The one required check is `checks` in `.github/workflows/ci.yml`; `test/pipeline.test.js` pins the load-bearing lines of the workflows and rulesets.
-- Never hand-edit `.gitleaks.toml`, `.githooks/pre-push`, or the community files `repo-standard` renders (`CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `NOTICE`, `.github/CODEOWNERS`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`); re-sync or change the standard upstream.
+- Never hand-edit `.gitleaks.toml`, `.githooks/pre-push`, `.githooks/commit-msg`, or the community files `repo-standard` renders (`CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `NOTICE`, `.github/CODEOWNERS`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`); re-sync or change the standard upstream.
 - No stored credential on the release path, never `provenance` in `publishConfig`, and prove a packaging change with `npm pack` (`test/identity.test.js`).
 
 ## CI runner platforms
