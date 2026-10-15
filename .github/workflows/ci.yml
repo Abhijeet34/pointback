@@ -37,9 +37,9 @@ jobs:
     runs-on: ubuntu-24.04
     # A backstop, never the mechanism. A job that outlives this is reported
     # `cancelled`, which carries no verdict and which the `checks` aggregate can
-    # only refuse; the steps below therefore end themselves first. Ten minutes
+    # only refuse; the steps below therefore end themselves first. Twelve minutes
     # against a run that takes three to four (175 to 239 s, 2026-10-12).
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -89,7 +89,8 @@ jobs:
       # when it is, a step timeout fails the step and the job reports `failure`,
       # where the job's own timeout reports `cancelled` and says nothing.
       - name: check
-        timeout-minutes: 6
+        # main took 5m57s on 2026-10-15 (run 38768813880) against a 6 minute budget.
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           npm run check 2>&1 | tee "$RUNNER_TEMP/check.log"
