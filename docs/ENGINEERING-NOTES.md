@@ -364,8 +364,8 @@ Each section below is the text `AGENTS.md` carried under the same heading before
 - `docs/GIT-WORKFLOW.md` is the whole of it: branch protection, required checks, versioning, release, rollback, and how the settings that are not files are applied and verified.
 - The settings that are not files live under `.github/rulesets/` and `.github/settings/`, and `scripts/apply-repo-settings.sh OWNER/REPO` is the only thing that applies them; never hand-type an API call it already carries.
 - The one required status check is `checks` in `.github/workflows/ci.yml`; anything worth blocking a merge becomes a job there, never a second required context.
-- `.gitleaks.toml` and `.githooks/pre-push` are copies of one canonical secret-scanning gate maintained outside this repository, in `Abhijeet34/gates` and shared across its siblings.
-  Never hand-edit either: the `secrets` job in `ci.yml` calls gates' `shared-secret-scan.yml@main`, which pins the SHA-256 of both, so a drifted copy fails the required check and the fix is to re-sync from upstream.
+- `.gitleaks.toml`, `.githooks/pre-push` and `.githooks/commit-msg` are copies of one canonical secret-scanning gate maintained outside this repository, in `Abhijeet34/gates` and shared across its siblings.
+  Never hand-edit any of them: the `secrets` job in `ci.yml` calls gates' `shared-secret-scan.yml@main`, which pins the SHA-256 of each, so a drifted copy fails the required check and the fix is to re-sync from upstream.
   Never pin those digests locally: a local pin silently skips every fleet repin, and `test/pipeline.test.js` refuses one.
 - `.github/workflows/dependency-advisories.yml` calls gates' `shared-dependency-advisories.yml@main`, which fails on an open Dependabot alert; it is its own workflow, not a `checks` dependency, and its `vulnerability-alerts: read` is granted in the caller or the run ends in `startup_failure`.
 - `test/pipeline.test.js` pins the load-bearing lines of the workflows and rulesets, so a change that quietly unprotects something fails the gate.
