@@ -68,7 +68,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 
 - `docs/GIT-WORKFLOW.md` is the whole of it; `scripts/apply-repo-settings.sh OWNER/REPO` alone applies the settings under `.github/rulesets/` and `.github/settings/`.
 - The one required check is `checks` in `.github/workflows/ci.yml`; `test/pipeline.test.js` pins the load-bearing lines of the workflows and rulesets.
-- Never hand-edit `.gitleaks.toml`, `.githooks/pre-push`, or the community files `repo-standard` renders (`CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `NOTICE`, `.github/CODEOWNERS`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`); re-sync or change the standard upstream.
+- Never hand-edit `.gitleaks.toml`, `.githooks/pre-push`, `.githooks/commit-msg`, or the community files `repo-standard` renders (`CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `NOTICE`, `.github/CODEOWNERS`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`); re-sync or change the standard upstream.
 - No stored credential on the release path, never `provenance` in `publishConfig`, and prove a packaging change with `npm pack` (`test/identity.test.js`).
 
 ## CI runner platforms
