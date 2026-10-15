@@ -236,6 +236,8 @@ function sync(state) {
   marksDirty = true;
   // A gone file has no page to load; the last one shown stays up under the notice.
   fileGone = state.gone === true;
+  // A daemon restarted, or a watcher started again, follows the file afresh.
+  liveReload = state.liveReload !== false;
   followAnnotate();
   if (!fileGone && (revision !== shownRevision || session.artifactUrl !== shownUrl)) show();
 }
@@ -269,6 +271,8 @@ function showPage() {
   // Absolute: the wrapper is served under the other loopback name, and the page under this one.
   showing = new URL(`${shownUrl}?r=${revision}`, location.href).href;
   if (wrapperReady) frame.contentWindow.postMessage({ type: "show", url: showing }, wrapperOrigin);
+  // A page caught up with the file can take notes again, in a tab another took over too.
+  followAnnotate();
 }
 
 // The wrapper frame loads once with this page and is never navigated; the page under review is
@@ -388,12 +392,13 @@ function apply(event) {
   } else if (event.type === "superseded") {
     current = false;
     letCardGo();
+    followAnnotate();
   } else if (event.type === "reload") {
     tellOutside(event.outside);
     // A reload means the file is there to read, including one that came back after it was gone.
     fileGone = false;
-    followAnnotate();
     revision = event.revision;
+    followAnnotate();
     if (current) show();
   } else if (event.type === "rerooted") {
     session.artifactUrl = event.artifactUrl;
@@ -489,7 +494,7 @@ function render() {
             ? "Review ended"
             : "Send to agent"
           : `Send ${count} ${count === 1 ? "note" : "notes"} ${ended ? "anyway" : "to agent"}`;
-  annotateSwitch.disabled = ended !== null || fileGone || connection === "gone";
+  annotateSwitch.disabled = annotateRuledOut();
   // Offline, Add waits rather than failing: the words stay in the card, and so does the reason.
   cardAdd.disabled = offline;
   // So do the margin's changes to a note: each is a call to the review, as Send is.
@@ -535,7 +540,10 @@ function render() {
                       : chat.length === 0 && count === 0
                         ? annotate
                           ? `Click or select anything on the page to note it, or Tab to it and press Enter. H jumps to the next heading, A turns Annotate off, ${SEND_KEY} sends.${keysShared ? " In this browser, a click in the page is heard only 5 seconds after your last key outside it." : ""}`
-                          : "Turn on Annotate, or press A, to point at the page."
+                          : annotateRuledOut()
+                            ? // Only a tab another took over gets here: a gone file, an end and a spent link are said above.
+                              "The file changed since this page loaded. Take over here to point at it as it is now."
+                            : "Turn on Annotate, or press A, to point at the page."
                         : count === 0
                           ? "Every note has been sent."
                           : `${count} ${count === 1 ? "note" : "notes"} ready to send. ${SEND_KEY} sends.`,
@@ -1049,9 +1057,20 @@ function setAnnotate(on) {
   render();
 }
 
-/** Puts Annotate where the reviewer left it, unless a gone file, an ended review or a spent link rules it out. */
+/**
+ * Whether Annotate is off whatever the reviewer wants: the file is gone, the review ended, the link is
+ * spent, or another tab took over and a save left this page behind the file, where a note's selector
+ * would name an element of a page the file no longer holds. Take over, or a reload, brings that back.
+ */
+function annotateRuledOut() {
+  return (
+    fileGone || ended !== null || connection === "gone" || (!current && revision !== shownRevision)
+  );
+}
+
+/** Puts Annotate where the reviewer left it, unless something rules it out (`annotateRuledOut`). */
 function followAnnotate() {
-  const on = wantAnnotate && !fileGone && ended === null && connection !== "gone";
+  const on = wantAnnotate && !annotateRuledOut();
   if (on === annotate) return;
   if (!on) letCardGo();
   setAnnotate(on);

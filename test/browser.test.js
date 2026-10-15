@@ -4843,6 +4843,77 @@ test(
   },
 );
 
+/** A daemon started with this env has its first file watcher fail when `KILL_WATCH_ON` is written. */
+const killingWatch = (env) => ({
+  ...env,
+  NODE_OPTIONS: `--import=${new URL("./helpers/kill-watch.mjs", import.meta.url).href}`,
+  KILL_WATCH_ON: "kill-watch",
+});
+const killWatch = (file) => writeFileSync(join(dirname(file), "kill-watch"), "");
+const LIVE_RELOAD_STOPPED = noticeSays(
+  "Live reload stopped, so this page no longer follows the file. Refresh to see the latest save.",
+);
+const STOPPED_ANSWERING =
+  "/stopped answering/.test(document.getElementById('noticeText').textContent)";
+
+test(
+  "a daemon restarted with a working watcher clears the live reload notice the old one left",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    const own = isolatedEnv();
+    const { file, html } = copyOfFixture();
+    const url = (await cli([file], killingWatch(own.env))).json().session.url;
+    const page = await browser.page(url);
+    try {
+      await page.waitFor("document.body.dataset.revision === '0'");
+      await page.waitFor(FOLLOWING);
+      killWatch(file);
+      await page.waitFor(LIVE_RELOAD_STOPPED);
+      assert.equal((await cli(["stop"], own.env)).code, 0);
+      await page.waitFor(STOPPED_ANSWERING);
+      // The agent's next command starts a daemon whose watcher works, and the tab follows it again.
+      assert.equal((await cli(["poll", file, "--timeout-ms", "0"], own.env)).code, 0);
+      await page.waitFor(FOLLOWING);
+      await page.waitFor("document.getElementById('notice').hidden");
+      writeFileSync(file, html.replace("Bottom of the plan", "Bottom of the saved plan"));
+      await page.waitFor("document.body.dataset.revision === '1'");
+      assert.equal(await page.eval("document.getElementById('notice').hidden"), true);
+    } finally {
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
+test(
+  "a tab opened after the file's watcher died follows the file",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    const own = isolatedEnv();
+    const { file, html } = copyOfFixture();
+    const url = (await cli([file], killingWatch(own.env))).json().session.url;
+    const first = await browser.page(url);
+    let second;
+    try {
+      await first.waitFor("document.body.dataset.revision === '0'");
+      await first.waitFor(FOLLOWING);
+      killWatch(file);
+      await first.waitFor(LIVE_RELOAD_STOPPED);
+      // The first tab stays open, so the review's watch is never stopped and started afresh.
+      second = await browser.page(url);
+      await second.waitFor("document.body.dataset.revision === '0'");
+      await second.waitFor(FOLLOWING);
+      writeFileSync(file, html.replace("Bottom of the plan", "Bottom of the saved plan"));
+      await second.waitFor("document.body.dataset.revision === '1'");
+      assert.equal(await second.eval("document.getElementById('notice').hidden"), true);
+    } finally {
+      await second?.close();
+      await first.close();
+      await own.stop();
+    }
+  },
+);
+
 test(
   "a save keeps the place and Annotate on a Word page, and a note on a smart tag names it in valid CSS",
   { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
@@ -4893,6 +4964,47 @@ test(
       );
     } finally {
       await page.close();
+    }
+  },
+);
+
+test(
+  "a tab another took over stops taking notes once a save leaves its page behind the file",
+  { skip: !executable && "no browser found; set POINTBACK_BROWSER" },
+  async () => {
+    // The older tab ignores the reload, so a note made in it names an element of a page the file
+    // no longer holds: a section added above moves its selector onto a different element.
+    const { file, html } = copyOfFixture();
+    const url = (await cli([file], lab.env)).json().session.url;
+    const older = await browser.page(url);
+    let newer;
+    try {
+      // The tab whose stream connects last takes the review (`open` in src/events.js), and a tab
+      // connects only after its load event, so the older one follows before the newer one opens.
+      await older.waitFor(FOLLOWING);
+      newer = await browser.page(url);
+      await newer.waitFor("document.body.dataset.revision === '0'");
+      await older.waitFor(
+        "/Another tab took over/.test(document.getElementById('noticeText').textContent)",
+      );
+      writeFileSync(file, html.replace("<main>", "<main><section><h2>Added above</h2></section>"));
+      await newer.waitFor("document.body.dataset.revision === '1'");
+      await older.front();
+      await older.waitFor("document.body.dataset.annotate === '0'");
+      // It never takes the review back on its own: the newer tab keeps it, the older keeps its page.
+      assert.equal(await older.eval("document.body.dataset.revision"), "0");
+      assert.equal(await newer.eval("document.body.dataset.annotate"), "1");
+      assert.equal(
+        await older.eval("document.getElementById('status').textContent"),
+        "The file changed since this page loaded. Take over here to point at it as it is now.",
+      );
+      // Take over is the way back: the page catches up, and Annotate returns with it.
+      await clickOn(older, "document.getElementById('takeOver')");
+      await older.waitFor("document.body.dataset.revision === '1'");
+      await older.waitFor("document.body.dataset.annotate === '1'");
+    } finally {
+      await older.close();
+      await newer?.close();
     }
   },
 );

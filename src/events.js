@@ -30,12 +30,14 @@ export class EventStreams {
   /** Attaches a writer to a session's channel; returns the function that detaches it. */
   open(key, write) {
     const session = this.#store.get(key);
-    const group = this.#groups.get(key) ?? this.#watch(key, session.file);
+    const group = this.#groups.get(key) ?? this.#group(key);
+    // A watcher that died is started again for the next tab, so the refresh its notice advises works.
+    if (!group.unwatch) this.#watch(key, session.file, group);
     const previous = group.streams.at(-1);
     group.streams.push(write);
     this.#count += 1;
     if (previous) previous({ type: "superseded" });
-    write({ type: "hello", ...this.#state(key) });
+    write({ type: "hello", ...this.#state(key, group) });
     return () => this.#close(key, write);
   }
 
@@ -46,36 +48,45 @@ export class EventStreams {
     this.#count = 0;
   }
 
-  #watch(key, file) {
-    let unwatch;
+  #group(key) {
     const onEvent = (event) => {
       // A queued batch is the agent's business; a tab hears about it through presence instead.
       if (event.type === "feedback") return;
       // A poll or an end that finds the file gone tells the tabs before the watcher may have seen
       // it go, and only the watcher can tell them it came back.
-      if (event.type === "gone") unwatch?.missing();
-      for (const write of this.#groups.get(key)?.streams ?? []) write(event);
+      if (event.type === "gone") group.unwatch?.missing();
+      for (const write of group.streams) write(event);
     };
     this.#store.on(key, onEvent);
-    try {
-      unwatch = watchFile(file, () => this.#store.fileChanged(key), {
-        // A watch that dies takes live reload with it; saying so beats a page that quietly stops updating.
-        onError: () => onEvent({ type: "reload-off" }),
-      });
-    } catch {
-      // The file's directory is gone too, so there is nothing to watch; the tab's hello says `gone`.
-    }
-    // Only now, with the watch on, so a save is either numbered here or seen by the watch.
-    this.#store.catchUp(key);
     const group = {
       streams: [],
+      /** The live watcher's stop, or undefined while nothing watches the file. */
+      unwatch: undefined,
+      onEvent,
       stop: () => {
-        unwatch?.();
+        group.unwatch?.();
         this.#store.off(key, onEvent);
       },
     };
     this.#groups.set(key, group);
     return group;
+  }
+
+  #watch(key, file, group) {
+    try {
+      group.unwatch = watchFile(file, () => this.#store.fileChanged(key), {
+        // A watch that dies takes live reload with it; saying so beats a page that quietly stops updating.
+        onError: () => {
+          group.unwatch = undefined;
+          group.onEvent({ type: "reload-off" });
+        },
+      });
+    } catch {
+      // The file's directory is gone too, so there is nothing to watch; the tab's hello says `gone`.
+    }
+    // Only now, with the watch on, so a save is either numbered here or seen by the watch; that
+    // covers one made while a watch that died was down, too.
+    this.#store.catchUp(key);
   }
 
   #close(key, write) {
@@ -92,14 +103,18 @@ export class EventStreams {
       return;
     }
     // The tab that was hidden behind this one takes the review back, catching up on what it missed.
-    if (wasCurrent) group.streams.at(-1)({ type: "current", ...this.#state(key) });
+    if (wasCurrent) group.streams.at(-1)({ type: "current", ...this.#state(key, group) });
   }
 
   /**
-   * What a tab must match, with the files its page goes without: a tab whose stream was down when an
-   * open rerooted the review hears of it only here.
+   * What a tab must match, with the files its page goes without and whether the file is followed
+   * for it: a tab whose stream was down when an open rerooted the review hears of it only here.
    */
-  #state(key) {
-    return { ...this.#store.status(key), outside: this.#store.outside(key) };
+  #state(key, group) {
+    return {
+      ...this.#store.status(key),
+      outside: this.#store.outside(key),
+      liveReload: group.unwatch !== undefined,
+    };
   }
 }
