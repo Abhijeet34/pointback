@@ -8828,6 +8828,106 @@ test(
 );
 
 test(
+  "a passage's ring stays on its words when the page or a box in it scrolls, and when the window resizes",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const { file } = copyOfFixture();
+    const line = (id) => `<p id="${id}">Move the queue to the worker that drains it first.</p>`;
+    writeFileSync(
+      file,
+      `<!doctype html><title>Passages</title><body style="max-width:40rem;margin:2rem auto">` +
+        `${line("page")}<div id="box" style="height:6rem;overflow:auto">${line("boxed")}` +
+        `${"<p>filler</p>".repeat(20)}</div>${"<p>filler</p>".repeat(80)}</body>`,
+    );
+    const { page, artifact } = await openReview((await cli([file], lab.env)).json().session.url, {
+      width: 1000,
+      height: 700,
+    });
+    // Counted from listeners added after the sdk's, which therefore run once the sdk has redrawn.
+    await artifact.eval(`(() => {
+      window.seen = { scroll: 0, resize: 0 };
+      addEventListener("scroll", () => window.seen.scroll++, true);
+      addEventListener("resize", () => window.seen.resize++);
+    })()`);
+    // Where the ring sits against the first 14 characters' boxes: round them is a ring whose inner
+    // edge stands up to 6 px outside their left and top (the house ring's 2 px offset when drawn).
+    const placed = async (id) => {
+      const rings = await ringsOn(artifact);
+      const [words] = JSON.parse(
+        await artifact.eval(`(() => {
+          const range = document.createRange();
+          range.setStart(document.getElementById(${JSON.stringify(id)}).firstChild, 0);
+          range.setEnd(document.getElementById(${JSON.stringify(id)}).firstChild, 14);
+          return JSON.stringify([...range.getClientRects()]);
+        })()`),
+      );
+      if (rings?.length !== 1) return `${rings?.length ?? "no"} rings`;
+      const left = Math.round(rings[0].left - words.left);
+      const top = Math.round(rings[0].top - words.top);
+      return left <= 0 && left >= -6 && top <= 0 && top >= -6
+        ? "round its words"
+        : `its inner edge ${left}, ${top} px from its words' left and top`;
+    };
+    const after = async (type, act) => {
+      const before = Number(await artifact.eval(`window.seen.${type}`));
+      await act();
+      await artifact.waitFor(`window.seen.${type} > ${before}`);
+    };
+    const where = {};
+    for (const [id, scroll] of [
+      ["page", "scrollBy(0, 150)"],
+      ["boxed", "document.getElementById('box').scrollBy(0, 40)"],
+    ]) {
+      // Centred, so the card opens with no scroll to make room for it and the only move is the test's.
+      const frameBox = JSON.parse(await page.eval(FRAME_BOX));
+      const words = JSON.parse(
+        await artifact.eval(`(() => {
+          document.getElementById(${JSON.stringify(id)}).scrollIntoView({ block: "center" });
+          const range = document.createRange();
+          range.setStart(document.getElementById(${JSON.stringify(id)}).firstChild, 0);
+          range.setEnd(document.getElementById(${JSON.stringify(id)}).firstChild, 14);
+          return JSON.stringify(range.getBoundingClientRect());
+        })()`),
+      );
+      const y = frameBox.top + words.top + words.height / 2;
+      await page.pointerInto(artifact, { x: frameBox.left + words.left + 1, y });
+      await page.drag(
+        { x: frameBox.left + words.left + 1, y },
+        { x: frameBox.left + words.right - 1, y },
+      );
+      await page.waitFor(
+        "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+      );
+      await after("scroll", () => artifact.eval(scroll));
+      where[`${id} scrolled`] = await placed(id);
+      if (id === "page") {
+        // Narrower than the body's 40rem, so the words move left as well as down.
+        await after("resize", () =>
+          page.send("Emulation.setDeviceMetricsOverride", {
+            width: 500,
+            height: 700,
+            deviceScaleFactor: 1,
+            mobile: false,
+          }),
+        );
+        where[`${id} resized`] = await placed(id);
+      }
+      await clickOn(page, "document.getElementById('cardCancel')");
+      await page.waitFor(
+        "document.getElementById('card').hidden && document.body.dataset.handoff === 'settled'",
+      );
+    }
+    await page.close();
+    rmSync(dirname(file), { recursive: true, force: true });
+    assert.deepEqual(where, {
+      "page scrolled": "round its words",
+      "page resized": "round its words",
+      "boxed scrolled": "round its words",
+    });
+  },
+);
+
+test(
   "a note in the margin leads to its place on the page, and a pin leads back to its note",
   { skip: !executable && "no browser found" },
   async () => {
