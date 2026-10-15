@@ -3831,26 +3831,6 @@ async function lookOf(
 }
 
 /**
- * Waits for the chrome to have reloaded itself. A look that lands as the reload replaces the document
- * is answered "Inspected target navigated or closed", which is that reload under way (macos-15, run
- * 37387213092), so it looks again.
- */
-function reloadOf(page) {
-  return page.explained(
-    until(
-      () =>
-        page
-          .eval("performance.getEntriesByType('navigation')[0]?.type === 'reload'")
-          .catch((error) => {
-            if (error.message === "Inspected target navigated or closed") return false;
-            throw error;
-          }),
-      { what: "the chrome to reload itself" },
-    ),
-  );
-}
-
-/**
  * Opens a review in its own daemon with the first load matching `path` refused, or the numbered asks
  * a list of `[path, ask]` pairs names, or none when `path` is null, and has the reviewer note the
  * heading once it opens; answers what the reviewer saw, how the review paints and answers then, how
@@ -4247,232 +4227,315 @@ for (const errorFirst of [false, true])
     },
   );
 
-test(
-  "a chrome face refused while a margin note holds typed text keeps the text, and the chrome reloads for the face once the note is saved",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const own = isolatedEnv();
-    const page = await browser.page("about:blank");
-    const held = [];
-    const listener = ({ method, params, sessionId }) => {
-      if (method !== "Fetch.requestPaused" || sessionId) return;
-      if (held.length === 0) held.push(params.requestId);
-      else
-        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
-    };
-    page.browser.listeners.push(listener);
-    try {
-      const { file } = copyOfFixture();
-      const url = (await cli([file], own.env)).json().session.url;
-      const { port } = own.serverInfo();
-      await page.browser.send("Fetch.enable", {
-        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
-      });
-      // The held face holds the chrome's load event, so the navigation is not waited on for it; the
-      // review's own ready is what reviewIn waits for.
-      await page.send("Page.navigate", { url });
-      const { artifact } = await reviewIn(page);
-      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
-      await pointAt(page, artifact, "#title");
-      await page.type("Shorter title");
-      await page.browser.send("Fetch.failRequest", {
-        requestId: held[0],
-        errorReason: "ConnectionRefused",
-      });
-      // The face's load has failed once the document's faces have settled; two frames after that let
-      // recover.js's rejected `loaded` be heard before the note is read.
-      await page.eval(SETTLED);
-      assert.deepEqual(
-        JSON.parse(
-          await page.eval(`JSON.stringify({
-            text: document.getElementById('cardText').value,
-            open: !document.getElementById('card').hidden,
-            navigation: performance.getEntriesByType('navigation')[0].type,
-          })`),
-        ),
-        { text: "Shorter title", open: true, navigation: "navigate" },
-      );
-      await page.enter();
-      await reloadOf(page);
-      const reloaded = await reviewIn(page);
-      await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
-      await sameReview(
-        {
-          note: await page.eval(
-            "document.querySelector('.mark:not(.sent)').textContent.includes('Shorter title')",
-          ),
-          look: await lookOf(page, reloaded.artifact),
-          face: await paintedFace(page, "#fileName"),
-        },
-        {
-          note: true,
-          look: (await healthyReview()).look,
-          face: "IBM Plex Mono",
-        },
-        page,
-      );
-    } finally {
-      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
-      await page.browser.send("Fetch.disable").catch(() => {});
-      await page.close();
-      await own.stop();
-    }
-  },
-);
+/**
+ * A look that lands as a reload replaces the document is that reload under way (macos-15, run
+ * 37387213092): it answers null, so a wait looks again and an assertion reports the reload.
+ */
+function unlessReloaded(error) {
+  if (error.message === "Inspected target navigated or closed") return null;
+  throw error;
+}
 
-test(
-  "a chrome face refused while a margin note edit holds typed text keeps the text, and the chrome reloads for the face once the edit is saved",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const own = isolatedEnv();
-    const page = await browser.page("about:blank");
-    const held = [];
-    const listener = ({ method, params, sessionId }) => {
-      if (method !== "Fetch.requestPaused" || sessionId) return;
-      if (held.length === 0) held.push(params.requestId);
-      else
-        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
-    };
-    page.browser.listeners.push(listener);
-    try {
-      const { file } = copyOfFixture();
-      const url = (await cli([file], own.env)).json().session.url;
-      const { port } = own.serverInfo();
-      await page.browser.send("Fetch.enable", {
-        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
-      });
-      await page.send("Page.navigate", { url });
-      const { artifact } = await reviewIn(page);
-      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
-      await noteOn(page, artifact, "#title", "Shorter title");
-      await clickOn(page, "document.querySelector('.mark-edit')");
-      await page.waitFor("document.activeElement?.classList.contains('mark-edit-text')");
-      await press(page, "again");
-      await page.browser.send("Fetch.failRequest", {
-        requestId: held[0],
-        errorReason: "ConnectionRefused",
-      });
-      await page.eval(SETTLED);
-      assert.deepEqual(
-        JSON.parse(
-          await page.eval(`JSON.stringify({
-            text: document.querySelector('.mark-edit-text')?.value ?? null,
-            navigation: performance.getEntriesByType('navigation')[0].type,
-          })`),
-        ),
-        { text: "Shorter titleagain", navigation: "navigate" },
-      );
-      await page.enter();
-      await reloadOf(page);
-      const reloaded = await reviewIn(page);
-      await page.waitFor(
-        "document.querySelectorAll('.mark:not(.sent)').length === 1 && document.querySelector('.mark:not(.sent)').textContent.includes('Shorter titleagain')",
-      );
-      await sameReview(
-        {
-          look: await lookOf(page, reloaded.artifact),
-          face: await paintedFace(page, "#fileName"),
-        },
-        {
-          look: (await healthyReview()).look,
-          face: "IBM Plex Mono",
-        },
-        page,
-      );
-    } finally {
-      page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
-      await page.browser.send("Fetch.disable").catch(() => {});
-      await page.close();
-      await own.stop();
-    }
-  },
-);
-
-test(
-  "a chrome face refused while the browser is offline keeps the review on screen and says so, and the chrome reloads for the face once back online",
-  { skip: !executable && "no browser found" },
-  async () => {
-    const own = isolatedEnv();
-    const page = await browser.page("about:blank");
-    const held = [];
-    let reloads = 0;
-    const listener = ({ method, params, sessionId }) => {
-      if (method === "Page.frameRequestedNavigation" && sessionId === page.sessionId) {
-        if (params.frameId === page.targetId && params.reason === "reload") reloads += 1;
+/**
+ * Holds the chrome's code face, as a slow connect would, until `refuse` fails it, and counts the
+ * reloads the chrome asks for. A chrome file the network refuses on the tab's first load (Windows,
+ * docs/ENGINEERING-NOTES.md), or the `first` one refused here, reloads the chrome before the reviewer
+ * does anything (windows-2025 job 115342699497), so the face held is the one the load on screen asked
+ * for, and a test is held to the reloads asked since, never to that load's navigation type. A face of
+ * the chrome's refused by the network after it is ready still reloads it under the test.
+ */
+function holdFace(page, port, first) {
+  const origin = `http://127.0.0.1:${port}`;
+  const loaderOf = new Map();
+  const paused = [];
+  let shown = null;
+  let reloads = 0;
+  /** Reloads asked since the load on screen committed. */
+  let asked = 0;
+  let firstRefused = false;
+  let face = null;
+  let refused = false;
+  const listener = ({ method, params, sessionId }) => {
+    if (sessionId === page.sessionId) {
+      if (method === "Network.requestWillBeSent") loaderOf.set(params.requestId, params.loaderId);
+      else if (method === "Page.frameNavigated" && params.frame.id === page.targetId) {
+        shown = params.frame.loaderId;
+        asked = 0;
+      } else if (
+        method === "Page.frameRequestedNavigation" &&
+        params.frameId === page.targetId &&
+        params.reason === "reload"
+      ) {
+        reloads += 1;
+        asked += 1;
       }
-      if (method !== "Fetch.requestPaused" || sessionId) return;
-      if (held.length === 0) held.push(params.requestId);
-      else
-        page.browser.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
-    };
-    page.browser.listeners.push(listener);
-    const offline = (on) =>
-      page.send("Network.emulateNetworkConditions", {
-        offline: on,
-        latency: 0,
-        downloadThroughput: -1,
-        uploadThroughput: -1,
-      });
-    try {
-      const { file } = copyOfFixture();
-      const url = (await cli([file], own.env)).json().session.url;
-      const { port } = own.serverInfo();
+      return;
+    }
+    if (method !== "Fetch.requestPaused" || sessionId) return;
+    const { requestId, networkId, request } = params;
+    const pass = (command, extra) =>
+      page.browser.send(command, { requestId, ...extra }).catch(() => {});
+    if (first && !firstRefused && request.url.startsWith(origin + first)) {
+      firstRefused = true;
+      pass("Fetch.failRequest", { errorReason: "ConnectionRefused" });
+    } else if (!refused && request.url.startsWith(`${origin}/house/fonts/ibm-plex-mono/`))
+      paused.push({ requestId, networkId });
+    else pass("Fetch.continueRequest");
+  };
+  page.browser.listeners.push(listener);
+  return {
+    async start() {
       await page.browser.send("Fetch.enable", {
-        patterns: [{ urlPattern: `http://127.0.0.1:${port}/house/fonts/ibm-plex-mono/*` }],
+        patterns: [
+          { urlPattern: `${origin}/house/fonts/ibm-plex-mono/*` },
+          ...(first ? [{ urlPattern: `${origin}${first}*` }] : []),
+        ],
       });
-      await page.send("Page.navigate", { url });
-      await reviewIn(page);
-      await until(() => held.length === 1, { what: "the chrome's first code face to be held" });
-      // The face is still loading when the tab goes offline, so its load fails the way the
-      // browser fails it then (runs 38219818479 and 38227307855).
-      await page.send("Network.enable");
-      await offline(true);
-      await page.browser.send("Fetch.failRequest", {
-        requestId: held[0],
-        errorReason: "InternetDisconnected",
-      });
-      // The face's load has failed once the document's faces have settled; two frames after that let
-      // recover.js's rejected `loaded` be heard before the chrome is read.
-      await page.explained(page.eval(SETTLED));
-      await page.waitFor("/offline/.test(document.getElementById('noticeText').textContent)");
-      assert.deepEqual(
-        JSON.parse(
-          await page.eval(`JSON.stringify({
-            path: location.pathname.split('/')[1],
-            file: document.getElementById('fileName').textContent,
-            notice: document.getElementById('noticeText').textContent,
-            navigation: performance.getEntriesByType('navigation')[0].type,
-          })`),
-        ),
-        {
-          path: "session",
-          file: "plan.html",
-          notice:
-            "This browser is offline. Your notes are kept, and this page catches up once it is back online.",
-          navigation: "navigate",
-        },
+    },
+    /**
+     * Waits for a load that is ready, asked no reload, and has its face held, and counts reloads from
+     * then: by ready every sheet and script of the chrome's has loaded or failed, so only a face is left
+     * to reload it.
+     */
+    async held() {
+      const settled = async () => {
+        const loader = shown;
+        const found = paused.find(({ networkId }) => loaderOf.get(networkId) === loader);
+        if (!found || asked > 0) return false;
+        const ready = await page.eval("document.body?.dataset.ready === '1'").catch(unlessReloaded);
+        if (!ready || shown !== loader || asked > 0) return false;
+        face = { ...found, loader, reloads };
+        return true;
+      };
+      await page.explained(
+        until(settled, { what: "a ready chrome that asked no reload to have its code face held" }),
       );
-
-      await offline(false);
-      await reloadOf(page);
-      await reviewIn(page);
-      assert.deepEqual(
-        {
-          reloads,
-          face: await paintedFace(page, "#fileName"),
-          notice: await page.eval("document.getElementById('noticeText').textContent"),
-        },
-        { reloads: 1, face: "IBM Plex Mono", notice: "" },
+      if (first)
+        assert.ok(firstRefused && face.reloads >= 1, `the refused ${first} reloaded the chrome`);
+    },
+    /** The reloads the chrome asked for since its face was held. */
+    get reloads() {
+      return reloads - face.reloads;
+    },
+    async refuse(errorReason) {
+      refused = true;
+      await page.browser.send("Fetch.failRequest", { requestId: face.requestId, errorReason });
+    },
+    /** Waits for the chrome's load after the one whose face was held. */
+    reloaded() {
+      return page.explained(
+        until(() => shown !== face.loader, { what: "the chrome to reload itself" }),
       );
-    } finally {
+    },
+    async stop() {
       page.browser.listeners.splice(page.browser.listeners.indexOf(listener), 1);
       await page.browser.send("Fetch.disable").catch(() => {});
-      await page.close();
-      await own.stop();
-    }
-  },
-);
+    },
+  };
+}
 
+/** Each held-face test as it runs, then with a chrome file the network refused on the first load. */
+const REFUSED_FIRST = [
+  ["", undefined],
+  [", even after a chrome sheet refused on the first load reloaded it", "/house/roles.css"],
+  [", even after the chrome's script refused on the first load reloaded it", "/chrome.js"],
+];
+
+for (const [after, first] of REFUSED_FIRST) {
+  test(
+    `a chrome face refused while a margin note holds typed text keeps the text, and the chrome reloads for the face once the note is saved${after}`,
+    { skip: !executable && "no browser found" },
+    async () => {
+      const own = isolatedEnv();
+      const page = await browser.page("about:blank");
+      let face;
+      try {
+        const { file } = copyOfFixture();
+        const url = (await cli([file], own.env)).json().session.url;
+        face = holdFace(page, own.serverInfo().port, first);
+        await face.start();
+        // The held face holds the chrome's load event, so the navigation is not waited on for it; the
+        // review's own ready is what `held` waits for.
+        await page.send("Page.navigate", { url });
+        await face.held();
+        const { artifact } = await reviewIn(page);
+        await pointAt(page, artifact, "#title");
+        await page.type("Shorter title");
+        await face.refuse("ConnectionRefused");
+        // The face's load has failed once the document's faces have settled; two frames after that let
+        // recover.js's rejected `loaded` be heard before the note is read.
+        await page.eval(SETTLED).catch(unlessReloaded);
+        assert.deepEqual(
+          {
+            ...JSON.parse(
+              await page
+                .eval(
+                  `JSON.stringify({
+                    text: document.getElementById('cardText')?.value ?? null,
+                    open: document.getElementById('card')?.hidden === false,
+                  })`,
+                )
+                .catch(unlessReloaded),
+            ),
+            reloads: face.reloads,
+          },
+          { text: "Shorter title", open: true, reloads: 0 },
+        );
+        await page.enter();
+        await face.reloaded();
+        const reloaded = await reviewIn(page);
+        await page.waitFor("document.querySelectorAll('.mark:not(.sent)').length === 1");
+        sameReview(
+          {
+            note: await page.eval(
+              "document.querySelector('.mark:not(.sent)').textContent.includes('Shorter title')",
+            ),
+            look: await lookOf(page, reloaded.artifact),
+            face: await paintedFace(page, "#fileName"),
+            reloads: face.reloads,
+          },
+          {
+            note: true,
+            look: (await healthyReview()).look,
+            face: "IBM Plex Mono",
+            reloads: 1,
+          },
+          page,
+        );
+      } finally {
+        await face?.stop();
+        await page.close();
+        await own.stop();
+      }
+    },
+  );
+
+  test(
+    `a chrome face refused while a margin note edit holds typed text keeps the text, and the chrome reloads for the face once the edit is saved${after}`,
+    { skip: !executable && "no browser found" },
+    async () => {
+      const own = isolatedEnv();
+      const page = await browser.page("about:blank");
+      let face;
+      try {
+        const { file } = copyOfFixture();
+        const url = (await cli([file], own.env)).json().session.url;
+        face = holdFace(page, own.serverInfo().port, first);
+        await face.start();
+        await page.send("Page.navigate", { url });
+        await face.held();
+        const { artifact } = await reviewIn(page);
+        await noteOn(page, artifact, "#title", "Shorter title");
+        await clickOn(page, "document.querySelector('.mark-edit')");
+        await page.waitFor("document.activeElement?.classList.contains('mark-edit-text')");
+        await press(page, "again");
+        await face.refuse("ConnectionRefused");
+        await page.eval(SETTLED).catch(unlessReloaded);
+        assert.deepEqual(
+          {
+            text: await page
+              .eval("document.querySelector('.mark-edit-text')?.value ?? null")
+              .catch(unlessReloaded),
+            reloads: face.reloads,
+          },
+          { text: "Shorter titleagain", reloads: 0 },
+        );
+        await page.enter();
+        await face.reloaded();
+        const reloaded = await reviewIn(page);
+        await page.waitFor(
+          "document.querySelectorAll('.mark:not(.sent)').length === 1 && document.querySelector('.mark:not(.sent)').textContent.includes('Shorter titleagain')",
+        );
+        sameReview(
+          {
+            look: await lookOf(page, reloaded.artifact),
+            face: await paintedFace(page, "#fileName"),
+            reloads: face.reloads,
+          },
+          {
+            look: (await healthyReview()).look,
+            face: "IBM Plex Mono",
+            reloads: 1,
+          },
+          page,
+        );
+      } finally {
+        await face?.stop();
+        await page.close();
+        await own.stop();
+      }
+    },
+  );
+
+  test(
+    `a chrome face refused while the browser is offline keeps the review on screen and says so, and the chrome reloads for the face once back online${after}`,
+    { skip: !executable && "no browser found" },
+    async () => {
+      const own = isolatedEnv();
+      const page = await browser.page("about:blank");
+      const offline = (on) =>
+        page.send("Network.emulateNetworkConditions", {
+          offline: on,
+          latency: 0,
+          downloadThroughput: -1,
+          uploadThroughput: -1,
+        });
+      let face;
+      try {
+        const { file } = copyOfFixture();
+        const url = (await cli([file], own.env)).json().session.url;
+        face = holdFace(page, own.serverInfo().port, first);
+        await face.start();
+        await page.send("Page.navigate", { url });
+        await face.held();
+        await reviewIn(page);
+        // The face is still loading when the tab goes offline, so its load fails the way the
+        // browser fails it then (runs 38219818479 and 38227307855).
+        await offline(true);
+        await face.refuse("InternetDisconnected");
+        // The face's load has failed once the document's faces have settled; two frames after that let
+        // recover.js's rejected `loaded` be heard before the chrome is read.
+        await page.explained(page.eval(SETTLED));
+        await page.waitFor("/offline/.test(document.getElementById('noticeText').textContent)");
+        assert.deepEqual(
+          {
+            ...JSON.parse(
+              await page.eval(`JSON.stringify({
+                path: location.pathname.split('/')[1],
+                file: document.getElementById('fileName').textContent,
+                notice: document.getElementById('noticeText').textContent,
+              })`),
+            ),
+            reloads: face.reloads,
+          },
+          {
+            path: "session",
+            file: "plan.html",
+            notice:
+              "This browser is offline. Your notes are kept, and this page catches up once it is back online.",
+            reloads: 0,
+          },
+        );
+
+        await offline(false);
+        await face.reloaded();
+        await reviewIn(page);
+        assert.deepEqual(
+          {
+            reloads: face.reloads,
+            face: await paintedFace(page, "#fileName"),
+            notice: await page.eval("document.getElementById('noticeText').textContent"),
+          },
+          { reloads: 1, face: "IBM Plex Mono", notice: "" },
+        );
+      } finally {
+        await face?.stop();
+        await page.close();
+        await own.stop();
+      }
+    },
+  );
+}
 test(
   "a refused first load of a reload held behind an open answer card gets the stray cover and Back, never the file-changed line",
   { skip: !executable && "no browser found" },
