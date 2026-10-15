@@ -11,7 +11,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
 - `skills/pointback/SKILL.md` is the agent-facing CLI contract and ships outside the npm package; change it with any command, flag or field it names.
 - Delivery is at-least-once, by an `ack` cursor and a session `epoch` (`#answer` in `src/session-store.js`, `poll-cursor.json`).
   A tab learns of sent notes only from the event stream, so Send and End never refetch the session (`changeDrafts` and `sending` in `src/browser/chrome.js`).
-- A file is watched only while a stream follows its review; a save made with none open is numbered when the next opens (`catchUp` in `src/session-store.js`, `docs/ENGINEERING-NOTES.md`).
+- A file is watched only while a stream follows its review; a save made with none open, or with no daemon running, is numbered when the next opens, against the signature the session stores as `numbered` (`catchUp` in `src/session-store.js`, `docs/ENGINEERING-NOTES.md`).
 - One daemon per state directory: a start claims `daemon.<n>.lock` before it loads a session or binds (`claimDaemon` in `src/daemon-lock.js`), and `#persist` refuses a write only when the session file holds a readable session written more times than this process's copy.
   A running daemon closes within `LOCK_CHECK_MS` of its lock going, as with its state directory removed (`src/server.js`).
   A stopped daemon stamps `stoppedAt` in its lock and a start whose process began before that stamp steps aside, and an open waits for a start in progress with `START_WALL_MS` as its only clock (`ensureServer` in `src/client.js`).

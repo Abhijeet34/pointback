@@ -5335,6 +5335,33 @@ test(
   },
 );
 
+test(
+  "a save made while no daemon ran reaches the page, numbered, once the agent's next command starts one",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const own = isolatedEnv();
+    const { file, html } = copyOfFixture();
+    const { page } = await openReview((await cli([file], own.env)).json().session.url);
+    try {
+      // The daemon idled out or crashed, the agent saved, and then ran its next command.
+      assert.equal((await cli(["stop"], own.env)).code, 0);
+      await page.waitFor("document.body.dataset.stream === undefined");
+      writeFileSync(file, html.replace("<main>", '<main><p id="saved">Saved with no daemon</p>'));
+      assert.equal((await cli(["poll", file, "--timeout-ms", "0"], own.env)).code, 0);
+      await page.waitFor("document.body.dataset.revision === '1'");
+      const artifact = await page.frame();
+      assert.equal(
+        await artifact.eval("document.getElementById('saved')?.textContent"),
+        "Saved with no daemon",
+        "the reviewer sees the save",
+      );
+    } finally {
+      await page.close();
+      await own.stop();
+    }
+  },
+);
+
 /** Opens `count` event streams on a review from Node; at `limits.eventStreams` the next tab is refused. */
 async function holdStreams(own, url, count = limits.eventStreams) {
   const { port, token } = own.serverInfo();
