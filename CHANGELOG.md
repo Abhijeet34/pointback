@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.1.8](https://github.com/Abhijeet34/pointback/compare/v0.1.7...v0.1.8) (2026-10-15)
+
+
+### Bug Fixes
+
+* **browser:** batch of chrome/SDK robustness fixes for save, backoff, and pin perf ([#114](https://github.com/Abhijeet34/pointback/issues/114)) ([5d0634d](https://github.com/Abhijeet34/pointback/commit/5d0634db0356dcf198121551a8bbae089110f743))
+* **browser:** batch of layout, motion, and font-recovery fixes ([#123](https://github.com/Abhijeet34/pointback/issues/123)) ([1a2c296](https://github.com/Abhijeet34/pointback/commit/1a2c2961b9fda78a94395990fd71a49f8826905f))
+* **browser:** clear a stale live reload notice and turn Annotate off in a superseded tab behind the file ([#116](https://github.com/Abhijeet34/pointback/issues/116)) ([b1fc43b](https://github.com/Abhijeet34/pointback/commit/b1fc43bb19e5bf6ccf41b9405a4a7469dbff5e56))
+* **browser:** close focus hand-off gaps between chrome and page ([#111](https://github.com/Abhijeet34/pointback/issues/111)) ([3aa695e](https://github.com/Abhijeet34/pointback/commit/3aa695eb70379dbe69a9d7968ab27c0f6e629959))
+* **browser:** draw agent presence from the stream's hello, not its open ([#103](https://github.com/Abhijeet34/pointback/issues/103)) ([4710fee](https://github.com/Abhijeet34/pointback/commit/4710feece32be585220ca625ec86ab012a2b93cc))
+* **browser:** fix pin, ring, code-wrap, and rubber-band visual defects ([#99](https://github.com/Abhijeet34/pointback/issues/99)) ([f9e020f](https://github.com/Abhijeet34/pointback/commit/f9e020fd45c82acd6908a82cc15a636f65fcc4ac))
+* **browser:** follow the reviewer's light or dark preference in the chrome, Markdown and pins ([#113](https://github.com/Abhijeet34/pointback/issues/113)) ([536fb97](https://github.com/Abhijeet34/pointback/commit/536fb9723391a1e942d1f6ba5d5a273048306d78))
+* **browser:** keep the outside-asset notice live and disable margin edits while offline ([#119](https://github.com/Abhijeet34/pointback/issues/119)) ([419cbb9](https://github.com/Abhijeet34/pointback/commit/419cbb9d5cda1518d5bf388d9468b7cea011cedb))
+* **browser:** keep the review on screen when a chrome file is refused offline ([#107](https://github.com/Abhijeet34/pointback/issues/107)) ([73dfc80](https://github.com/Abhijeet34/pointback/commit/73dfc8037d8900368f170c66b1ac9171bbe12fd6))
+* **browser:** load a review's page and frame once per open in every engine ([#106](https://github.com/Abhijeet34/pointback/issues/106)) ([9570fc2](https://github.com/Abhijeet34/pointback/commit/9570fc24fd0c22c0265cf3ffdf2b457559201653))
+* **browser:** place pins and the note card clear of their targets, fix dark-scheme highlight contrast ([#127](https://github.com/Abhijeet34/pointback/issues/127)) ([6f60c06](https://github.com/Abhijeet34/pointback/commit/6f60c0657cd33945851c4ba16672e0207ce22ec3))
+* **browser:** redraw a passage's highlight ring on scroll and resize ([#132](https://github.com/Abhijeet34/pointback/issues/132)) ([05457cd](https://github.com/Abhijeet34/pointback/commit/05457cd02ede91e61eedaf28322172164f73e0da))
+* **browser:** settle the review-follow signal and harden the browser test harness ([#105](https://github.com/Abhijeet34/pointback/issues/105)) ([fbfe1d7](https://github.com/Abhijeet34/pointback/commit/fbfe1d74a090fea4c51db222a8104b0a055de932))
+* **browser:** tell reviewers to ask their agent, not run a command, and fix sdk raw querySelector ([#125](https://github.com/Abhijeet34/pointback/issues/125)) ([cb92a7e](https://github.com/Abhijeet34/pointback/commit/cb92a7eded26efd2aba4a69316f6f77e74069fb0))
+* **cli:** correct error messages, answer outline, and cap refusal ([#112](https://github.com/Abhijeet34/pointback/issues/112)) ([051932d](https://github.com/Abhijeet34/pointback/commit/051932dbd4444cbf69408a0b3b260c91cc493ea5))
+* **client:** bound daemon requests, resolve state dir, and stop a WebKit postMessage error ([#122](https://github.com/Abhijeet34/pointback/issues/122)) ([f29bab1](https://github.com/Abhijeet34/pointback/commit/f29bab11dd0e2ce97ee06dce6a09bb3a5bd29af9))
+* **client:** name the port to free on a refused open, never an unverified pid ([#117](https://github.com/Abhijeet34/pointback/issues/117)) ([7b13a74](https://github.com/Abhijeet34/pointback/commit/7b13a74123b915bc6b884f5dce6bf2624a7a67f5))
+* **cli:** stop reports stopped for a daemon that exits after its deadline ([#108](https://github.com/Abhijeet34/pointback/issues/108)) ([d546e54](https://github.com/Abhijeet34/pointback/commit/d546e54749a8e89a0fadc4cf883e9c307de02544))
+* **daemon:** close a failed start and keep stop meaning stopped ([#98](https://github.com/Abhijeet34/pointback/issues/98)) ([f58fd8a](https://github.com/Abhijeet34/pointback/commit/f58fd8a4fca7a1edfc835827d94e337e792f3458))
+* **daemon:** close a running daemon once its state directory is removed ([#118](https://github.com/Abhijeet34/pointback/issues/118)) ([97940bd](https://github.com/Abhijeet34/pointback/commit/97940bd6c795009c484687d95993768aa2657393))
+* **daemon:** free an event stream's slot when its client leaves with only a FIN ([#115](https://github.com/Abhijeet34/pointback/issues/115)) ([7a97c75](https://github.com/Abhijeet34/pointback/commit/7a97c7552fcc6b23966f424c3069efdc202f86b0))
+* **events:** number a save made while no stream follows the review ([#129](https://github.com/Abhijeet34/pointback/issues/129)) ([ff9f2ae](https://github.com/Abhijeet34/pointback/commit/ff9f2ae6b3ff74cbe5ca602a15a55ab0ffe1637f))
+* **open:** refuse non-regular files and show a page for spent links ([#124](https://github.com/Abhijeet34/pointback/issues/124)) ([b8865ef](https://github.com/Abhijeet34/pointback/commit/b8865efac33a721145a2221b17b32319eff40873))
+* **open:** render each review once and catch CSS url() assets outside the root ([#109](https://github.com/Abhijeet34/pointback/issues/109)) ([7f2265d](https://github.com/Abhijeet34/pointback/commit/7f2265de3d70ee07c99f8056e427445462de5d72))
+* **scripts:** apply repo settings through gh api and add dependency-advisory caller ([#110](https://github.com/Abhijeet34/pointback/issues/110)) ([838644a](https://github.com/Abhijeet34/pointback/commit/838644ab135b996b791810f2210d1b3339740cd5))
+* **session-store:** number a save made while no daemon ran once the next daemon's tab follows the review ([#133](https://github.com/Abhijeet34/pointback/issues/133)) ([c9db96f](https://github.com/Abhijeet34/pointback/commit/c9db96f98682be1839680674b52b5826f2243789))
+
 ## [0.1.7](https://github.com/Abhijeet34/pointback/compare/v0.1.6...v0.1.7) (2026-10-12)
 
 
