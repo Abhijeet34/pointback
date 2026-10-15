@@ -1,6 +1,17 @@
 import { EventEmitter } from "node:events";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -190,6 +201,7 @@ export class SessionStore {
     const canonical = canonicalFile(file);
     const refusal = unreviewable(canonical);
     if (refusal) throw new HttpError(415, refusal);
+    if (!statSync(canonical).isFile()) throw notRegular(canonical);
     const assets = assetRoot(root, canonical);
     const key = sessionKey(canonical);
     const now = new Date().toISOString();
@@ -325,7 +337,7 @@ export class SessionStore {
    */
   page(key) {
     const session = this.get(key);
-    const source = readFileSync(session.file);
+    const source = readRegular(session.file);
     const digest = createHash("sha256").update(source).digest("hex");
     const cached = this.#pages.get(session);
     if (cached?.digest === digest) return cached;
@@ -510,10 +522,20 @@ export class SessionStore {
       // Refused because another process holds a newer copy; a throw here would end the daemon.
       if (!(error instanceof HttpError)) throw error;
       const adopted = this.#sessions.get(key);
-      if (adopted) this.#events.emit(key, { type: "reload", revision: adopted.revision });
+      if (adopted)
+        this.#events.emit(key, {
+          type: "reload",
+          revision: adopted.revision,
+          outside: this.outside(key),
+        });
       return adopted?.revision ?? 0;
     }
-    this.#events.emit(key, { type: "reload", revision: session.revision });
+    // A save can add or drop a file the page loads from outside its root, and the tab says which.
+    this.#events.emit(key, {
+      type: "reload",
+      revision: session.revision,
+      outside: this.outside(key),
+    });
     return session.revision;
   }
 
@@ -795,6 +817,24 @@ export class SessionStore {
   #announce(key, before) {
     const presence = this.presence(key);
     if (presence.state !== before) this.#events.emit(key, { type: "presence", ...presence });
+  }
+}
+
+const notRegular = (file) =>
+  new HttpError(415, `${basename(file)} cannot be reviewed: it is not a regular file`);
+
+/**
+ * A page's bytes, refused unless the file is a regular one: a named pipe nobody writes holds a read,
+ * and with it the daemon, forever. Opened without blocking and checked on the open descriptor, so a
+ * pipe put in the file's place after it was opened for review is refused too.
+ */
+function readRegular(file) {
+  const fd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  try {
+    if (!fstatSync(fd).isFile()) throw notRegular(file);
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
   }
 }
 
