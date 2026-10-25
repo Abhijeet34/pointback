@@ -689,16 +689,10 @@ test("release-tag refuses to tag or release a tree its own run did not test", ()
   assert.equal(checkRuns({}), false, "the release check ran with release-please skipped");
 });
 
-// The one ref taken at a branch: gates' shared workflows are the fleet's single
-// copy of the scanner rules and digests, and following @main is how a repin
-// reaches every caller without an edit here.
-const followsMain = /^Abhijeet34\/gates\/\.github\/workflows\/shared-[a-z-]+\.yml@main$/;
-
 test("every action is pinned to a commit SHA", () => {
   for (const [file, text] of Object.entries(workflows)) {
     for (const [, ref] of text.matchAll(/^\s*(?:- )?uses: ([^\s]+)/gm)) {
       if (ref.startsWith("./")) continue; // a same-repo reusable workflow carries no ref
-      if (followsMain.test(ref)) continue;
       assert.match(ref, /@[0-9a-f]{40}$/, `${file}: ${ref} is not pinned to a SHA`);
     }
   }
@@ -711,7 +705,7 @@ test("the secret scan is gates' shared workflow and gates the required check", (
   const jobs = jobsByName(ci);
   assert.match(
     jobs.secrets,
-    /^ {4}uses: Abhijeet34\/gates\/\.github\/workflows\/shared-secret-scan\.yml@main$/m,
+    /^ {4}uses: Abhijeet34\/gates\/\.github\/workflows\/shared-secret-scan\.yml@[0-9a-f]{40} # v\d+$/m,
   );
   assert.match(jobs.checks, /needs: \[[^\]]*\bsecrets\b[^\]]*\]/);
   for (const [file, text] of Object.entries(workflows)) {
@@ -731,7 +725,7 @@ test("open Dependabot alerts are read by gates' advisory workflow on every pull 
   const text = directives(caller);
   assert.match(
     jobsByName(caller).advisories,
-    /^ {4}uses: Abhijeet34\/gates\/\.github\/workflows\/shared-dependency-advisories\.yml@main$/m,
+    /^ {4}uses: Abhijeet34\/gates\/\.github\/workflows\/shared-dependency-advisories\.yml@[0-9a-f]{40} # v\d+$/m,
   );
   assert.match(text, /^permissions:\n(?: {2}.*\n)*? {2}vulnerability-alerts: read$/m);
   for (const trigger of ["push", "pull_request", "schedule"]) {
