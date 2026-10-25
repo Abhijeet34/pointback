@@ -99,9 +99,9 @@ git config core.hooksPath .githooks
 
 CI is the backstop, not the gate: the `secrets` job in `ci.yml` calls `uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@<40-hex commit> # v1`, the same call every sibling makes, and reports as `secrets / secret scan`.
 It re-reads the full history weekly, because history does not change between runs but gitleaks' rule set does.
-The gitleaks version and the SHA-256 of both synced files are pinned in that shared workflow and nowhere in this repository, so a drifted copy fails the job, the fix is to re-sync from upstream, and a repin in `gates` reaches this repository with no edit here.
+The gitleaks version and the SHA-256 of both synced files are pinned in that shared workflow and nowhere in this repository, so a drifted copy fails the job, the fix is to re-sync from upstream, and a repin in `gates` reaches this repository with the next pin bump, with no other edit here.
 `test/pipeline.test.js` refuses a local `CONFIG_SHA256`, `HOOK_SHA256` or `GITLEAKS_SHA256`, because a local pin is exactly how this repository once stayed on the old rules through a fleet repin.
-The call is taken at `@main` rather than a SHA, which is the point of the design; `sha_pinning_required` does not refuse it, measured on sibling repositories with that policy on running the same call green.
+The call is pinned to the full commit of a gates release, as `sha_pinning_required` demands, and moves by a gates bump or a Dependabot pin PR.
 The branch ruleset requires only `checks`, so the job's name is free to change without a branch-protection edit.
 
 ## What a pull request costs
