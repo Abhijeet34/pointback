@@ -2,8 +2,9 @@ name: dependency advisories
 
 # Caller of gates' shared-dependency-advisories.yml, which fails on an open
 # Dependabot alert; the design and the live red/green runs behind it are in
-# automation's .ci/shared-workflows.md. @main with no digest pin is deliberate,
-# so a change to the shared body is live here on the next run.
+# automation's .ci/shared-workflows.md. It is pinned to a gates release
+# commit, so a change to the shared body reaches here by a gates bump or a
+# Dependabot pin PR.
 #
 # The weekly run is not redundant with the pull-request run: GitHub's advisory
 # database changes between commits, so a clean dependency can gain a high
@@ -30,4 +31,4 @@ permissions:
 
 jobs:
   advisories:
-    uses: Abhijeet34/gates/.github/workflows/shared-dependency-advisories.yml@main
+    uses: Abhijeet34/gates/.github/workflows/shared-dependency-advisories.yml@9634dea8b931288eaa5129c6bc9522eb17056bd1 # v1

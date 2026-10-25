@@ -118,13 +118,13 @@ jobs:
           echo "${{ runner.os }} - $verdict" >> "$GITHUB_STEP_SUMMARY"
           exit $rc
 
-  # The fleet's shared secret scan in gates, taken at @main like every sibling
-  # caller: its gitleaks version and the digests of .gitleaks.toml and
-  # .githooks/pre-push live there, so a repin reaches this repository with no
+  # The fleet's shared secret scan in gates, pinned to a release commit like every
+  # sibling caller: its gitleaks version and the digests of .gitleaks.toml and
+  # .githooks/pre-push live there, so a gates bump reaches this repository with no
   # edit here. gates is public, which is what lets a public caller reach it.
   # The check reports as `secrets / secret scan`; only `checks` is required.
   secrets:
-    uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@main
+    uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@9634dea8b931288eaa5129c6bc9522eb17056bd1 # v1
 
   # GitHub's own action, available here because the repository is public: it is
   # "available for all public repositories, as well as private repositories that

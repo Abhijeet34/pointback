@@ -97,7 +97,7 @@ The hook is also inert until the clone points at it, which no checkout does for 
 git config core.hooksPath .githooks
 ```
 
-CI is the backstop, not the gate: the `secrets` job in `ci.yml` calls `uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@main`, the same call every sibling makes, and reports as `secrets / secret scan`.
+CI is the backstop, not the gate: the `secrets` job in `ci.yml` calls `uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@<40-hex commit> # v1`, the same call every sibling makes, and reports as `secrets / secret scan`.
 It re-reads the full history weekly, because history does not change between runs but gitleaks' rule set does.
 The gitleaks version and the SHA-256 of both synced files are pinned in that shared workflow and nowhere in this repository, so a drifted copy fails the job, the fix is to re-sync from upstream, and a repin in `gates` reaches this repository with no edit here.
 `test/pipeline.test.js` refuses a local `CONFIG_SHA256`, `HOOK_SHA256` or `GITLEAKS_SHA256`, because a local pin is exactly how this repository once stayed on the old rules through a fleet repin.
