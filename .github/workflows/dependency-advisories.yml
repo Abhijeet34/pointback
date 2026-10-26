@@ -31,4 +31,4 @@ permissions:
 
 jobs:
   advisories:
-    uses: Abhijeet34/gates/.github/workflows/shared-dependency-advisories.yml@9634dea8b931288eaa5129c6bc9522eb17056bd1 # v1
+    uses: Abhijeet34/gates/.github/workflows/shared-dependency-advisories.yml@9dda2e358e6f69f459ea2d33d5c857e3426be5d3 # v3
