@@ -124,7 +124,7 @@ jobs:
   # edit here. gates is public, which is what lets a public caller reach it.
   # The check reports as `secrets / secret scan`; only `checks` is required.
   secrets:
-    uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@9634dea8b931288eaa5129c6bc9522eb17056bd1 # v1
+    uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@9dda2e358e6f69f459ea2d33d5c857e3426be5d3 # v3
 
   # GitHub's own action, available here because the repository is public: it is
   # "available for all public repositories, as well as private repositories that
