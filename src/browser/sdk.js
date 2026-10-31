@@ -120,11 +120,19 @@
       if (data.scroll) restoreScroll(data.scroll);
       setAnnotate(data.annotate);
       send({ type: "annotate-ok", on: annotate });
-      // This page replaced one unloaded for a note made by keyboard, so the element the note was on
-      // gets the focus back here, as `closeTarget` gives it, and the chrome is told it is done.
-      if (typeof data.refocus === "string") {
-        if (annotate) query(data.refocus)?.focus({ preventScroll: true });
-        send({ type: "closed" });
+      // This page replaced one unloaded for a note, so H moves on from the element the note was on, and
+      // one noted by keyboard gets the focus back so the next Tab does too; not once the reviewer has
+      // moved the focus on within this page since it loaded (issue 57).
+      if (typeof data.noted === "string") notedLast = query(data.noted);
+      if (data.refocus === true && annotate && notedLast) {
+        const noted = notedLast;
+        refocusNoted = () => {
+          if (document.activeElement !== document.body) return;
+          noted.focus({ preventScroll: true });
+          // A document that does not hold the focus yet hears no focusin for this, so the box is drawn here.
+          outline(candidate(noted));
+        };
+        refocusNoted();
       }
       setTextSize(data.textSize);
       // The agent may have rewritten the page, so every note is found again by its anchor.
@@ -133,6 +141,9 @@
       // the reviewer was, and become annotatable; anything earlier is a page still moving. The
       // outline goes with it for a note the chrome composes without a target, an answer.
       whenLoaded(() => send({ type: "shown", structure: pageOutline() }));
+    } else if (data?.type === "focused") {
+      // The wrapper handed this document the focus once it loaded, which clears what was focused in it.
+      refocusNoted?.();
     } else if (data?.nonce === nonce && data.type === "annotate") {
       setAnnotate(data.on);
       // The chrome cannot otherwise know when this arrived: it posts into a
@@ -140,20 +151,14 @@
       // a test - would be racing delivery.
       send({ type: "annotate-ok", on: data.on });
     } else if (data?.nonce === nonce && data.type === "compose" && !data.on) {
-      // The chrome closed its note card; drop the selection and, for the keyboard path, hand
-      // focus back to the element the reviewer came from so a Tab lands on the next one. The
-      // chrome is told when that is done.
-      closeTarget(data.refocus === true);
-      send({ type: "closed" });
+      // The chrome dropped the target this page proposed, so the next click is heard again.
+      closeTarget();
     } else if (data?.nonce === nonce && data.type === "pins") {
       setPins(data.pins);
     } else if (data?.nonce === nonce && data.type === "reveal") {
       reveal(data.n);
     } else if (data?.nonce === nonce && data.type === "text-size") {
       setTextSize(data.size);
-    } else if (data?.nonce === nonce && data.type === "scroll-by") {
-      // A wheel over the chrome's shield, which lies over this page while a note is being written.
-      window.scrollBy(data.x, data.y);
     }
   });
 
@@ -550,7 +555,7 @@
     // A press focuses what it lands on, and a note made by mouse must leave nothing in the page
     // holding the keys once the card closes: a field would take them, and Space would note again.
     // One made by keyboard lets go too, as Firefox 157 keeps the focus in a frame whose element holds
-    // it against the card's own focus(); `closeTarget` gives it back.
+    // it against the card's own focus(); the page loaded once the note is done gives it back (`init`).
     /** @type {HTMLElement} */ (document.activeElement)?.blur();
     outlineRects(hit.rects);
     send({
@@ -601,27 +606,19 @@
   // The target last noted, which H moves on from while nothing in the page holds the focus, as Tab
   // moves on from it by the browser's own starting point.
   let notedLast = null;
+  // Gives the element a note made by keyboard was on the focus back, while this document has moved it
+  // nowhere else; set by an init that asks for it, until the reviewer's first Tab.
+  let refocusNoted = null;
 
-  function closeTarget(refocus) {
+  function closeTarget() {
     if (!open) return;
-    const { element, pointed, pressed } = open;
+    const { element, pointed } = open;
     open = null;
     outlineRects([]);
-    // Only a target reached by keyboard is outlined once its note is done, since after a click the
-    // box reads as a selection never made.
+    // Only a target reached by keyboard is outlined once it is let go, since after a click the box
+    // reads as a selection never made.
     focusShown = !pointed;
     notedLast = element;
-    // Not once the reviewer has pressed in the page: this close can land mid-drag, and moving focus
-    // then ends the drag, so the passage is recorded cut short or as its whole element. Nor once they
-    // have moved the focus to another element here, as a Tab does in Firefox (issue 57).
-    if (!refocus || !annotate || pressed) return;
-    const at = document.activeElement;
-    if (document.hasFocus() && at !== document.body && at !== element) return;
-    // Focus goes back to a target reached by keyboard, which let it go when it was noted
-    // (`selectTarget`), so the next Tab starts from the note. One reached by mouse stays let go, so
-    // the page takes the keys back with nothing in it focused.
-    if (pointed) window.focus();
-    else if (element.isConnected) element.focus({ preventScroll: true });
   }
 
   function describe(element) {
@@ -1125,8 +1122,6 @@
 
   // Every listener below is on the window in the capture phase, ahead of any the page adds to an
   // element or the document, so in Annotate mode a click notes a control and the page never sees it.
-  // This one comes first, so the press is counted on a control as well; see closeTarget.
-  window.addEventListener("pointerdown", () => open && (open.pressed = true), true);
   window.addEventListener(
     "click",
     (event) => {
@@ -1248,6 +1243,18 @@
   });
   // A key in the page is the reviewer using the keyboard again, so focus is outlined from here on.
   window.addEventListener("keydown", () => (focusShown = true), true);
+  // WebKit lets this page move the focus only inside the reviewer's own input, so a refocus the init
+  // asked for can come to nothing there; the reviewer's first Tab then gives the element the focus
+  // before the browser moves on from it.
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key !== "Tab" || !refocusNoted) return;
+      refocusNoted();
+      refocusNoted = null;
+    },
+    true,
+  );
 
   // One report per frame at most: the chrome only needs the last position before a reload.
   let scrolling = false;
