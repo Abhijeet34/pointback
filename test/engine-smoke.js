@@ -2,19 +2,27 @@
 // browser, which is Safari on an unconfigured Mac, while test/browser.test.js drives Chromium
 // only. Open a file, point at an element, write a note, send, and a poll returns it. Then the gate
 // these engines need (docs/THREAT-MODEL.md): a page acting on the card's Enter gets nothing.
-// Keys pressed after a note made by mouse edit nothing in the page, and a Tab out of a note keeps it.
+// Keys pressed after a note made by mouse edit nothing in the page.
 // A save of a Word export keeps the reviewer's place and Annotate.
-// A note made by keyboard gives its element the focus back, a Tab pressed before the page hears the
-// card close is not undone, and a Tab from the note into the page leaves it loaded and unshielded.
+// A page that calls focus() while a note is written, every 20 ms or once, hears no key of it, and a
+// note made by keyboard gives its element the focus back in the page loaded once it is done.
 // And an add after the tab sat idle past Node's default keep-alive close is kept.
 // And a chrome face refused while the browser is offline leaves the review on screen.
 // The chrome, a rendered Markdown page and its pin follow a light and a dark preference.
 // `npm run smoke -- webkit firefox`; weekly and on the release pull request in
 // .github/workflows/cross-platform.yml.
 // The chrome's CSP refuses string evaluation, so page-side waits are functions run in the tab.
-/* global document, location, getComputedStyle, window, parent */
+/* global document, location, getComputedStyle */
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { firefox, webkit } from "playwright-core";
@@ -27,7 +35,10 @@ const HOSTILE = new URL("./fixtures/hostile-after-gesture.html", import.meta.url
 const FOCUS_CALLS = new URL("./fixtures/focus-calls.html", import.meta.url);
 const UNLOAD_ROUNDS = 5;
 const UNLOADED_LINE =
-  "This page was unloaded because it took the keyboard from your note. It comes back when you finish the note.";
+  "This page was unloaded so it cannot take the keyboard from your note. It comes back when you finish the note.";
+// Twenty keys at 60 ms a key, typed through the one-shot page's call 300 ms in; no `a` or `h`, which the
+// SDK acts on in a page that holds the keys.
+const WORD = "bcdefgijklmnopqrstuv";
 
 const ENGINES = { webkit, firefox };
 /** The longest any one Playwright wait may take; nothing in the act is slow, so a miss is a hang. */
@@ -54,28 +65,22 @@ async function smoke(engine) {
     await act(browser, endKeepsTheCard, lab);
     await act(browser, readingPlace, lab, engine);
     await act(browser, wordPage, lab, engine);
-    await act(browser, pressOverThePage, lab);
-    await act(browser, tabFromTheNote, lab, engine);
     await act(browser, keysAfterAMouseNote, lab, engine);
     const control = await act(browser, keysReachThePage, lab, engine);
-    const probes = [];
-    const ms = [];
+    const repeated = [];
+    const once = [];
     for (let round = 1; round <= UNLOAD_ROUNDS; round += 1) {
-      const result = await act(browser, unloadRound, lab, engine, round);
-      probes.push(result.probe);
-      ms.push(result.ms);
+      repeated.push(await act(browser, unloadRound, lab, engine, round));
+      once.push(await act(browser, oneShotRound, lab, engine, round));
     }
-    await act(browser, focusLeavesNoteAlone, lab, engine);
     await act(browser, keyboardNoteRefocuses, lab, engine);
-    await act(browser, tabBeforeTheClose, lab, engine);
-    await act(browser, tabIntoThePage, lab, engine);
     await act(browser, addAfterAnIdle);
     await act(browser, faceRefusedOffline, lab);
     const schemes = [];
     for (const colorScheme of ["light", "dark"]) {
       schemes.push(await act(browser, { colorScheme }, followsScheme, lab, colorScheme));
     }
-    return `${named} passed; ${schemes.join("; ")}; unloaded in ${UNLOAD_ROUNDS} of ${UNLOAD_ROUNDS} rounds; probe keys reaching the page per round ${probes.join(", ")}; move to unloaded ms per round ${ms.join(", ")}; the key channel reported ${control} keys of the page's own`;
+    return `${named} passed; ${schemes.join("; ")}; key events reaching a page calling focus() every 20 ms per round ${repeated.join(", ")}, and once ${once.join(", ")}; the key channel reported ${control} keys of the page's own`;
   } catch (error) {
     throw Object.assign(error, { named });
   } finally {
@@ -175,6 +180,7 @@ async function coreAct(page, lab) {
   await page.keyboard.type(NOTE);
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
+  await pageBack(page);
 
   await page.click("#send");
   // After the click, not racing it: a sent batch waits on the server, and a poll left
@@ -185,16 +191,21 @@ async function coreAct(page, lab) {
     polled.prompts.map(({ prompt, selector, tag }) => ({ prompt, selector, tag })),
     [{ prompt: NOTE, selector: "#title", tag: "h1" }],
   );
-  // Read once the note made in the page has come back: the chrome heard the page's load before the
-  // note it proposed, and showing it again is decided only there, so no load is still to come.
-  assert.deepEqual(loads, { page: 1, wrapper: 1 }, "the page and its wrapper loaded once each");
+  // Read once the page the note took out has come back: the chrome heard the page's first load before
+  // the note it proposed, and showing it again is decided only there, so no load is still to come.
+  assert.deepEqual(
+    loads,
+    { page: 2, wrapper: 1 },
+    "the page loaded once and once more after its note, and its wrapper once",
+  );
   assert.deepEqual(errors, [], "the review logged no console error");
 }
 
 /**
- * Firefox and WebKit pass a key pressed in the chrome on to the page, so the page could spend the
- * reviewer's Enter in the card; the chrome hears nothing from the page for 5 s after a key there.
- * The page tries again on every target the chrome hands back, until well after the gate lapses.
+ * Firefox and WebKit pass a key pressed in the chrome on to the page, so the page loaded once the note
+ * is done could spend the reviewer's Enter in the card; the chrome hears nothing from the page for 5 s
+ * after a key there. A save made while the card is open arms that page to try as it loads, and again
+ * on every target the chrome hands back, until well after the gate lapses.
  */
 async function enterIsNotThePages(page, lab) {
   const dir = join(lab.dir, "review");
@@ -209,11 +220,14 @@ async function enterIsNotThePages(page, lab) {
   const { session } = (await cli([file], lab.env)).json();
   await open(page, session.url);
   await page.waitForFunction(() => document.body.dataset.annotate === "1");
-  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
-  // Before the click, whose gesture is let lapse below along with this evaluate's.
-  await artifact.evaluate(() => (globalThis.retry = true));
   await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
+  arm(file, { atLoad: true, retry: true });
+  await page.waitForFunction(
+    () =>
+      document.getElementById("status").textContent ===
+      "The file changed. This page updates as soon as you finish this note.",
+  );
   // The click is the reviewer's own gesture in the page, which the page may use; it is let lapse,
   // so all that is left to spend is the Enter. Inserted text presses no key.
   await page.waitForFunction(() => !navigator.userActivation.isActive);
@@ -244,6 +258,15 @@ async function enterIsNotThePages(page, lab) {
   );
   const polled = (await cli(["poll", file, "--timeout-ms", "0"], lab.env)).json();
   assert.equal(polled.status, "waiting", "the agent receives nothing the reviewer did not send");
+}
+
+/** Saves the hostile fixture at `file` with the flags it reads as it loads set. */
+function arm(file, flags) {
+  let html = readFileSync(file, "utf8");
+  for (const [flag, on] of Object.entries(flags))
+    html = html.replace(`globalThis.${flag} = false;`, `globalThis.${flag} = ${on};`);
+  writeFileSync(`${file}.tmp`, html);
+  renameSync(`${file}.tmp`, file);
 }
 
 /**
@@ -427,74 +450,6 @@ async function wordPage(page, lab, engine) {
   }
 }
 
-/**
- * A press over the page while a note has the focus is the reviewer's own move into the page, so the
- * engine must name the frame as where the focus went; if it does not, the chrome holds the page as
- * a steal and the page is not shown.
- */
-async function pressOverThePage(page, lab) {
-  const { session } = (await cli([fixture], lab.env)).json();
-  await open(page, session.url);
-  await page.waitForFunction(() => document.body.dataset.annotate === "1");
-  await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
-  await page.waitForFunction(() => document.activeElement?.id === "cardText");
-  const spot = await page.evaluate(() => {
-    const frame = document.getElementById("artifact").getBoundingClientRect();
-    const card = document.getElementById("card").getBoundingClientRect();
-    const points = [
-      [0.1, 0.9],
-      [0.9, 0.9],
-      [0.1, 0.1],
-      [0.9, 0.1],
-    ].map(([x, y]) => ({ x: frame.left + frame.width * x, y: frame.top + frame.height * y }));
-    return points.find(
-      ({ x, y }) => x < card.left || x > card.right || y < card.top || y > card.bottom,
-    );
-  });
-  assert.ok(spot, "a point over the page outside the note card");
-  await page.mouse.click(spot.x, spot.y);
-  await page.waitForFunction(() => document.activeElement?.id === "artifact");
-  assert.deepEqual(
-    await page.evaluate(() => ({
-      shown: getComputedStyle(document.getElementById("artifact")).display !== "none",
-      cover: document.getElementById("cover").hidden,
-    })),
-    { shown: true, cover: true },
-    "a press over the page is the reviewer's own move into it, so the page is not held",
-  );
-}
-
-/**
- * A Tab the reviewer presses in an open note is the keyboard's way into the page, so the move it makes
- * is theirs, as a press over the page is: the chrome leaves the page loaded and shown and the note open.
- * WebKit 26.6 names nothing as where the focus went, so there it rests on the chrome hearing the Tab's
- * trusted keydown first (`tabbing` in src/browser/chrome.js); Firefox 155 fires no focusout in the
- * chrome for this move, so there it holds without that.
- */
-async function tabFromTheNote(page, lab, engine) {
-  await openFocusFixture(page, lab, "tab");
-  await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
-  await page.waitForFunction(() => document.activeElement?.id === "cardText");
-  await page.keyboard.press("Shift+Tab");
-  await page.waitForFunction(() => document.activeElement?.id === "artifact");
-  // Two tasks: the check the focus move starts runs in one, so the second means it has run.
-  await page.evaluate(() => new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0)));
-  const shown = await page.evaluate(() => ({
-    card: !document.getElementById("card").hidden,
-    cover: document.getElementById("cover").hidden,
-    frame: getComputedStyle(document.getElementById("artifact")).display,
-  }));
-  const address = page
-    .frames()
-    .find((frame) => frame.parentFrame()?.url().endsWith("/wrapper.html"))
-    ?.url();
-  assert.deepEqual(
-    { ...shown, unloaded: address === undefined || address.startsWith("about:blank") },
-    { card: true, cover: true, frame: "block", unloaded: false },
-    `${engine}: a Shift+Tab from the note into the page`,
-  );
-}
-
 /** Every key the fixture reports, as `keydown o`, in the order the page received it. */
 function listenForKeys(page) {
   const keys = [];
@@ -554,8 +509,8 @@ async function keysReachThePage(page, lab, engine) {
 }
 
 /**
- * Keys pressed once a note made by mouse is added reach no element of the page: the noted field keeps
- * its value, and the page has the focus back with nothing in it focused. A card Space might open is
+ * Keys pressed once a note made by mouse is added reach no element of the page loaded again after it:
+ * the noted field keeps its value, and the page has the focus back with nothing in it focused. A card Space might open is
  * not looked for, since the chrome hears nothing from the page for 5 s after the reviewer's Enter.
  */
 async function keysAfterAMouseNote(page, lab, engine) {
@@ -565,10 +520,7 @@ async function keysAfterAMouseNote(page, lab, engine) {
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
   await page.keyboard.insertText(NOTE);
   await page.keyboard.press("Enter");
-  await page.waitForFunction(
-    () => document.getElementById("card").hidden && document.body.dataset.handoff === "settled",
-  );
-  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
+  const artifact = await pageBack(page);
   await artifact.waitForFunction(() => document.hasFocus());
   const heard = keys.length;
   await page.keyboard.press("Space");
@@ -589,101 +541,68 @@ async function keysAfterAMouseNote(page, lab, engine) {
 }
 
 /**
- * One fresh review per round: a page that calls focus() out of an open note takes the keyboard in
- * every engine, so the chrome unloads it there too; the reviewer's words land in the note, the page
- * is out until the note is done, and no key reaches the page.
+ * One fresh review per round: a page that calls focus() every 20 ms, from before the note opens, is out
+ * of the wrapper before the note gets the focus, so a word typed the moment it has it lands whole and
+ * no key event reaches the page. Returns the key events the page heard.
  */
 async function unloadRound(page, lab, engine, round) {
   await openFocusFixture(page, lab, `focus-${round}`);
   const keys = listenForKeys(page);
-  await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
-  await page.waitForFunction(() => document.activeElement?.id === "cardText");
-  await page.evaluate(() => {
-    globalThis.moves = {};
-    document.addEventListener(
-      "focusout",
-      (event) => {
-        if (event.target.id === "cardText") globalThis.moves.out ??= performance.now();
-      },
-      true,
-    );
-    new globalThis.MutationObserver(() => {
-      if (!document.getElementById("cover").hidden) globalThis.moves.shown ??= performance.now();
-    }).observe(document.getElementById("cover"), { attributes: true, attributeFilter: ["hidden"] });
-  });
   const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
   await artifact.evaluate(() => (globalThis.calling = true));
-  await page.keyboard.type("on");
-  const unloaded = await page
-    .waitForFunction(
-      (line) =>
-        !document.getElementById("cover").hidden &&
-        document.getElementById("coverText").textContent === line,
-      UNLOADED_LINE,
-    )
-    .then(
-      () => true,
-      () => false,
-    );
-  if (!unloaded) {
-    const seen = await page.evaluate(() => ({
-      focus: document.activeElement?.id,
-      cover: document.getElementById("cover").hidden
-        ? "hidden"
-        : document.getElementById("coverText").textContent,
-      frame: getComputedStyle(document.getElementById("artifact")).display,
-    }));
-    assert.fail(
-      `${engine} round ${round}: the page took the focus from the note and was not unloaded; the focus is on #${seen.focus}, the cover is ${seen.cover}, the frame display is ${seen.frame}, and ${keys.length} key event(s) reached the page: ${keys.join("; ")}`,
-    );
-  }
-  const probe = await keysSettle(keys, `${engine} round ${round}: the probe key reports to settle`);
-  const ms = Math.round(await page.evaluate(() => globalThis.moves.shown - globalThis.moves.out));
-  console.log(
-    `${engine} round ${round}: probe key events reaching the page ${probe} of 4 (2 keys); move to unloaded ${ms} ms`,
-  );
-  await page.evaluate(() => (document.getElementById("cardText").value = ""));
-  await page.waitForFunction(() => document.activeElement?.id === "cardText");
-  const quiet = await keysSettle(keys, `${engine} round ${round}: the probe key reports to settle`);
-  await page.keyboard.type("once");
-  const text = await page.evaluate(() => document.getElementById("cardText").value);
-  await page.keyboard.press("Enter");
-  await page.waitForFunction(
-    () => document.getElementById("card").hidden && document.getElementById("cover").hidden,
-  );
-  await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
-  assert.deepEqual(
-    keys.slice(quiet),
-    [],
-    `${engine} round ${round}: the page received key events for the asserted word: ${keys.slice(quiet).join("; ")}`,
-  );
-  assert.equal(
-    text,
-    "once",
-    `${engine} round ${round}: the note reads ${JSON.stringify(text)}, not the word typed`,
-  );
-  return { probe, ms };
+  return writeThrough(page, keys, "once", `${engine} round ${round}, a page calling every 20 ms`);
 }
 
-/** A move of the focus from an open note to a chrome control leaves the page where it is. */
-async function focusLeavesNoteAlone(page, lab, engine) {
-  await openFocusFixture(page, lab, "leaves");
+/**
+ * One fresh review per round: a page that calls focus() once, 300 ms after it loses the focus to the
+ * note, hears no key of a word typed through that moment, as one calling every 20 ms does not.
+ * Returns the key events the page heard.
+ */
+async function oneShotRound(page, lab, engine, round) {
+  await openFocusFixture(page, lab, `once-${round}`);
+  const keys = listenForKeys(page);
+  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
+  await artifact.evaluate(() => (globalThis.stealOnce = true));
+  return writeThrough(page, keys, WORD, `${engine} round ${round}, a page calling once`, 60);
+}
+
+/**
+ * Points at the focus fixture's first paragraph and types `word` the moment the note has the focus;
+ * asserts the page was out with the cover saying why at that moment, the note holds the word and the
+ * page heard none of it, then adds the note; returns the key events the page heard.
+ */
+async function writeThrough(page, keys, word, what, delay = 0) {
   await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
-  await page.evaluate(() => document.getElementById("annotate").focus());
-  await page.waitForFunction(() => document.activeElement?.id === "annotate");
-  // Two tasks: the check the focus move starts runs in one, so the second means it has run.
-  await page.evaluate(() => new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0)));
-  const state = await page.evaluate(() => ({
-    card: !document.getElementById("card").hidden,
-    cover: document.getElementById("cover").hidden,
-    frame: getComputedStyle(document.getElementById("artifact")).display,
-  }));
-  assert.deepEqual(
-    state,
-    { card: true, cover: true, frame: "block" },
-    `${engine}: a move of the focus from the note to a chrome control unloaded the page`,
+  const cover = await page.evaluate(() =>
+    document.getElementById("cover").hidden
+      ? null
+      : document.getElementById("coverText").textContent,
   );
+  await page.keyboard.type(word, { delay });
+  const text = await page.evaluate(() => document.getElementById("cardText").value);
+  const heard = await keysSettle(keys, `${what}: the key reports to settle`);
+  console.log(`${what}: key events reaching the page ${heard}`);
+  assert.deepEqual(
+    { cover, text, keys: keys.slice(0, heard) },
+    { cover: UNLOADED_LINE, text: word, keys: [] },
+    `${what}: the cover once the note had the focus, the note, and the key events the page heard`,
+  );
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
+  await pageBack(page);
+  return heard;
+}
+
+/**
+ * Waits for the page the last note took out to be shown again, which the chrome says by clearing the
+ * `data-page` it set at the unload; returns the page's new frame.
+ */
+async function pageBack(page) {
+  await page.waitForFunction(
+    () => document.body.dataset.page === undefined && document.getElementById("cover").hidden,
+  );
+  return page.frames().find((frame) => frame.url().includes("/artifact/"));
 }
 
 /**
@@ -738,7 +657,7 @@ async function followsScheme(page, lab, scheme) {
 }
 
 /**
- * A fresh copy of the plan with a card opened on `#p1` by keyboard, and the page under review. The
+ * A fresh copy of the plan with a card opened on `#p1` by keyboard. The
  * reviewer reaches `#p1` from the page, which is what its focus() does with no note open: WebKit's Tab
  * stops at controls only. Nothing is pressed in the chrome first, which would start the gate.
  */
@@ -750,130 +669,36 @@ async function keyboardCard(page, lab, dirName) {
   const { session } = (await cli([join(dir, "plan.html")], lab.env)).json();
   await open(page, session.url);
   await page.waitForFunction(() => document.body.dataset.annotate === "1");
-  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
   await page.frameLocator("#artifact").frameLocator("#page").locator("#title").click();
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
   await page.click("#cardCancel");
-  await page.waitForFunction(() => document.body.dataset.handoff === "settled");
+  const artifact = await pageBack(page);
   await artifact.evaluate(() => document.getElementById("p1").focus());
   await artifact.waitForFunction(() => document.hasFocus() && document.activeElement.id === "p1");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.activeElement?.id === "cardText");
-  return artifact;
 }
 
 /**
- * A note made by keyboard gives its element the focus back once the card closes, so the next Tab moves
- * on from it. A key in the page before the close holds that back (`closeTarget` in src/browser/sdk.js),
- * so the keys typed in the card must not reach the page's listeners here.
+ * A note made by keyboard leaves the page loaded once the card closes holding the focus, and the next
+ * Tab moves on from the element the note was on (`init` in src/browser/sdk.js); WebKit lets the page
+ * give that element the focus only in the Tab itself.
  */
 async function keyboardNoteRefocuses(page, lab, engine) {
-  const artifact = await keyboardCard(page, lab, "refocus");
+  await keyboardCard(page, lab, "refocus");
   await page.keyboard.type("Say which queue");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
-  await artifact.waitForFunction(() => document.hasFocus() && document.activeElement.id === "p1");
+  const artifact = await pageBack(page);
+  await artifact.waitForFunction(() => document.hasFocus());
   assert.equal(
     await page.evaluate(() => document.activeElement?.id),
     "artifact",
     `${engine}: the page holds the focus after a note made by keyboard`,
   );
-}
-
-/**
- * Issue 57: the card's close reaches the page through the wrapper, which a busy page hears late, and the
- * page then puts the focus back on what was noted. A Tab the reviewer pressed in that gap is not undone:
- * where it put the focus in the page stays, and a Tab that reached nothing there leaves the refocus.
- * The wrapper holds the close until the Tab has landed.
- */
-async function tabBeforeTheClose(page, lab, engine) {
-  const artifact = await keyboardCard(page, lab, "tab-before-close");
-  const wrapper = page.frames().find((frame) => frame.url().endsWith("/wrapper.html"));
-  await wrapper.evaluate(() => {
-    globalThis.heldCloses = [];
-    window.addEventListener(
-      "message",
-      (event) => {
-        if (event.source !== parent || event.data?.type !== "compose" || event.data.on) return;
-        event.stopImmediatePropagation();
-        globalThis.heldCloses.push(event.data);
-      },
-      true,
-    );
-  });
-  await page.keyboard.type("Say which queue");
-  await page.keyboard.press("Enter");
-  await page.waitForFunction(() => document.querySelectorAll(".mark:not(.sent)").length === 1);
-  await wrapper.waitForFunction(() => globalThis.heldCloses.length === 1);
-  // Whichever document the Tab lands in counts it, so the next step waits for the Tab to have landed.
-  const count = () => {
-    globalThis.tabs = 0;
-    window.addEventListener(
-      "keydown",
-      (event) => event.key === "Tab" && (globalThis.tabs += 1),
-      true,
-    );
-  };
-  const frames = [page, wrapper, artifact];
-  for (const frame of frames) await frame.evaluate(count);
   await page.keyboard.press("Tab");
-  await until(
-    async () =>
-      (await Promise.all(frames.map((f) => f.evaluate(() => globalThis.tabs)))).some(Boolean),
-    {
-      what: `${engine}: the Tab to land in the chrome, the wrapper or the page`,
-      timeoutMs: STEP_MS,
-    },
-  );
-  const tabbed = await artifact.evaluate(() => ({
-    reached: document.hasFocus(),
-    focus: document.activeElement.id || document.activeElement.tagName,
-  }));
-  await wrapper.evaluate(() => {
-    for (const data of globalThis.heldCloses.splice(0))
-      document.getElementById("page").contentWindow.postMessage(data, "*");
-  });
-  // The page acknowledges the close in the task it handles it in.
-  await page.waitForFunction(() => document.body.dataset.handoff === "settled");
-  assert.equal(
-    await artifact.evaluate(() => document.activeElement.id || document.activeElement.tagName),
-    tabbed.reached ? tabbed.focus : "p1",
-    `${engine}: the page ${tabbed.reached ? `had the Tab on ${tabbed.focus}` : "had no Tab"} when it heard the card close`,
-  );
-}
-
-/**
- * A Tab from the note into the page is the reviewer's own move: the page stays loaded and shown, and
- * the shield goes, so their next press reaches the page. Firefox fires no focus-out in the chrome for
- * that Tab, so neither may depend on one.
- */
-async function tabIntoThePage(page, lab, engine) {
-  await openFocusFixture(page, lab, "tab-into");
-  await page.frameLocator("#artifact").frameLocator("#page").locator("#p1").click();
-  await page.waitForFunction(() => document.activeElement?.id === "cardText");
-  const artifact = page.frames().find((frame) => frame.url().includes("/artifact/"));
-  await artifact.evaluate(() => {
-    globalThis.pressed = 0;
-    window.addEventListener("mousedown", () => (globalThis.pressed += 1), true);
-  });
-  await page.keyboard.press("Shift+Tab");
-  await page.waitForFunction(() => document.activeElement?.id === "artifact");
-  await page.waitForFunction(() => document.getElementById("shield").hidden);
-  const spot = await page.evaluate(() => {
-    const box = document.getElementById("artifact").getBoundingClientRect();
-    return { x: box.left + 8, y: box.bottom - 8 };
-  });
-  await page.mouse.click(spot.x, spot.y);
-  await artifact.waitForFunction(() => globalThis.pressed === 1);
-  assert.deepEqual(
-    await page.evaluate(() => ({
-      card: !document.getElementById("card").hidden,
-      cover: document.getElementById("cover").hidden,
-      frame: getComputedStyle(document.getElementById("artifact")).display,
-    })),
-    { card: true, cover: true, frame: "block" },
-    `${engine}: a Tab from the note into the page held the page`,
-  );
+  // The stop after the noted paragraph is the first header cell of the table under it.
+  await artifact.waitForFunction(() => document.activeElement.textContent.trim() === "Step");
 }
 
 /**

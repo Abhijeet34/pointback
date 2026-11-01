@@ -19,7 +19,7 @@ for (const element of [document.documentElement, document.body])
 window.addEventListener("message", (event) => {
   if (event.source === parent && event.origin === chromeOrigin) {
     if (event.data?.type === "show") show(event.data.url);
-    else if (event.data?.type === "unload") unload();
+    else if (event.data?.type === "unload") unload(event.data.n);
     else page?.contentWindow?.postMessage(event.data, "*");
   } else if (event.source === window && event.data?.type === "loaded") {
     toChrome({ type: "loaded" });
@@ -49,20 +49,32 @@ function show(url) {
   // announce itself in is how it learns the page strayed. The load goes out through this window's
   // own message queue, behind the page's announcement already in it: WebKit fires the frame's load
   // event first, and the chrome showed every page twice (docs/ENGINEERING-NOTES.md).
-  page.addEventListener("load", () => postMessage({ type: "loaded" }, location.origin));
+  page.addEventListener("load", () => {
+    // A page loaded in place of one unloaded for a note does not inherit the focus the chrome handed
+    // this frame for it, so it is given that focus here, and the reviewer's next key reaches it. The
+    // frame element is focused afresh, since WebKit ignores a focus() on the page's window from here
+    // and a focus() on the element already focused does nothing.
+    if (page && document.hasFocus()) {
+      page.blur();
+      page.focus();
+      // That clears what the page had focused, such as the element its `init` gave the focus back to.
+      page.contentWindow?.postMessage({ type: "focused" }, "*");
+    }
+    postMessage({ type: "loaded" }, location.origin);
+  });
   document.body.append(page);
 }
 
 /**
  * Takes the page out of this document at once, where it can hold no focus and hear no key, and shows
  * about:blank in its place until the chrome shows the page again; navigating the frame instead leaves
- * the page able to take the focus until about:blank commits.
+ * the page able to take the focus until about:blank commits. The answer names the request it answers.
  */
-function unload() {
+function unload(n) {
   page?.remove();
   page = null;
   show("about:blank");
-  toChrome({ type: "unloaded" });
+  toChrome({ type: "unloaded", n });
 }
 
 // Focus the chrome hands this frame belongs to the page inside it, as it did when the chrome framed

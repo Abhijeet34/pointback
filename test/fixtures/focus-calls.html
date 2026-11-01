@@ -4,16 +4,11 @@
     <meta charset="utf-8" />
     <title>Incident review</title>
     <script>
-      // While `calling` is set, the page moves the focus to its own field every 20 ms (`takeFocus`), and
-      // `takeFocusSoon` has it do so once, from a task of its own, which a hidden page's timers would
-      // run late or not at all. Every key event
-      // the page receives is reported to the console as it arrives, in the capture phase, so the test
-      // process hears it even after the frame is removed. A focus() on an element already focused does
-      // nothing, so it lets go first; it keeps the page where the reviewer scrolled it. The element the
-      // page holds after its call is reported each time it changes: a page whose window is away gets
-      // no focus event, and the chrome can unload it for that call before a test could ask it.
+      // While `calling` is set, the page moves the focus to its own field every 20 ms (`takeFocus`). Every
+      // key event the page receives is reported to the console as it arrives, in the capture phase, so
+      // the test process hears it even after the frame is removed. A focus() on an element already
+      // focused does nothing, so it lets go first; it keeps the page where the reviewer scrolled it.
       globalThis.calling = false;
-      let holding = null;
       for (const type of ["keydown", "keyup"]) {
         addEventListener(
           type,
@@ -25,15 +20,12 @@
         const field = document.getElementById("field");
         field.blur();
         field.focus({ preventScroll: true });
-        if (document.activeElement.id !== holding)
-          console.log("focus-calls focus", (holding = document.activeElement.id));
       }
-      globalThis.takeFocusSoon = () => {
-        const { port1, port2 } = new MessageChannel();
-        port1.onmessage = takeFocus;
-        port2.postMessage(null);
-      };
       setInterval(() => globalThis.calling && takeFocus(), 20);
+      // `stealOnce` has the page call focus() once, 300 ms after it loses the focus, as a page waiting
+      // for the reviewer to start typing a note would.
+      globalThis.stealOnce = false;
+      addEventListener("blur", () => globalThis.stealOnce && setTimeout(takeFocus, 300));
     </script>
   </head>
   <body>

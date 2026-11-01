@@ -250,10 +250,9 @@ Only the page under review announces itself to the chrome, so a page that loads 
 A first load that comes back unannounced is asked for once more before that, and so is a first load of the frame the page sits in, because a load the network refused looks exactly like a page that went elsewhere.
 While a note being written holds a reload back, a refused first load of the page gets the cover at once, without the second ask.
 A refused file of the chrome's own, its script, a stylesheet or a font, reloads the tab once for that file, and a reload that would take a half-typed note with it waits until the note is added, saved or cancelled; it also waits while the browser is offline or the tab is not following its review, since the browser would refuse that reload too, and runs once both are back. A refused stylesheet of the page is asked for once more, so one connect the network refused leaves neither a dead chrome nor an unstyled page.
-While a note is being written, a shield lies over the page: a press on it hands the page the focus, and the wheel over it scrolls the page by the same distance while the focus stays in the note.
-A page can also take the keyboard while a note is open, by calling `focus()` on its own elements, whether the focus was in the note, on a chrome control, or on nothing; the reviewer's own move into the page, by a press on the shield or a Tab, is left alone.
-The page is then unloaded until that note is added or cancelled, and comes back at the reviewer's place; for the rest of the review it is hidden whenever a note is open, with a line saying why.
-A note opened before the page has heard the last card close unloads the page at once, with a line saying why, and the page comes back when that note is done; that unload is not counted against the page.
+A page can call `focus()` on its own elements at any moment and take the keyboard, so every note, in the card, an answer or a margin edit, unloads the page before it takes the focus, with a line where the page was saying why.
+The page comes back when the note is added or cancelled, at the reviewer's place, and after a note made by keyboard the next Tab moves on from its element; anything the page held in memory, such as a field typed into, starts over.
+A page unloaded for a note whose file then goes stays covered, with a line saying there is no page to show, until the file comes back.
 
 The cap on live tabs is `eventStreams` in `src/limits.js`, beside the caps on sessions, prompts and open polls.
 A tab past it says too many review tabs are open, and follows its review once another closes.
@@ -312,10 +311,7 @@ It prints the build the browser reports, which Brave 1.97.56 gives as `Chrome/15
 The CLI opens the reviewer's default browser, which is Safari on an unconfigured Mac, so Chromium alone is not the whole audience.
 `npm run smoke -- webkit firefox` runs the core act in both engines: open the fixture through the CLI, point at the title, write a note, send it, and poll it back.
 It then has a hostile page try to spend the note card's Enter, which exercises the gate those engines rely on (`docs/THREAT-MODEL.md`).
-It also presses over the page while a note has the focus and checks that the page is not hidden for it, since that press is the reviewer's own move.
-It presses Shift+Tab out of an open note and checks that the page stays loaded and shown and the note open, since that Tab is the reviewer's own move too.
-It then has a page call `focus()` out of a note in five fresh reviews and checks that the page is unloaded and that a word typed once the note has the focus back lands in the note with no key reaching the page (`unloadRound` in `test/engine-smoke.js`).
-A key typed at the moment of the page's move can still reach the page; the smoke prints that count and does not assert it, and `docs/THREAT-MODEL.md` gives the measured rates.
+It then has a page call `focus()` every 20 ms, and another call it once, 300 ms after the note opens, each in five fresh reviews, and checks that the page is out with the line saying why once the note has the focus, that a word typed from that moment lands in the note, and that no key event reaches the page (`unloadRound` and `oneShotRound` in `test/engine-smoke.js`).
 Last, it writes a note, idles 6.5 s past Node's default keep-alive close, and adds it on a connection the tab opened before the idle (`addAfterAnIdle`).
 The `engines` job in `.github/workflows/cross-platform.yml` runs it every Monday and on the release pull request, WebKit on `macos-15` and Firefox on `ubuntu-24.04`, and names the engine and its version in the job summary, failed or passed.
 On the release pull request it reaches the required `checks` through `ci.yml`, so a release does not merge until both engines pass; it skips when `release.yml` calls that workflow on a push to `main`, so the tag itself waits on the platform matrix alone.
