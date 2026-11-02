@@ -42,7 +42,7 @@ To work on pointback rather than with it, clone the repository and read "Develop
 For Claude Code, [`skills/pointback/SKILL.md`](https://github.com/Abhijeet34/pointback/blob/main/skills/pointback/SKILL.md) teaches the agent the whole loop: open, poll, apply, reply.
 It is one file and is not in the npm package; save it as `~/.claude/skills/pointback/SKILL.md`, or under a project's own `.claude/skills/pointback/`.
 
-## Quick start
+## Usage: quick start
 
 ```sh
 pointback plan.html                 # opens the browser, prints the session as JSON
@@ -336,10 +336,10 @@ The chrome and a rendered Markdown page follow the reviewer's `prefers-color-sch
 
 ## Contributing, security and support
 
-[`CONTRIBUTING.md`](https://github.com/Abhijeet34/pointback/blob/main/CONTRIBUTING.md) says what a pull request needs, and `AGENTS.md` holds this project's own build and test rules.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) says what a pull request needs, and `AGENTS.md` holds this project's own build and test rules.
 Report a vulnerability privately through [the repository's Security tab](https://github.com/Abhijeet34/pointback/security/advisories/new), and never in a public issue.
-[`SECURITY.md`](https://github.com/Abhijeet34/pointback/blob/main/SECURITY.md) carries the route and the response times one maintainer will actually meet, and [`docs/THREAT-MODEL.md`](https://github.com/Abhijeet34/pointback/blob/main/docs/THREAT-MODEL.md) says what is in scope.
-[`SUPPORT.md`](https://github.com/Abhijeet34/pointback/blob/main/SUPPORT.md) says where a bug report, a feature request or a question goes, and [`CODE_OF_CONDUCT.md`](https://github.com/Abhijeet34/pointback/blob/main/CODE_OF_CONDUCT.md) applies to every project space.
+[`SECURITY.md`](SECURITY.md) carries the route and the response times one maintainer will actually meet, and [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) says what is in scope.
+[`SUPPORT.md`](SUPPORT.md) says where a bug report, a feature request or a question goes, and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) applies to every project space.
 
 ## Licence
 

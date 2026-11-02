@@ -20,11 +20,26 @@ A proof of concept helps, and it is never required.
 
 If either date is going to slip, you are told before it passes.
 
+## Disclosure
+
+The fix and a description of the problem are published together, once there is something to update to.
+That happens within 90 days of the acknowledgement at the latest; if a fix needs longer, a new date is agreed with you before the 90 days run out.
+A problem that is already public is fixed in the open instead.
+
+## Good-faith research
+
+Research that stays within your own accounts and data, stops once the problem is shown, and is reported through the route above is welcome.
+Abhijeet Halder will not take or support legal action over it.
+
 ## Supported versions
 
 Releases are this repository's GitHub releases, and only the newest one is supported.
 Fixes land on `main` and ship in the next release, with no backports.
 Report against the newest release or against `main`, and say which.
+
+## Scope
+
+[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) says what pointback defends, against whom, and which reports are in scope.
 
 ## What makes a report actionable
 
