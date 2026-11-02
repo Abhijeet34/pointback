@@ -41,6 +41,7 @@ That indirection is the point.
 A required check is identified by its context name, so requiring `check`, `secrets / secret scan` and `dependency review` individually would freeze the job names, and every rename or path-scoping would need a branch-protection edit to match.
 It also handles the case that a naive setup gets wrong: a job that skips itself by `if:` reports `skipped`, and a skipped required check is not a failing one, so a required check that can skip blocks nothing.
 `checks` runs on `if: always()` and reads the results of its dependencies itself.
+It is bound to the GitHub Actions app (`integration_id` 15368), so only a check run Actions posts satisfies it; unbound, any token that can write a commit status, the reviewer App's included, could post a green `checks` itself.
 
 The other rules and why each is there:
 
