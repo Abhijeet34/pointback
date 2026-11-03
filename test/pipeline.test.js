@@ -431,7 +431,9 @@ test("the release and scheduled paths never cancel a run in flight", () => {
 test("`checks` is the one required context and ci.yml is where it comes from", () => {
   const ruleset = JSON.parse(read(".github/rulesets/main.json"));
   const required = ruleset.rules.find((rule) => rule.type === "required_status_checks");
-  assert.deepEqual(required.parameters.required_status_checks, [{ context: "checks", integration_id: 15368 }]);
+  assert.deepEqual(required.parameters.required_status_checks, [
+    { context: "checks", integration_id: 15368 },
+  ]);
   assert.match(workflows["ci.yml"], /^ {2}checks:$/m);
   // A skipped required check is not a failing one, so the aggregate has to run
   // whatever its dependencies did.
