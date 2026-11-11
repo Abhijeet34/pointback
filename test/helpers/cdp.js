@@ -893,14 +893,16 @@ class Page {
   }
 
   /**
-   * @param {string} key
-   * @param {{ code?: string, keyCode?: number, text?: string, modifiers?: number }} [options]
-   */
-  /**
    * `native: false` leaves out the native key code, without which headless Chromium on macOS does not
    * send a key nothing handles back to the focus again and again (`docs/ENGINEERING-NOTES.md`).
+   * `held` runs between the keyDown and the keyUp: Chromium never acknowledges a keyUp sent into a
+   * frame its own keyDown had removed, so a key that takes its frame out waits there for the focus to
+   * land somewhere live (`docs/ENGINEERING-NOTES.md`).
+   * @param {string} key
+   * @param {{ code?: string, keyCode?: number, text?: string, modifiers?: number, native?: boolean,
+   *   held?: () => Promise<unknown> }} [options]
    */
-  async key(key, { code = key, keyCode, text, modifiers = 0, native = true } = {}) {
+  async key(key, { code = key, keyCode, text, modifiers = 0, native = true, held } = {}) {
     const base = {
       key,
       code,
@@ -913,6 +915,7 @@ class Page {
       text,
       ...base,
     });
+    await held?.();
     await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
   }
 

@@ -57,8 +57,6 @@ function show(url) {
     if (page && document.hasFocus()) {
       page.blur();
       page.focus();
-      // That clears what the page had focused, such as the element its `init` gave the focus back to.
-      page.contentWindow?.postMessage({ type: "focused" }, "*");
     }
     postMessage({ type: "loaded" }, location.origin);
   });
