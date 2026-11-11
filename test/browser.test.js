@@ -667,12 +667,13 @@ test(
       "document.getElementById('card').hidden && document.querySelectorAll('.mark:not(.sent)').length === 3",
     );
     await pageBack(page, artifact);
-    await artifact.waitFor("document.activeElement && document.activeElement.id === 'p1'");
-    assert.equal(await highlights(artifact), 1, "a note made by keyboard keeps the focus box");
+    // The page loaded after a note made by keyboard moves no focus of its own: its element takes the
+    // focus back inside the reviewer's first key there, so Tab moves on from it.
+    await artifact.waitFor("document.activeElement === document.body");
+    assert.equal(await highlights(artifact), 0, "no focus box before the reviewer's next key");
 
     // Five more stops reach the owner of the first step: the three header cells, then the first
     // body row's first two. A table is its cells; neither it nor a row is a stop of its own.
-    await artifact.waitFor("document.activeElement && document.activeElement.id === 'p1'");
     for (let stop = 0; stop < 5; stop += 1) await page.tab();
     await page.enter();
     await page.waitFor(
@@ -1680,14 +1681,86 @@ test(
     await page.enter();
     const result = await writeNote(page, card, "document.getElementById('card').hidden");
     assert.deepEqual(result, { kept: true, address: "about:blank", text: "abc", keys: 0 });
-    // The page is loaded again for the reviewer, and the keyboard is back where they were.
+    // The page is loaded again for the reviewer, with nothing in it focused until their next key,
+    // which puts the keyboard back where they were.
     const back = await page.frame();
-    await back.waitFor("document.hasFocus() && document.activeElement.id === 'p1'");
+    await back.waitFor("document.activeElement === document.body");
     await page.tab();
-    await back.waitFor("document.activeElement.id === 'p2'");
+    await back.waitFor("document.hasFocus() && document.activeElement.id === 'p2'");
     await page.close();
   },
 );
+
+// The page acts on its init in its own event loop, so a reviewer can leave the frame for the chrome
+// after the chrome asked for the focus back and before the page gives it (issue 57). The page here
+// takes that init late, once a request the test holds is answered, and answers keys meanwhile.
+const LATE_INIT = `<script>
+  addEventListener("message", (event) => {
+    if (!event.isTrusted || event.data?.type !== "init" || event.data.refocus !== true) return;
+    event.stopImmediatePropagation();
+    const { data, origin, source } = event;
+    fetch(new URL("/held-init", location.href))
+      .catch(() => {})
+      .then(() => dispatchEvent(new MessageEvent("message", { data, origin, source })));
+  });
+</script>`;
+
+for (const way of ["Tab", "a press on a chrome control"]) {
+  test(
+    `a reviewer who leaves the frame by ${way} before the page acts on its init keeps the focus there`,
+    { skip: !executable && "no browser found" },
+    async () => {
+      const card = "document.getElementById('cardText')";
+      // Written before the review opens, so the open sees no save to reload for.
+      const file = join(mkdtempSync(join(lab.dir, "late-init-")), "incident.html");
+      const calls = readFileSync(join(dirname(fixture), "focus-calls.html"), "utf8");
+      writeFileSync(file, calls.replace("</head>", `${LATE_INIT}</head>`));
+      const { session } = (await cli([file], lab.env)).json();
+      const { page, artifact } = await openReview(session.url);
+      let held = null;
+      page.listen(({ method, params, sessionId }) => {
+        if (method === "Fetch.requestPaused" && !sessionId) held = params.requestId;
+      });
+      await page.browser.send("Fetch.enable", { patterns: [{ urlPattern: "*/held-init*" }] });
+      await pointAt(page, artifact, "#t");
+      await page.key("Escape", { keyCode: 27 });
+      await pageBack(page, artifact);
+      await artifact.waitFor("document.hasFocus() && document.activeElement === document.body");
+      await page.tab();
+      await artifact.waitFor("document.activeElement.id === 't'");
+      await page.tab();
+      await artifact.waitFor("document.activeElement.id === 'p1'");
+      await page.enter();
+      await page.waitFor(`${card} === document.activeElement`);
+      await press(page, "abc");
+      await page.enter();
+      // The chrome asked the page loaded in its place to give p1 the focus back, and the page holds it.
+      await until(() => held !== null, { what: "the page to hold its init" });
+      assert.equal(await page.eval("document.activeElement.id"), "artifact", way);
+      if (way === "Tab") {
+        // Shift+Tab from nothing focused goes to the page's last stop, its field, and Tab leaves it.
+        await page.key("Tab", { keyCode: 9, modifiers: 8 });
+        await (await page.frame()).waitFor("document.activeElement.id === 'field'");
+        await page.tab();
+      } else await clickOn(page, "document.getElementById('textSizeButton')");
+      await page.waitFor(`![document.body, document.getElementById("artifact")].includes(
+        globalThis.went = document.activeElement)`);
+      await page.browser.send("Fetch.failRequest", { requestId: held, errorReason: "Failed" });
+      // The page says it is shown only after acting on its init.
+      await page.waitFor(`document.body.dataset.page === undefined && ${SHOWN}`);
+      const back = await page.frame();
+      assert.deepEqual(
+        {
+          page: await back.eval("[document.hasFocus(), document.activeElement.tagName]"),
+          chromeKept: await page.eval("document.activeElement === globalThis.went"),
+        },
+        { page: [false, "BODY"], chromeKept: true },
+      );
+      await page.browser.send("Fetch.disable");
+      await page.close();
+    },
+  );
+}
 
 // Word exports wrap content in namespaced tags such as `w:sdt`, so the selector of a paragraph
 // inside one is no CSS a browser parses; the page loaded after the note must still come up whole.
@@ -1849,6 +1922,52 @@ test(
     const keys = keyReports.length - quiet;
     await page.close();
     assert.deepEqual({ text, keys }, { text: "abc", keys: 0 });
+  },
+);
+
+// The wrapper's answers reach the chrome a report latency after its asks, so two notes opened and
+// closed within it get answers for the page as it was. The chrome here holds every answer until the
+// test hands it over, in the order the test picks.
+test(
+  "the wrapper's answer for an earlier note never gives a later note the focus while the page may be back",
+  { skip: !executable && "no browser found" },
+  async () => {
+    const edit = "document.querySelector('.mark-edit-text')";
+    const { session } = await focusCallsReview();
+    await api(session, "POST", "drafts", {
+      draft: { prompt: "Say when", selector: "#p1", tag: "p", text: "The cache was cold" },
+    });
+    // Registered ahead of the chrome's own listener, which a listener added later never runs before.
+    const page = await browser.page("about:blank");
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `globalThis.answers = [];
+        addEventListener("message", (event) => {
+          if (!event.isTrusted || event.data?.type !== "unloaded") return;
+          event.stopImmediatePropagation();
+          answers.push(event);
+        });`,
+    });
+    await page.navigate(session.url);
+    const { artifact } = await reviewIn(page);
+    await page.waitFor("document.querySelector('.mark-edit') !== null");
+    const answer = (n) =>
+      page.eval(`(() => {
+        const { data, origin, source } = answers.find((event) => event.data.n === ${n});
+        dispatchEvent(new MessageEvent("message", { data, origin, source }));
+      })()`);
+    await clickIn(page, artifact, "#p2");
+    await page.waitFor("!document.getElementById('card').hidden && answers.length === 1");
+    // The card closes before its answer lands, which brings the page back, and a margin edit opens.
+    await clickOn(page, "document.getElementById('cardCancel')");
+    await page.waitFor("document.getElementById('card').hidden");
+    await clickOn(page, "document.querySelector('.mark-edit')");
+    await page.waitFor("answers.length === 2");
+    await answer(1);
+    const early = await page.eval(`document.activeElement === ${edit}`);
+    await answer(2);
+    await page.waitFor(kept(edit));
+    await page.close();
+    assert.equal(early, false, "the edit got the focus on the first note's answer");
   },
 );
 
