@@ -657,10 +657,7 @@ test(
       "Move the queue worker from",
       "Shift+ArrowRight grows a real selection word by word",
     );
-    await page.enter();
-    await page.waitFor(
-      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
-    );
+    await enterNote(page);
     await page.type("Say which queue");
     await page.enter();
     await page.waitFor(
@@ -675,10 +672,7 @@ test(
     // Five more stops reach the owner of the first step: the three header cells, then the first
     // body row's first two. A table is its cells; neither it nor a row is a stop of its own.
     for (let stop = 0; stop < 5; stop += 1) await page.tab();
-    await page.enter();
-    await page.waitFor(
-      "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
-    );
+    await enterNote(page);
     await page.type("Priya is on leave that week");
     await page.enter();
     await page.waitFor(
@@ -1678,7 +1672,7 @@ test(
     await artifact.waitFor("document.activeElement.id === 't'");
     await page.tab();
     await artifact.waitFor("document.activeElement.id === 'p1'");
-    await page.enter();
+    await enterNote(page);
     const result = await writeNote(page, card, "document.getElementById('card').hidden");
     assert.deepEqual(result, { kept: true, address: "about:blank", text: "abc", keys: 0 });
     // The page is loaded again for the reviewer, with nothing in it focused until their next key,
@@ -1710,7 +1704,6 @@ for (const way of ["Tab", "a press on a chrome control"]) {
     `a reviewer who leaves the frame by ${way} before the page acts on its init keeps the focus there`,
     { skip: !executable && "no browser found" },
     async () => {
-      const card = "document.getElementById('cardText')";
       // Written before the review opens, so the open sees no save to reload for.
       const file = join(mkdtempSync(join(lab.dir, "late-init-")), "incident.html");
       const calls = readFileSync(join(dirname(fixture), "focus-calls.html"), "utf8");
@@ -1730,8 +1723,7 @@ for (const way of ["Tab", "a press on a chrome control"]) {
       await artifact.waitFor("document.activeElement.id === 't'");
       await page.tab();
       await artifact.waitFor("document.activeElement.id === 'p1'");
-      await page.enter();
-      await page.waitFor(`${card} === document.activeElement`);
+      await enterNote(page);
       await press(page, "abc");
       await page.enter();
       // The chrome asked the page loaded in its place to give p1 the focus back, and the page holds it.
@@ -1768,7 +1760,6 @@ test(
   "a note made by keyboard inside a Word tag, added while a save waits, leaves the saved page with its pin",
   { skip: !executable && "no browser found" },
   async () => {
-    const card = "document.getElementById('cardText')";
     const file = join(mkdtempSync(join(lab.dir, "word-")), "minutes.html");
     const html =
       '<!doctype html><html lang="en"><head><meta charset="utf-8" /><title>Minutes</title></head>' +
@@ -1791,10 +1782,7 @@ test(
     await artifact.waitFor(
       "document.activeElement.textContent === 'The cache was cold for an hour.'",
     );
-    await page.enter();
-    await page.waitFor(
-      `!document.getElementById('card').hidden && document.activeElement === ${card}`,
-    );
+    await enterNote(page);
     await page.type("Say which cache");
     writeFileSync(file, html.replace("Alerts fired late.", "Alerts fired late, at 02:10."));
     await page.waitFor(
@@ -4757,6 +4745,22 @@ async function pointAt(page, artifact, selector) {
   await page.waitFor(
     "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
   );
+}
+
+/**
+ * Enter on the element focused in the page, which opens the note card and takes the page out; the
+ * keyUp waits for the card to hold the focus, since one sent into the frame the keyDown removed is
+ * never acknowledged (`key` in test/helpers/cdp.js).
+ */
+function enterNote(page) {
+  return page.key("Enter", {
+    keyCode: 13,
+    text: "\r",
+    held: () =>
+      page.waitFor(
+        "!document.getElementById('card').hidden && document.activeElement.id === 'cardText'",
+      ),
+  });
 }
 
 /**

@@ -46,6 +46,7 @@ Rules almost every agent session here needs, each with a pointer to the file tha
   After a tab was in the background it waits only on the eases of what it reads (`SWITCH_EASED`): one started there can stay pending with no start time in Chromium, and `SETTLED` then never resolves.
   Headless Chromium keeps every window focused, so a window-away test leaves the window for another tab, which hides the page.
 - A key the chrome acts on is `preventDefault`ed, or headless Chromium on macOS freezes; it also sends a key the page leaves unhandled back to the page, so a test types into the page only once the element meant to take the keys holds the focus (`docs/ENGINEERING-NOTES.md`).
+- A key pressed in the page that opens a note holds its keyUp until the card has the focus (`enterNote` in `test/browser.test.js`): Chromium never acknowledges a keyUp sent into the frame its keyDown removed (`docs/ENGINEERING-NOTES.md`).
 - The browser suite prints `browser suite: running against <path>` or `browser suite: SKIPPED`; a skip needs an explicit `<PREFIX>BROWSER=none`.
 - The browser suite launches Chrome once, before it opens its shared review, against one `LAUNCH_MS` deadline that its `before` hook outlasts (`LAUNCH_BOUND_MS` in `test/helpers/cdp.js`); a slow first launch on `windows-2025` or `ubuntu-24.04` is a cold disk, read first and never a reason for a second attempt or a bound of its own (`docs/ENGINEERING-NOTES.md`).
 - `README.md` is a browser-suite fixture: its Install paragraph opens with `` `parse5` ``.
