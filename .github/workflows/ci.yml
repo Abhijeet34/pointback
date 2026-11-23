@@ -124,7 +124,7 @@ jobs:
   # edit here. gates is public, which is what lets a public caller reach it.
   # The check reports as `secrets / secret scan`; only `checks` is required.
   secrets:
-    uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@9634dea8b931288eaa5129c6bc9522eb17056bd1 # v1
+    uses: Abhijeet34/gates/.github/workflows/shared-secret-scan.yml@7c07f96851a21041ad9f1cd0915f2c3220686ce4 # v8
 
   # GitHub's own action, available here because the repository is public: it is
   # "available for all public repositories, as well as private repositories that
@@ -137,7 +137,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
         with:
           # This tree has two runtime dependencies and seven dev ones, so there is no
           # backlog to grandfather and no reason to start above the floor.
